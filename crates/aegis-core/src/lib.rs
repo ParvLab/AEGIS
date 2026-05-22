@@ -10,6 +10,7 @@
 //! - **storage**: Pluggable StorageBackend trait (SQLite, PostgreSQL, RocksDB, IndexedDB)
 //! - **testing**: Test harness (TestAegis) + fixture loader for integration tests
 
+pub mod engine;
 pub mod error;
 pub mod schema;
 pub mod storage;
@@ -17,10 +18,11 @@ pub mod testing;
 pub mod types;
 
 /// Re-export the most commonly used types at the crate root.
+pub use crate::engine::GraphEngine;
 pub use crate::error::{AegisError, AegisResult};
 pub use crate::types::{
-    CheckResult, ConsistencyMode, Relation, RelationshipTuple, ResourceId, Revision, RevisionToken,
-    SubjectId, TupleKey, WriteResult,
+    CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, Relation, RelationshipTuple,
+    ResourceId, Revision, RevisionToken, SubjectId, TupleKey, WriteResult,
 };
 
 /// Library version constant.

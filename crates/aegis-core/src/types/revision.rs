@@ -90,6 +90,24 @@ pub struct CheckResult {
     pub revision: Revision,
 }
 
+/// A single step in an explain trace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplainTrace {
+    pub subject: String,
+    pub relation: String,
+    pub object: String,
+}
+
+/// Detailed explanation of a permission check decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplainResult {
+    pub allowed: bool,
+    pub revision: Revision,
+    pub trace: Vec<ExplainTrace>,
+    pub resolved_via: String,
+    pub duration_ms: u64,
+}
+
 /// Represents a single audit log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {

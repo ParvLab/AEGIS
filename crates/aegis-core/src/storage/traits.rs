@@ -100,6 +100,15 @@ pub trait StorageTransaction: Send {
     /// Delete a tuple within this transaction.
     fn delete(&mut self, key: &TupleKey) -> AegisResult<()>;
 
+    /// Create a named savepoint within the transaction.
+    fn savepoint(&self, name: &str) -> AegisResult<()>;
+
+    /// Roll back to a named savepoint without ending the transaction.
+    fn rollback_to_savepoint(&self, name: &str) -> AegisResult<()>;
+
+    /// Release (forget) a named savepoint.
+    fn release_savepoint(&self, name: &str) -> AegisResult<()>;
+
     /// Commit the transaction.
     fn commit(self: Box<Self>) -> AegisResult<Revision>;
 
