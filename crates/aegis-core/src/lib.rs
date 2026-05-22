@@ -14,15 +14,24 @@ pub mod engine;
 pub mod error;
 pub mod schema;
 pub mod storage;
+pub mod telemetry;
 pub mod testing;
 pub mod types;
 
 /// Re-export the most commonly used types at the crate root.
+pub use crate::engine::crdt::{
+    CrdtAction, CrdtOperation, CrdtReplicator, InMemoryTransport, NodeId, SyncTransport,
+    VersionVector,
+};
+pub use crate::engine::gdpr::{GdprConfig, GdprManager, SubjectDataExport};
+pub use crate::engine::ratelimit::{RateLimitConfig, RateLimitOp, TokenBucketRateLimiter};
+pub use crate::engine::watch::{WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
 pub use crate::engine::GraphEngine;
 pub use crate::error::{AegisError, AegisResult};
 pub use crate::types::{
-    CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, Relation, RelationshipTuple,
-    ResourceId, Revision, RevisionToken, SubjectId, TupleKey, WriteResult,
+    AuditEntry, CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, FailClosedMode,
+    HealthReport, PaginatedTuples, PaginationParams, Relation, RelationshipTuple, ResourceId,
+    Revision, RevisionToken, SubjectId, TupleKey, WriteResult,
 };
 
 /// Library version constant.

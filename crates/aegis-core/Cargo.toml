@@ -16,3 +16,22 @@ rusqlite.workspace = true
 r2d2.workspace = true
 r2d2_sqlite.workspace = true
 serde_json.workspace = true
+notify = { version = "8", optional = true }
+sha2 = { version = "0.10", optional = true }
+tokio-postgres = { version = "0.7", optional = true }
+deadpool-postgres = { version = "0.14", optional = true }
+tokio = { version = "1", features = ["rt", "macros"], optional = true }
+rocksdb = { workspace = true, optional = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+
+[features]
+hot-reload = ["notify", "sha2"]
+postgres = ["tokio-postgres", "deadpool-postgres", "tokio"]
+rocksdb = ["dep:rocksdb"]
+telemetry = ["dep:opentelemetry", "dep:opentelemetry-otlp"]
+crdt = []
+crdt-http = ["crdt", "dep:reqwest"]

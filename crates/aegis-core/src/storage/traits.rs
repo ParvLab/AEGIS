@@ -85,6 +85,9 @@ pub trait StorageBackend: Send + Sync {
         pagination: &PaginationParams,
     ) -> AegisResult<Vec<AuditEntry>>;
 
+    /// Return the backend type identifier.
+    fn backend_type(&self) -> BackendType;
+
     /// Run a storage-level integrity check.
     fn integrity_check(&self) -> AegisResult<IntegrityReport>;
 

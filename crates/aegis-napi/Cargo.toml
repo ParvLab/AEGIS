@@ -1,0 +1,18 @@
+[package]
+name = "aegis-napi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Aegis NAPI bindings for Node.js"
+
+[build-dependencies]
+napi-build = "2"
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+napi = { version = "2", features = ["napi8", "serde-json"] }
+napi-derive = "2"
+
+[lib]
+crate-type = ["cdylib"]

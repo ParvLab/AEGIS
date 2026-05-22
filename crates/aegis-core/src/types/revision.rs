@@ -108,6 +108,33 @@ pub struct ExplainResult {
     pub duration_ms: u64,
 }
 
+/// Health status of the engine and its components.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthReport {
+    pub healthy: bool,
+    pub revision: Revision,
+    pub schema_version: u32,
+    pub backend: String,
+    pub backend_healthy: bool,
+    pub cache_hit_rate: f64,
+    pub cache_entries: usize,
+    pub storage_integrity: bool,
+    pub error: Option<String>,
+}
+
+/// Configuration for fail-closed vs fail-open behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailClosedMode {
+    DenyOnError,
+    AllowOnError,
+}
+
+impl Default for FailClosedMode {
+    fn default() -> Self {
+        Self::DenyOnError
+    }
+}
+
 /// Represents a single audit log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {

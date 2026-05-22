@@ -21,6 +21,11 @@ pub struct TraversalResult {
     pub revision: Revision,
 }
 
+/// Default maximum traversal depth.
+pub const DEFAULT_MAX_DEPTH: usize = 10;
+/// Default maximum number of tuples to visit.
+pub const DEFAULT_MAX_VISITS: usize = 10_000;
+
 /// Perform a BFS traversal from `subject` to see if they reach `object` through `relation`.
 ///
 /// Uses:
@@ -40,11 +45,23 @@ pub fn bfs_traversal(
     target: &ResourceId,
     revision: Option<Revision>,
 ) -> AegisResult<TraversalResult> {
-    // visited: (SubjectId, Relation) to detect cycles
+    bfs_traversal_with_limits(storage, subject, relation, target, revision, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS)
+}
+
+/// BFS traversal with configurable depth and visit limits.
+pub fn bfs_traversal_with_limits(
+    storage: &dyn StorageBackend,
+    subject: &SubjectId,
+    relation: &Relation,
+    target: &ResourceId,
+    revision: Option<Revision>,
+    max_depth: usize,
+    max_visits: usize,
+) -> AegisResult<TraversalResult> {
     let mut visited: HashSet<(String, String)> = HashSet::new();
     let mut queue: VecDeque<(SubjectId, Vec<TraceStep>)> = VecDeque::new();
+    let mut visit_count = 0usize;
 
-    // Direct check: does subject have relation on target?
     let found_direct = check_direct(storage, subject, relation, target)?;
     if found_direct {
         return Ok(TraversalResult {
@@ -59,12 +76,13 @@ pub fn bfs_traversal(
     visited.insert((subject.to_string(), relation.to_string()));
 
     while let Some((current_subject, path)) = queue.pop_front() {
-        // Get all tuples where current_subject is the subject with this relation
-        // This gives us all objects that current_subject has this relation on
+        if path.len() >= max_depth {
+            continue;
+        }
+
         let tuples = match storage.list_by_subject(&current_subject, Some(relation)) {
             Ok(t) => t,
             Err(e) => {
-                // If storage not initialized, skip
                 if matches!(e, AegisError::StorageNotInitialized) {
                     continue;
                 }
@@ -73,9 +91,18 @@ pub fn bfs_traversal(
         };
 
         for tuple in &tuples {
+            visit_count += 1;
+            if visit_count > max_visits {
+                return Ok(TraversalResult {
+                    found: false,
+                    path_len: 0,
+                    trace: Vec::new(),
+                    revision: revision.unwrap_or(Revision::ZERO),
+                });
+            }
+
             let object_str = tuple.object.as_str().to_string();
 
-            // Check if this object is the target
             if tuple.object == *target {
                 let mut full_path = path.clone();
                 full_path.push(TraceStep {
@@ -92,11 +119,9 @@ pub fn bfs_traversal(
                 });
             }
 
-            // Otherwise, try to traverse through this object as a subject
-            // But first check for cycles
             let object_as_subject = match SubjectId::new(&object_str) {
                 Ok(s) => s,
-                Err(_) => continue, // can't traverse through non-subject IDs
+                Err(_) => continue,
             };
 
             let visit_key = (object_as_subject.to_string(), relation.to_string());
@@ -117,7 +142,6 @@ pub fn bfs_traversal(
         }
     }
 
-    // Not found after BFS
     Ok(TraversalResult {
         found: false,
         path_len: 0,

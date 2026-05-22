@@ -343,6 +343,10 @@ impl SqliteStorage {
 }
 
 impl StorageBackend for SqliteStorage {
+    fn backend_type(&self) -> BackendType {
+        BackendType::Sqlite
+    }
+
     fn initialize(&mut self) -> AegisResult<StorageMeta> {
         let conn = self.conn()?;
         let current_revision = Self::read_revision(&conn)?;
@@ -1077,13 +1081,214 @@ impl StorageBackend for SqliteStorage {
     }
 
     fn close(&self) -> AegisResult<()> {
-        // r2d2 pool drops automatically; we just checkpoint WAL
         if self.config.wal_mode && self.config.path != ":memory:" {
             if let Ok(conn) = self.pool.get() {
                 let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
             }
         }
         Ok(())
+    }
+}
+
+// ── Event Log Recovery ─────────────────────────────────────────
+
+impl SqliteStorage {
+    /// Recover the tuple graph from the event log.
+    /// Replays all events in revision order to reconstruct the current state.
+    /// After recovery, verifies that the final revision matches.
+    pub fn recover_from_events(&self) -> AegisResult<Revision> {
+        self.with_write_tx(|conn| {
+            conn.execute("DELETE FROM _aegis_tuples WHERE revision_removed IS NOT NULL OR 1=1", [])
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT revision, action, subject, relation, object, metadata
+                     FROM _aegis_events
+                     ORDER BY revision ASC, event_id ASC",
+                )
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let rows = stmt
+                .query_map([], |row| {
+                    let rev: i64 = row.get(0)?;
+                    let action: String = row.get(1)?;
+                    let subject: String = row.get(2)?;
+                    let relation: String = row.get(3)?;
+                    let object: String = row.get(4)?;
+                    let metadata: Option<String> = row.get(5)?;
+                    Ok((rev, action, subject, relation, object, metadata))
+                })
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let mut last_revision = Revision::ZERO;
+
+            for row in rows {
+                let (rev, action, subject, relation, object, metadata) =
+                    row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+                let rev = Revision::new(rev as u64);
+                let now = Utc::now().to_rfc3339();
+
+                match action.as_str() {
+                    "add" => {
+                        conn.execute(
+                            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, revision_added, revision_removed)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                            rusqlite::params![subject, relation, object, now, metadata, rev.as_u64() as i64],
+                        )
+                        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                    }
+                    "remove" => {
+                        conn.execute(
+                            "UPDATE _aegis_tuples SET revision_removed = ?1
+                             WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND revision_removed IS NULL",
+                            rusqlite::params![rev.as_u64() as i64, subject, relation, object],
+                        )
+                        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                    }
+                    _ => {}
+                }
+
+                last_revision = rev;
+            }
+
+            let current = Self::read_revision(conn)?;
+            if current != last_revision && last_revision != Revision::ZERO {
+                conn.execute(
+                    "UPDATE _aegis_meta SET value = ?1 WHERE key = 'revision'",
+                    rusqlite::params![last_revision.as_u64() as i64],
+                )
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            }
+
+            Ok(Self::read_revision(conn)?)
+        })
+    }
+
+    /// Recover to a specific revision (point-in-time recovery).
+    pub fn recover_to_revision(&self, target: Revision) -> AegisResult<Revision> {
+        let current = self.current_revision()?;
+        if target > current {
+            return Err(AegisError::RevisionFromFuture(target.as_u64() as usize));
+        }
+
+        self.with_write_tx(|conn| {
+            conn.execute("DELETE FROM _aegis_tuples", [])
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let mut stmt = conn
+                .prepare(
+                    "SELECT revision, action, subject, relation, object, metadata
+                     FROM _aegis_events
+                     WHERE revision <= ?1
+                     ORDER BY revision ASC, event_id ASC",
+                )
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let rows = stmt
+                .query_map(rusqlite::params![target.as_u64() as i64], |row| {
+                    let rev: i64 = row.get(0)?;
+                    let action: String = row.get(1)?;
+                    let subject: String = row.get(2)?;
+                    let relation: String = row.get(3)?;
+                    let object: String = row.get(4)?;
+                    let metadata: Option<String> = row.get(5)?;
+                    Ok((rev, action, subject, relation, object, metadata))
+                })
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            for row in rows {
+                let (rev, action, subject, relation, object, metadata) =
+                    row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+                let rev = Revision::new(rev as u64);
+                let now = Utc::now().to_rfc3339();
+
+                match action.as_str() {
+                    "add" => {
+                        conn.execute(
+                            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, revision_added, revision_removed)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                            rusqlite::params![subject, relation, object, now, metadata, rev.as_u64() as i64],
+                        )
+                        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                    }
+                    "remove" => {
+                        conn.execute(
+                            "UPDATE _aegis_tuples SET revision_removed = ?1
+                             WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND revision_removed IS NULL",
+                            rusqlite::params![rev.as_u64() as i64, subject, relation, object],
+                        )
+                        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                    }
+                    _ => {}
+                }
+            }
+
+            conn.execute(
+                "UPDATE _aegis_meta SET value = ?1 WHERE key = 'revision'",
+                rusqlite::params![target.as_u64() as i64],
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            Ok(Self::read_revision(conn)?)
+        })
+    }
+
+    /// Compact the event log by merging add/remove pairs for the same tuple.
+    /// Removes event pairs that are semantically no-ops (add then later remove
+    /// with no intermediate add for the same tuple key).
+    /// Returns the number of event rows removed.
+    pub fn compact_events(&self) -> AegisResult<usize> {
+        let conn = self.conn()?;
+
+        let total = conn
+            .execute(
+                "DELETE FROM _aegis_events WHERE event_id IN (
+                    SELECT e1.event_id FROM _aegis_events e1
+                    WHERE e1.action = 'add'
+                        AND EXISTS (
+                            SELECT 1 FROM _aegis_events e2
+                            WHERE e2.action = 'remove'
+                                AND e2.subject = e1.subject
+                                AND e2.relation = e1.relation
+                                AND e2.object = e1.object
+                                AND e2.event_id > e1.event_id
+                                AND NOT EXISTS (
+                                    SELECT 1 FROM _aegis_events e3
+                                    WHERE e3.event_id > e1.event_id
+                                        AND e3.event_id < e2.event_id
+                                        AND e3.subject = e1.subject
+                                        AND e3.relation = e1.relation
+                                        AND e3.object = e1.object
+                                        AND e3.action = 'add'
+                                )
+                        )
+                    UNION ALL
+                    SELECT e2.event_id FROM _aegis_events e1
+                    INNER JOIN _aegis_events e2
+                        ON e2.action = 'remove'
+                        AND e2.subject = e1.subject
+                        AND e2.relation = e1.relation
+                        AND e2.object = e1.object
+                    WHERE e1.action = 'add'
+                        AND e1.event_id < e2.event_id
+                        AND NOT EXISTS (
+                            SELECT 1 FROM _aegis_events e3
+                            WHERE e3.event_id > e1.event_id
+                                AND e3.event_id < e2.event_id
+                                AND e3.subject = e1.subject
+                                AND e3.relation = e1.relation
+                                AND e3.object = e1.object
+                                AND e3.action = 'add'
+                        )
+                )",
+                [],
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        Ok(total)
     }
 }
 
@@ -1883,5 +2088,70 @@ mod tests {
                 .unwrap()
                 == false
         );
+    }
+
+    // ── Event Recovery ──
+
+    #[test]
+    fn test_event_recover_from_events() {
+        let mut store = storage();
+        store.initialize().unwrap();
+
+        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&tuple("user:2", "viewer", "repo:b")).unwrap();
+        let rev_before = store.current_revision().unwrap();
+
+        let recovered = store.recover_from_events().unwrap();
+        assert_eq!(recovered, rev_before);
+
+        assert!(store.has_tuple(&key("user:1", "editor", "repo:a")).unwrap());
+        assert!(store.has_tuple(&key("user:2", "viewer", "repo:b")).unwrap());
+    }
+
+    #[test]
+    fn test_event_recover_point_in_time() {
+        let mut store = storage();
+        store.initialize().unwrap();
+
+        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&tuple("user:2", "viewer", "repo:b")).unwrap();
+
+        let recovered = store.recover_to_revision(Revision::new(1)).unwrap();
+        assert_eq!(recovered.as_u64(), 1);
+
+        assert!(store.has_tuple(&key("user:1", "editor", "repo:a")).unwrap());
+        assert!(!store.has_tuple(&key("user:2", "viewer", "repo:b")).unwrap());
+    }
+
+    #[test]
+    fn test_event_compaction() {
+        let mut store = storage();
+        store.initialize().unwrap();
+
+        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
+        store.delete_tuple(&key("user:1", "editor", "repo:a")).unwrap();
+
+        let before_events = store.conn().unwrap()
+            .query_row("SELECT COUNT(*) FROM _aegis_events", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+
+        assert_eq!(before_events, 2);
+
+        let removed = store.compact_events().unwrap();
+        assert_eq!(removed, 2);
+
+        let after_events = store.conn().unwrap()
+            .query_row("SELECT COUNT(*) FROM _aegis_events", [], |row| row.get::<_, i64>(0))
+            .unwrap();
+        assert_eq!(after_events, 0);
+    }
+
+    #[test]
+    fn test_recover_empty_events() {
+        let mut store = storage();
+        store.initialize().unwrap();
+
+        let recovered = store.recover_from_events().unwrap();
+        assert_eq!(recovered.as_u64(), 0);
     }
 }
