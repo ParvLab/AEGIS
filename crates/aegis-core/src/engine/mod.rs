@@ -10,6 +10,7 @@ pub mod ratelimit;
 pub mod traversal;
 pub mod watch;
 
+use chrono::Utc;
 use crate::engine::cache::DecisionCache;
 use crate::engine::ratelimit::{RateLimitOp, TokenBucketRateLimiter};
 use crate::engine::watch::{SharedWatchers, WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
@@ -17,7 +18,7 @@ use crate::error::{AegisError, AegisResult};
 use crate::storage::StorageBackend;
 use crate::types::{
     CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, FailClosedMode, HealthReport,
-    Relation, ResourceId, Revision, RevisionToken, Schema, SubjectId,
+    Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, Schema, SubjectId,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
@@ -518,10 +519,16 @@ impl GraphEngine {
     }
 
     /// Delete subject with an ownership policy (GDPR compliance).
+    ///
+    /// Policies:
+    /// - `"cascade"` — remove all tuples for the subject.
+    /// - `"fail"` — error if the subject has tuples.
+    /// - `"transfer"` — reassign all tuples to `transfer_to_subject`.
     pub fn delete_subject_with_policy(
         &self,
         subject: &SubjectId,
         policy: &str,
+        transfer_to_subject: Option<&SubjectId>,
     ) -> AegisResult<RevisionToken> {
         match policy {
             "cascade" => {
@@ -539,8 +546,36 @@ impl GraphEngine {
                     ))
                 }
             }
+            "transfer" => {
+                let target = transfer_to_subject.ok_or_else(|| {
+                    AegisError::SchemaValidation(
+                        "transfer policy requires a transfer_to_subject".into(),
+                    )
+                })?;
+                let tuples = self.storage.list_by_subject(subject, None)?;
+                if tuples.is_empty() {
+                    return Ok(RevisionToken::new(
+                        self.storage.current_revision()?,
+                        self.node_id,
+                    ));
+                }
+                let mut txn = self.storage.begin_transaction()?;
+                for tuple in &tuples {
+                    let new_tuple = RelationshipTuple {
+                        subject: target.clone(),
+                        relation: tuple.relation.clone(),
+                        object: tuple.object.clone(),
+                        created_at: Utc::now(),
+                        metadata: tuple.metadata.clone(),
+                    };
+                    txn.write(&new_tuple)?;
+                    txn.delete(&tuple.key())?;
+                }
+                let revision = txn.commit()?;
+                Ok(RevisionToken::new(revision, self.node_id))
+            }
             _ => Err(AegisError::SchemaValidation(format!(
-                "unknown ownership policy: '{policy}'; expected 'cascade' or 'fail'"
+                "unknown ownership policy: '{policy}'; expected 'cascade', 'transfer', or 'fail'"
             ))),
         }
     }

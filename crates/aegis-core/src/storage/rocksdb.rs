@@ -3,8 +3,8 @@ use crate::storage::traits::{
     BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
 };
 use crate::types::{
-    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationParams, Relation, RelationshipTuple,
-    ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
+    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, Relation,
+    RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
 };
 use chrono::{DateTime, Utc};
 use rocksdb::{
@@ -86,6 +86,26 @@ impl RocksDbStorage {
             db,
             node_id: Uuid::new_v4(),
         })
+    }
+
+    fn read_schema_version(&self) -> AegisResult<u32> {
+        let cf = self.db.cf_handle(CF_META)
+            .ok_or_else(|| AegisError::StorageConnection("missing meta cf".into()))?;
+        match self.db.get_cf(&cf, META_SCHEMA_VERSION.as_bytes()) {
+            Ok(Some(val)) if val.len() >= 4 => {
+                let bytes: [u8; 4] = val[..4].try_into().unwrap_or([0; 4]);
+                Ok(u32::from_le_bytes(bytes))
+            }
+            Ok(_) => Ok(0),
+            Err(e) => Err(AegisError::StorageQuery(e.to_string())),
+        }
+    }
+
+    fn write_schema_version(&self, version: u32) -> AegisResult<()> {
+        let cf = self.db.cf_handle(CF_META)
+            .ok_or_else(|| AegisError::StorageConnection("missing meta cf".into()))?;
+        self.db.put_cf(&cf, META_SCHEMA_VERSION.as_bytes(), &version.to_le_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))
     }
 
     fn read_revision(&self) -> AegisResult<Revision> {
@@ -494,11 +514,100 @@ impl StorageBackend for RocksDbStorage {
 
     fn query_tuples(
         &self,
-        _filter: &TupleFilter,
-        _pagination: &PaginationParams,
+        filter: &TupleFilter,
+        pagination: &PaginationParams,
         _consistency: &ConsistencyMode,
     ) -> AegisResult<PaginatedTuples> {
-        Err(AegisError::NotImplemented("RocksDB query tuples".into()))
+        let revision = self.read_revision()?;
+        let cf_tuples = self.db.cf_handle(CF_TUPLES)
+            .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
+        let cf_idx = self.db.cf_handle(CF_IDX_OBJECT)
+            .ok_or_else(|| AegisError::StorageConnection("missing idx_object cf".into()))?;
+
+        let offset = pagination.cursor.as_ref().map(|c| c.offset).unwrap_or(0);
+        let limit = pagination.limit as usize;
+
+        let mut all_tuples = Vec::new();
+
+        if filter.object_type.is_some() || filter.relation.is_some() {
+            // Use the object index for efficient filtering
+            let iter = self.db.iterator_cf(&cf_idx, IteratorMode::Start);
+            for item in iter {
+                let (key, _) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                let key_str = std::str::from_utf8(&key)
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                let parts: Vec<&str> = key_str.split('\x00').collect();
+                if parts.len() < 3 { continue; }
+                let obj = parts[0];
+                let rel = parts[1];
+                let subj = parts[2];
+
+                if let Some(ref ot) = filter.object_type {
+                    if !obj.starts_with(&format!("{ot}:")) { continue; }
+                }
+                if let Some(ref r) = filter.relation {
+                    if rel != r.as_str() { continue; }
+                }
+                if let Some(ref st) = filter.subject_type {
+                    if !subj.starts_with(&format!("{st}:")) { continue; }
+                }
+
+                let pk = tuple_key(subj, rel, obj);
+                if let Ok(Some(value)) = self.db.get_cf(&cf_tuples, &pk) {
+                    if let Ok(tuple) = tuple_from_value(&value) {
+                        if let Some(ref mk) = filter.metadata_key {
+                            let has_key = tuple.metadata.as_ref()
+                                .map(|m| m.contains_key(mk))
+                                .unwrap_or(false);
+                            if !has_key { continue; }
+                        }
+                        all_tuples.push(tuple);
+                    }
+                }
+            }
+        } else if let Some(ref st) = filter.subject_type {
+            // Prefix scan by subject type
+            let prefix = format!("{st}:");
+            let iter = self.db.iterator_cf(&cf_tuples, IteratorMode::From(
+                prefix.as_bytes(), Direction::Forward,
+            ));
+            for item in iter {
+                let (key, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                let key_str = std::str::from_utf8(&key)
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                if !key_str.starts_with(&prefix) { break; }
+                if let Ok(tuple) = tuple_from_value(&value) {
+                    all_tuples.push(tuple);
+                }
+            }
+        } else {
+            // Full scan
+            let iter = self.db.iterator_cf(&cf_tuples, IteratorMode::Start);
+            for item in iter {
+                let (_, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                if let Ok(tuple) = tuple_from_value(&value) {
+                    all_tuples.push(tuple);
+                }
+            }
+        }
+
+        let total = all_tuples.len();
+        let tuples: Vec<RelationshipTuple> = all_tuples
+            .into_iter()
+            .skip(offset as usize)
+            .take(limit)
+            .collect();
+
+        let next_cursor = if (offset as usize + tuples.len()) < total {
+            Some(PaginationCursor {
+                offset: offset + limit,
+                revision,
+            })
+        } else {
+            None
+        };
+
+        Ok(PaginatedTuples { tuples, next_cursor, revision })
     }
 
     fn current_revision(&self) -> AegisResult<Revision> {
@@ -511,17 +620,92 @@ impl StorageBackend for RocksDbStorage {
     }
 
     fn begin_transaction(&self) -> AegisResult<Box<dyn StorageTransaction>> {
-        Err(AegisError::NotImplemented("RocksDB transactions".into()))
+        let cf_tuples = self.db.cf_handle(CF_TUPLES)
+            .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
+        let cf_idx = self.db.cf_handle(CF_IDX_OBJECT)
+            .ok_or_else(|| AegisError::StorageConnection("missing idx_object cf".into()))?;
+        let cf_events = self.db.cf_handle(CF_EVENTS)
+            .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
+        let cf_meta = self.db.cf_handle(CF_META)
+            .ok_or_else(|| AegisError::StorageConnection("missing meta cf".into()))?;
+
+        Ok(Box::new(RocksDbTransaction {
+            db: self.db.clone(),
+            batch: rocksdb::WriteBatch::default(),
+            cf_tuples,
+            cf_idx,
+            cf_events,
+            cf_meta,
+            node_id: self.node_id,
+        }))
     }
 
     fn query_audit(
         &self,
-        _object: &ResourceId,
-        _from_revision: Option<Revision>,
-        _to_revision: Option<Revision>,
-        _pagination: &PaginationParams,
+        object: &ResourceId,
+        from_revision: Option<Revision>,
+        to_revision: Option<Revision>,
+        pagination: &PaginationParams,
     ) -> AegisResult<Vec<AuditEntry>> {
-        Err(AegisError::NotImplemented("RocksDB audit query".into()))
+        let cf_events = self.db.cf_handle(CF_EVENTS)
+            .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
+        let obj_str = object.as_str();
+
+        let offset = pagination.cursor.as_ref().map(|c| c.offset).unwrap_or(0);
+        let limit = pagination.limit as usize;
+
+        let from = from_revision.map(|r| r.as_u64()).unwrap_or(0);
+        let to = to_revision.map(|r| r.as_u64()).unwrap_or(u64::MAX);
+
+        let iter = self.db.iterator_cf(&cf_events, IteratorMode::Start);
+        let mut results: Vec<AuditEntry> = Vec::new();
+
+        for item in iter {
+            let (_, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&value) {
+                let rev = event["revision"].as_u64().unwrap_or(0);
+                if rev < from { continue; }
+                if rev > to { break; }
+
+                let event_obj = event["object"].as_str().unwrap_or("");
+                if event_obj != obj_str { continue; }
+
+                let action = if event["action"] == "add" {
+                    TupleMutation::Add
+                } else {
+                    TupleMutation::Remove
+                };
+
+                let ts_str = event["timestamp"].as_str().unwrap_or("");
+                let timestamp: DateTime<Utc> = ts_str.parse().unwrap_or_else(|_| Utc::now());
+                let metadata: Option<HashMap<String, String>> = event.get("metadata")
+                    .and_then(|m| serde_json::from_value(m.clone()).ok());
+
+                results.push(AuditEntry {
+                    revision: Revision::new(rev),
+                    action,
+                    subject: event["subject"].as_str().unwrap_or("").to_string(),
+                    relation: event["relation"].as_str().unwrap_or("").to_string(),
+                    object: event_obj.to_string(),
+                    timestamp,
+                    metadata,
+                });
+            }
+        }
+
+        results.sort_by_key(|e| e.revision);
+
+        let total = results.len();
+        let page: Vec<AuditEntry> = results.into_iter()
+            .skip(offset as usize)
+            .take(limit)
+            .collect();
+
+        if page.len() < limit && (offset as usize + page.len()) < total {
+            // More results exist beyond pagination
+        }
+
+        Ok(page)
     }
 
     fn integrity_check(&self) -> AegisResult<IntegrityReport> {
@@ -556,6 +740,155 @@ impl StorageBackend for RocksDbStorage {
 
     fn close(&self) -> AegisResult<()> {
         // RocksDB flushes on drop
+        Ok(())
+    }
+}
+
+/// A RocksDB transaction using WriteBatch for atomicity.
+pub struct RocksDbTransaction {
+    db: DB,
+    batch: rocksdb::WriteBatch,
+    cf_tuples: rocksdb::ColumnFamily,
+    cf_idx: rocksdb::ColumnFamily,
+    cf_events: rocksdb::ColumnFamily,
+    cf_meta: rocksdb::ColumnFamily,
+    node_id: Uuid,
+}
+
+impl RocksDbTransaction {
+    fn append_event_to_batch(
+        &self,
+        revision: Revision,
+        action: &str,
+        subject: &str,
+        relation: &str,
+        object: &str,
+        metadata: Option<&str>,
+    ) -> AegisResult<()> {
+        let event = serde_json::json!({
+            "revision": revision.as_u64(),
+            "action": action,
+            "subject": subject,
+            "relation": relation,
+            "object": object,
+            "metadata": metadata,
+            "timestamp": Utc::now().to_rfc3339(),
+        });
+        let event_id = Uuid::new_v4();
+        let key = event_key(revision, event_id);
+        let val = serde_json::to_string(&event)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        self.batch.put_cf(&self.cf_events, key, val.as_bytes());
+        Ok(())
+    }
+
+    fn put_tuple_to_batch(
+        &self,
+        subject: &str,
+        relation: &str,
+        object: &str,
+        value: &[u8],
+    ) -> AegisResult<()> {
+        let pk = tuple_key(subject, relation, object);
+        let idx_key = object_idx_key(object, relation, subject);
+        self.batch.put_cf(&self.cf_tuples, &pk, value);
+        self.batch.put_cf(&self.cf_idx, &idx_key, &[]);
+        Ok(())
+    }
+
+    fn delete_tuple_from_batch(&self, subject: &str, relation: &str, object: &str) -> AegisResult<()> {
+        let pk = tuple_key(subject, relation, object);
+        let idx_key = object_idx_key(object, relation, subject);
+        self.batch.delete_cf(&self.cf_tuples, &pk);
+        self.batch.delete_cf(&self.cf_idx, &idx_key);
+        Ok(())
+    }
+}
+
+impl StorageTransaction for RocksDbTransaction {
+    fn write(&mut self, tuple: &RelationshipTuple) -> AegisResult<()> {
+        let rev = self.db.get_cf(&self.cf_meta, META_REVISION.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+            .map(|v| u64::from_le_bytes(v.as_slice().try_into().unwrap_or([0; 8])))
+            .unwrap_or(0);
+        let new_rev = rev + 1;
+
+        let val = serde_json::to_string(tuple)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        // Remove existing if present
+        let pk = tuple_key(tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
+        let idx_key = object_idx_key(tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
+        self.batch.delete_cf(&self.cf_tuples, &pk);
+        self.batch.delete_cf(&self.cf_idx, &idx_key);
+        // Insert new
+        self.batch.put_cf(&self.cf_tuples, &pk, val.as_bytes());
+        self.batch.put_cf(&self.cf_idx, &idx_key, &[]);
+
+        let metadata_json = tuple.metadata.as_ref()
+            .map(|m| serde_json::to_string(m).unwrap_or_default());
+        self.append_event_to_batch(
+            Revision::new(new_rev), "add",
+            tuple.subject.as_str(), tuple.relation.as_str(),
+            tuple.object.as_str(), metadata_json.as_deref(),
+        )?;
+
+        Ok(())
+    }
+
+    fn delete(&mut self, key: &TupleKey) -> AegisResult<()> {
+        let rev = self.db.get_cf(&self.cf_meta, META_REVISION.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+            .map(|v| u64::from_le_bytes(v.as_slice().try_into().unwrap_or([0; 8])))
+            .unwrap_or(0);
+        let new_rev = rev + 1;
+
+        self.delete_tuple_from_batch(key.subject.as_str(), key.relation.as_str(), key.object.as_str())?;
+        self.append_event_to_batch(
+            Revision::new(new_rev), "remove",
+            key.subject.as_str(), key.relation.as_str(), key.object.as_str(), None,
+        )?;
+
+        Ok(())
+    }
+
+    fn savepoint(&self, _name: &str) -> AegisResult<()> {
+        // RocksDB WriteBatch does not support named savepoints natively in the Rust crate.
+        // For transactional semantics, use the SQLite backend.
+        Ok(())
+    }
+
+    fn rollback_to_savepoint(&self, _name: &str) -> AegisResult<()> {
+        // Not supported with WriteBatch
+        Ok(())
+    }
+
+    fn release_savepoint(&self, _name: &str) -> AegisResult<()> {
+        // Not supported with WriteBatch
+        Ok(())
+    }
+
+    fn commit(self: Box<Self>) -> AegisResult<Revision> {
+        let s = *self;
+        // Bump revision
+        let rev = s.db.get_cf(&s.cf_meta, META_REVISION.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+            .map(|v| u64::from_le_bytes(v.as_slice().try_into().unwrap_or([0; 8])))
+            .unwrap_or(0);
+        let new_rev = rev + 1;
+
+        // Update revision in batch before writing
+        s.batch.put_cf(&s.cf_meta, META_REVISION.as_bytes(), &new_rev.to_le_bytes());
+
+        // Write the batch atomically
+        s.db.write(s.batch)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        Ok(Revision::new(new_rev))
+    }
+
+    fn rollback(self: Box<Self>) -> AegisResult<()> {
+        // Just drop the batch — nothing is persisted
         Ok(())
     }
 }

@@ -20,13 +20,12 @@
 13. [Deployment Modes](#13-deployment-modes)
 14. [Security Model](#14-security-model)
 15. [Scalability Strategy](#15-scalability-strategy)
-16. [AI Agent Authorization](#16-ai-agent-authorization)
-17. [Multi-Tenancy](#17-multi-tenancy)
-18. [Observability & Tracing](#18-observability--tracing)
-19. [Developer Experience](#19-developer-experience)
-20. [Development Roadmap](#20-development-roadmap)
-21. [Real-World Use Cases](#21-real-world-use-cases)
-22. [Integration & E2E Test Plan](#22-integration--e2e-test-plan)
+16. [Multi-Tenancy](#16-multi-tenancy)
+17. [Observability & Tracing](#17-observability--tracing)
+18. [Developer Experience](#18-developer-experience)
+19. [Development Roadmap](#19-development-roadmap)
+20. [Real-World Use Cases](#20-real-world-use-cases)
+21. [Integration & E2E Test Plan](#21-integration--e2e-test-plan)
 
 ---
 
@@ -41,7 +40,7 @@ Most authorization systems force developers to maintain a separate auth service,
 Aegis is appropriate for:
 
 - SaaS platforms with workspaces, teams, and role hierarchies
-- AI systems requiring scoped agent permissions and memory isolation
+
 - Collaborative editors with per-document sharing models
 - Developer platforms managing API keys, environments, and service access
 - Multi-tenant systems requiring strict graph-level tenant isolation
@@ -107,7 +106,7 @@ Aegis runs inside the application process itself. Permission checks are local fu
 - Policy definitions and inheritance rules
 - Authorization traces and access explanations
 - Multi-tenant permission graphs
-- AI agent capability scoping
+
 
 ### What Aegis Does NOT Manage
 
@@ -290,7 +289,6 @@ An identity is any principal that can hold a relationship. Identities are typed 
 ```
 user:123
 team:engineering
-agent:planner
 service:billing
 apikey:abc123
 bot:deploy-agent
@@ -318,7 +316,6 @@ subject   relation   object
 ─────────────────────────────
 user:123  editor     repo:fluxbus
 team:eng  owner      workspace:core
-agent:p   invoke     tool:filesystem
 ```
 
 The full tuple structure in storage:
@@ -403,9 +400,7 @@ Three core indexes maintained for fast lookup:
 | **Contextual Roles** | Supported | Role is scoped to a resource, not global |
 | **Multi-Tenant Authorization** | Supported | Via tenant-scoped graph namespacing |
 | **Recursive Relationships** | Supported | Deep graph traversal with cycle detection |
-| **AI Agent Permissions** | Supported | Scoped tool access, ephemeral grants |
 | **ABAC** (Attribute-Based) | Planned (V3) | Policy conditions on relationship metadata |
-| **Capability-Based Access** | Planned (V4) | Token-bound, ephemeral capability delegation |
 
 ### RBAC via ReBAC Pattern
 
@@ -785,7 +780,7 @@ The most powerful durability primitive in Aegis. Instead of storing only current
 [rev:1]  ADD    user:123  editor  repo:fluxbus
 [rev:2]  ADD    team:eng  owner   workspace:core
 [rev:3]  REMOVE user:456  viewer  repo:core
-[rev:4]  ADD    agent:p   invoke  tool:filesystem
+
 ```
 
 Benefits of event log architecture:
@@ -1305,65 +1300,7 @@ All nodes converge to the same state given the same operations.
 
 ---
 
-## 16. AI Agent Authorization
-
-Aegis provides first-class support for AI-native permission models — a capability not present in traditional authorization systems.
-
-### Identity Types for AI
-
-```
-agent:planner
-agent:assistant
-agent:coder
-service:memory-store
-```
-
-### Relationship Examples
-
-```
-agent:planner    invoke  tool:filesystem
-agent:assistant  read    memory:workspace-alpha
-agent:coder      write   repo:fluxbus
-agent:planner    read    memory:user-123
-```
-
-### Scoped Tool Access
-
-Agents only access the tools explicitly granted to them via relationships. No implicit inheritance from human user permissions.
-
-### Ephemeral Permissions (V4)
-
-Temporary permission grants with TTL:
-
-```typescript
-await auth.grantEphemeral({
-  subject:    "agent:planner",
-  relation:   "invoke",
-  object:     "tool:external-api",
-  expiresIn:  "15m"
-})
-```
-
-Automatically revoked after expiry without manual cleanup. Ephemeral grants produce a dedicated event log entry and are visible in the audit trail.
-
-### Capability Graphs (V4)
-
-Capability delegation chains for multi-agent systems:
-
-```
-user:123 delegates read:memory to agent:orchestrator
-agent:orchestrator sub-delegates read:memory to agent:sub-planner
-```
-
-Delegation depth is policy-controlled to prevent privilege escalation.
-
-### Memory Isolation
-
-Each agent's accessible memory is defined by relationships, not runtime state. Switching context (user session, workspace) does not implicitly grant new memory access.
-
----
-
-## 17. Multi-Tenancy
+## 16. Multi-Tenancy
 
 ### Graph Scoping
 
@@ -1404,7 +1341,7 @@ Tenant admins have no power over other tenants. Super-admins are a separate iden
 
 ---
 
-## 18. Observability & Tracing
+## 17. Observability & Tracing
 
 ### Permission Tracing
 
@@ -1542,7 +1479,7 @@ const auth = new Aegis({
 
 ---
 
-## 19. Developer Experience
+## 18. Developer Experience
 
 ### REPL (Interactive Shell)
 
@@ -1654,7 +1591,7 @@ const auth = new Aegis({
       // Clean up related external state
     },
     onCheck: ({ subject, relation, object, allowed }) => {
-      // Analytics, audit, anomaly detection
+      // Analytics, audit
     }
   }
 })
@@ -1662,7 +1599,7 @@ const auth = new Aegis({
 
 ---
 
-## 20. Development Roadmap
+## 19. Development Roadmap
 
 ### V1 — Foundation
 
@@ -1715,19 +1652,9 @@ const auth = new Aegis({
 - RocksDB backend
 - Rate limiting & abuse prevention
 
-### V4 — AI-Native
-
-- AI-native authorization primitives
-- Ephemeral permission grants (TTL-based)
-- Capability delegation chains
-- Multi-agent trust graphs
-- Memory-aware permission scoping
-- Agent audit trails
-- Capability-based access tokens
-
 ---
 
-## 21. Real-World Use Cases
+## 20. Real-World Use Cases
 
 ### SaaS Platform
 
@@ -1765,23 +1692,9 @@ apikey:abc   read     environment:production
 → API key read-only access scoped to production
 ```
 
-### AI Agent System
-
-```
-agent:planner    invoke   tool:browser
-agent:planner    read     memory:workspace-123
-agent:researcher invoke   tool:search
-agent:researcher read     memory:workspace-123
-agent:coder      write    repo:feature-branch
-
-→ each agent only has access to its scoped tools and memory
-→ no implicit cross-agent permission inheritance
-→ all access is auditable and explainable
-```
-
 ---
 
-## 22. Integration & E2E Test Plan
+## 21. Integration & E2E Test Plan
 
 ### Integration Tests
 
@@ -1843,8 +1756,6 @@ End-to-end tests validate the full system across SDK boundaries, language runtim
 | E2E-019 | Watch subscription | Subscribe to changes on an object, write a tuple, verify event received | Event received with correct subject/relation/object |
 | E2E-020 | Audit log queries | Perform writes/deletes, query audit log by time range | All relevant entries returned with correct timestamps |
 | E2E-021 | GDPR user deletion with transfer | Delete user with `ownershipPolicy: "transfer"` | Ownership transferred, user's other relations removed |
-| E2E-022 | Ephemeral grant expiry (V4) | Grant ephemeral permission, wait for TTL, check | Check returns denied after expiry |
-| E2E-023 | Capability delegation chain (V4) | User delegates to agent, agent sub-delegates | Sub-agent has access (within depth limit) |
 | E2E-024 | CRDT sync (V3+) | Two nodes with CRDT sync, write on node A, read on node B | Node B converges to same state |
 | E2E-025 | Edge replica read-only | Write to central, read from edge replica | Edge replica returns same result as central for reads |
 
@@ -1922,7 +1833,7 @@ All Aegis errors extend a base `AegisError` type:
 - [ ] OpenTelemetry metrics and tracing integrated
 - [ ] Audit log retention policy defined and documented
 - [ ] Schema reviewed for least-privilege principles
-- [ ] Ephemeral agent grants use TTL where appropriate
+
 - [ ] All input validated (subject/relation/object format)
 - [ ] WAL mode enabled for SQLite (local filesystem only)
 - [ ] Write rate limits configured for production

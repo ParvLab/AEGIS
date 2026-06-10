@@ -856,9 +856,14 @@ impl StorageBackend for SqliteStorage {
         &self,
         filter: &TupleFilter,
         pagination: &PaginationParams,
-        _consistency: &ConsistencyMode,
+        consistency: &ConsistencyMode,
     ) -> AegisResult<PaginatedTuples> {
         let conn = self.conn()?;
+
+        if *consistency == ConsistencyMode::FullyConsistent && self.config.wal_mode {
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        }
         let revision = Self::read_revision(&conn)?;
 
         let mut conditions = vec!["revision_removed IS NULL".to_string()];
@@ -960,6 +965,30 @@ impl StorageBackend for SqliteStorage {
     fn current_revision(&self) -> AegisResult<Revision> {
         let conn = self.conn()?;
         Self::read_revision(&conn)
+    }
+
+    fn read_schema_version(&self) -> AegisResult<u32> {
+        let conn = self.conn()?;
+        let result: Result<u32, _> = conn.query_row(
+            "SELECT version FROM _aegis_schema ORDER BY version DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        );
+        match result {
+            Ok(v) => Ok(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(0),
+            Err(e) => Err(AegisError::StorageQuery(e.to_string())),
+        }
+    }
+
+    fn write_schema_version(&self, version: u32) -> AegisResult<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT INTO _aegis_schema (version, applied_at, checksum) VALUES (?1, ?2, ?3)",
+            params![version as i64, Utc::now().to_rfc3339(), ""],
+        )
+        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
     }
 
     fn current_token(&self) -> AegisResult<RevisionToken> {
@@ -1078,6 +1107,37 @@ impl StorageBackend for SqliteStorage {
             details,
             backend_type: BackendType::Sqlite,
         })
+    }
+
+    fn delete_events_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+        let conn = self.conn()?;
+        let cutoff_str = cutoff.to_rfc3339();
+        let count = conn
+            .execute(
+                "DELETE FROM _aegis_events WHERE timestamp < ?1",
+                params![cutoff_str],
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(count)
+    }
+
+    fn delete_soft_deleted_tuples_before(
+        &self,
+        cutoff: DateTime<Utc>,
+    ) -> AegisResult<usize> {
+        let conn = self.conn()?;
+        let cutoff_str = cutoff.to_rfc3339();
+        let count = conn
+            .execute(
+                "DELETE FROM _aegis_tuples
+                 WHERE revision_removed IS NOT NULL
+                   AND revision_removed <= (
+                     SELECT COALESCE(MAX(revision), 0) FROM _aegis_events WHERE timestamp < ?1
+                   )",
+                params![cutoff_str],
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(count)
     }
 
     fn close(&self) -> AegisResult<()> {

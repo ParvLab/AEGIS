@@ -3,7 +3,7 @@
 > Complete end-to-end build plan for the embedded ReBAC authorization runtime.
 >
 > **Total estimate:** ~40 weeks with 2-3 engineers
-> **Phases:** 0 (Foundation) → 1 (Engine) → 2 (SDK) → 3 (Distributed) → 4 (AI-Native)
+> **Phases:** 0 (Foundation) → 1 (Engine) → 2 (SDK) → 3 (Distributed)
 
 ---
 
@@ -15,10 +15,9 @@
 4. [Phase 1 — Engine Core](#4-phase-1--engine-core)
 5. [Phase 2 — SDK & Integration](#5-phase-2--sdk--integration)
 6. [Phase 3 — Distributed & Scale](#6-phase-3--distributed--scale)
-7. [Phase 4 — AI-Native & Advanced](#7-phase-4--ai-native--advanced)
-8. [Key Architectural Decisions](#8-key-architectural-decisions)
-9. [Risk Assessment](#9-risk-assessment)
-10. [Integration & E2E Test Index](#10-integration--e2e-test-index)
+7. [Key Architectural Decisions](#7-key-architectural-decisions)
+8. [Risk Assessment](#8-risk-assessment)
+9. [Integration & E2E Test Index](#9-integration--e2e-test-index)
 
 ---
 
@@ -132,7 +131,6 @@ Phase 1 complete
   └── 3.3 (Watch Streams)
 
 Phase 3 complete
-  └── Phase 4 (AI-Native + Advanced)
 ```
 
 ---
@@ -432,72 +430,7 @@ Phase 3 complete
 
 ---
 
-## 7. Phase 4 — AI-Native & Advanced (Weeks 33-40)
-
-**Goal:** Ephemeral grants, capability delegation, ABAC, IndexedDB.
-
-### Sprint 4.1 — Ephemeral Permissions (Weeks 33-34)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.1.1 | TTL grant API | `grantEphemeral(subject, relation, object, expiresIn)` with `expires_in` column | 1.1.1 |
-| 4.1.2 | Expiry background worker | Tokio task polling for expired grants → auto-revoke | 4.1.1 |
-| 4.1.3 | Ephemeral tuple storage | Distinguished from regular tuples via `tuple_type` column (`"ephemeral"` vs `"permanent"`) | 4.1.1 |
-| 4.1.4 | Ephemeral audit | Log grant + auto-revoke events with TTL information | 3.1.2 |
-
-**Tests:** E2E-022
-
-### Sprint 4.2 — Capability Delegation (Weeks 34-35)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.2.1 | Delegation tuple type | `TupleKey + depth: u32 + max_depth: u32`; special `delegate` relation | Phase 0 (types) |
-| 4.2.2 | Delegation traversal | Follow `delegate` relations up to `max_depth`; accumulate capabilities | 1.2.1 |
-| 4.2.3 | Depth control | Policy-enforced `maxDelegationDepth`; deny if exceeded | 4.2.2 |
-| 4.2.4 | Revocation cascade | Revoke parent delegation → all sub-delegations auto-invalidated | 1.7.3 |
-
-**Tests:** E2E-023
-
-### Sprint 4.3 — ABAC Conditions (Weeks 35-36)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.3.1 | Condition parser | Simple expression language: `department == context.department`, `metadata.role in ["admin", "manager"]` | Phase 0 (schema) |
-| 4.3.2 | Condition evaluator | Evaluate parsed AST against request context + tuple metadata | 4.3.1 |
-| 4.3.3 | Schema extension | `permissions: read: [viewer where department == context.department]` in YAML | 4.3.1 |
-| 4.3.4 | Context passing | `check({..., context: { department: "eng" }})` → evaluate conditions | 4.3.2, 1.2.5 |
-
-### Sprint 4.4 — IndexedDB Backend (Weeks 36-37)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.4.1 | IndexedDB adapter | WASM-compatible `StorageBackend` via `web-sys` | Phase 0 (trait) |
-| 4.4.2 | WASM build target | `wasm-pack`; `wasm32-unknown-unknown` target | 4.4.1 |
-| 4.4.3 | Browser SDK | `@aegis/browser` — Aegis in service workers and web workers | 4.4.2 |
-
-### Sprint 4.5 — Performance Optimization (Weeks 37-38)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.5.1 | Benchmark suite | `criterion` benchmarks for check/write/list/delete/explain | Phase 1 complete |
-| 4.5.2 | Profiling | `perf` / `flamegraph` to identify hot paths | 4.5.1 |
-| 4.5.3 | Batch index operations | Optimized index updates for `writeBatch` | 1.1.4 |
-| 4.5.4 | Memory optimization | Arena allocation for traversal state; reduce clone overhead | 1.2.1 |
-
-**Tests:** BENCH-001 through BENCH-011
-
-### Sprint 4.6 — Documentation & Finalization (Weeks 39-40)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.6.1 | API reference docs | Auto-generated docs for all SDKs (TypeDoc, godoc, rustdoc, pydoc) | All prior |
-| 4.6.2 | Migration guides | SpiceDB → Aegis, OpenFGA → Aegis, DIY → Aegis | All prior |
-| 4.6.3 | Production checklist | Finalize the security checklist from the spec appendix | All prior |
-| 4.6.4 | Performance tuning | Guide for configuring cache sizes, pool sizes, WAL settings | 4.5.1 |
-
----
-
-## 8. Key Architectural Decisions
+## 7. Key Architectural Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
@@ -516,7 +449,7 @@ Phase 3 complete
 
 ---
 
-## 9. Risk Assessment
+## 8. Risk Assessment
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
@@ -533,7 +466,7 @@ Phase 3 complete
 
 ---
 
-## 10. Integration & E2E Test Index
+## 9. Integration & E2E Test Index
 
 Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 
@@ -598,7 +531,7 @@ Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 | V1 | rev-based | v1 (tuples + meta + schema) | — |
 | V2 | rev-based | v2 (adds events + audit tables) | `migrate(v1 → v2)` |
 | V3 | rev-based + CRDT | v3 (adds CRDT tracking) | `migrate(v2 → v3)` |
-| V4 | rev-based + capabilities | v4 (adds ephemeral + delegation) | `migrate(v3 → v4)` |
+
 
 ---
 

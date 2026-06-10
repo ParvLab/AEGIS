@@ -8,7 +8,7 @@ use crate::error::AegisResult;
 use crate::types::{
     AuditEntry, RelationshipTuple, ResourceId, Revision, SubjectId,
 };
-use chrono::{Days, Utc};
+use chrono::{DateTime, Days, Utc};
 
 /// Retention policy configuration for GDPR compliance.
 #[derive(Debug, Clone)]
@@ -131,17 +131,17 @@ impl<'a> GdprManager<'a> {
         Ok(())
     }
 
-    fn delete_events_before(&self, _cutoff: chrono::DateTime<Utc>) -> AegisResult<usize> {
-        // Event retention is backend-specific. For SQLite, use compact_events directly.
-        Ok(0)
+    fn delete_events_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+        self.engine.storage().delete_events_before(cutoff)
     }
 
     fn delete_soft_deleted_tuples_before(
         &self,
-        _cutoff: chrono::DateTime<Utc>,
+        cutoff: DateTime<Utc>,
     ) -> AegisResult<usize> {
-        // TODO: Implement hard deletion of soft-deleted tuples across all backends
-        Ok(0)
+        self.engine
+            .storage()
+            .delete_soft_deleted_tuples_before(cutoff)
     }
 }
 

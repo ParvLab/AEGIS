@@ -1,3 +1,4 @@
+use chrono::{DateTime, Utc};
 use crate::error::AegisResult;
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationParams, Relation, RelationshipTuple,
@@ -70,6 +71,17 @@ pub trait StorageBackend: Send + Sync {
     /// Get the current revision number.
     fn current_revision(&self) -> AegisResult<Revision>;
 
+    /// Read the stored schema version from the backend.
+    /// Returns 0 if no schema version has been recorded.
+    fn read_schema_version(&self) -> AegisResult<u32> {
+        Ok(0)
+    }
+
+    /// Write the schema version to the backend for tracking.
+    fn write_schema_version(&self, _version: u32) -> AegisResult<()> {
+        Ok(())
+    }
+
     /// Return the current revision token (revision + node_id + timestamp).
     fn current_token(&self) -> AegisResult<RevisionToken>;
 
@@ -90,6 +102,19 @@ pub trait StorageBackend: Send + Sync {
 
     /// Run a storage-level integrity check.
     fn integrity_check(&self) -> AegisResult<IntegrityReport>;
+
+    /// Delete audit events older than the given cutoff timestamp.
+    /// Returns the number of deleted events.
+    fn delete_events_before(&self, _cutoff: DateTime<Utc>) -> AegisResult<usize> {
+        Ok(0)
+    }
+
+    /// Permanently remove soft-deleted tuples whose deletion revision
+    /// corresponds to a timestamp before the given cutoff.
+    /// Returns the number of deleted tuples.
+    fn delete_soft_deleted_tuples_before(&self, _cutoff: DateTime<Utc>) -> AegisResult<usize> {
+        Ok(0)
+    }
 
     /// Close the storage backend, flushing all pending operations.
     fn close(&self) -> AegisResult<()>;

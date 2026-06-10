@@ -197,11 +197,7 @@ pub fn check_compatibility(
 
 /// Read the current schema version from storage.
 pub fn read_schema_version(storage: &dyn StorageBackend) -> AegisResult<u32> {
-    let meta = storage.current_revision()?;
-    // In this implementation, version tracking is separate from revision
-    // For simplicity, we check if the storage is initialized
-    let _ = meta;
-    Ok(0) // Default to version 0 if not tracked
+    storage.read_schema_version()
 }
 
 #[cfg(test)]

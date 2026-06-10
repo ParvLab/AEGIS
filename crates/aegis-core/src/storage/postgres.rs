@@ -3,8 +3,8 @@ use crate::storage::traits::{
     BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
 };
 use crate::types::{
-    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationParams, Relation, RelationshipTuple,
-    ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
+    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, Relation,
+    RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
 };
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -28,7 +28,7 @@ impl PostgresStorage {
         let config = tokio_postgres::Config::from_str(connection_string)
             .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
 
-        let mgr = deadpool_postgres::Manager::new(config, deadpool_postgres::Runtime::Tokio1);
+        let mgr = deadpool_postgres::Manager::new(config, tokio_postgres::NoTls);
         let pool = deadpool_postgres::Pool::builder(mgr)
             .max_size(10)
             .build()
@@ -87,7 +87,7 @@ impl PostgresStorage {
         ];
         for stmt in &statements {
             client
-                .execute(stmt, &[])
+                .execute(*stmt, &[])
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         }
@@ -195,8 +195,47 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
-    fn write_tuples_batch(&self, _tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
-        Err(AegisError::NotImplemented("PostgreSQL batch writes".into()))
+    fn write_tuples_batch(&self, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
+        if tuples.is_empty() {
+            return self.current_revision();
+        }
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let revision = Self::bump_revision_async(&client).await?;
+
+            for tuple in tuples {
+                let meta_val = tuple
+                    .metadata
+                    .as_ref()
+                    .map(|m| serde_json::to_value(m).unwrap_or_default());
+
+                client
+                    .execute(
+                        "UPDATE _aegis_tuples SET revision_removed = $1
+                         WHERE subject = $2 AND relation = $3 AND object = $4 AND revision_removed IS NULL",
+                        &[&(revision.as_u64() as i64), &tuple.subject.as_str(), &tuple.relation.as_str(), &tuple.object.as_str()],
+                    )
+                    .await
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+                client
+                    .execute(
+                        "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, revision_added)
+                         VALUES ($1, $2, $3, $4, $5, $6)",
+                        &[&tuple.subject.as_str(), &tuple.relation.as_str(), &tuple.object.as_str(), &tuple.created_at, &meta_val, &(revision.as_u64() as i64)],
+                    )
+                    .await
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+                Self::append_event_async(
+                    &client, revision, "add", tuple.subject.as_str(), tuple.relation.as_str(),
+                    tuple.object.as_str(), meta_val.as_ref(),
+                )
+                .await?;
+            }
+
+            Ok(revision)
+        })
     }
 
     fn delete_tuple(&self, key: &TupleKey) -> AegisResult<Revision> {
@@ -235,12 +274,88 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
-    fn delete_subject(&self, _subject: &SubjectId) -> AegisResult<Revision> {
-        Err(AegisError::NotImplemented("PostgreSQL delete subject".into()))
+    fn delete_subject(&self, subject: &SubjectId) -> AegisResult<Revision> {
+        let subj = subject.as_str().to_string();
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+
+            let rows = client
+                .query(
+                    "SELECT relation, object FROM _aegis_tuples
+                     WHERE subject = $1 AND revision_removed IS NULL",
+                    &[&subj],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            if rows.is_empty() {
+                return Self::current_revision_async(&client).await;
+            }
+
+            let tuples: Vec<(String, String)> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
+
+            let revision = Self::bump_revision_async(&client).await?;
+
+            client
+                .execute(
+                    "UPDATE _aegis_tuples SET revision_removed = $1
+                     WHERE subject = $2 AND revision_removed IS NULL",
+                    &[&(revision.as_u64() as i64), &subj],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            for (relation, object) in &tuples {
+                Self::append_event_async(
+                    &client, revision, "remove", subject.as_str(), relation, object, None,
+                )
+                .await?;
+            }
+
+            Ok(revision)
+        })
     }
 
-    fn delete_object(&self, _object: &ResourceId) -> AegisResult<Revision> {
-        Err(AegisError::NotImplemented("PostgreSQL delete object".into()))
+    fn delete_object(&self, object: &ResourceId) -> AegisResult<Revision> {
+        let obj = object.as_str().to_string();
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+
+            let rows = client
+                .query(
+                    "SELECT subject, relation FROM _aegis_tuples
+                     WHERE object = $1 AND revision_removed IS NULL",
+                    &[&obj],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            if rows.is_empty() {
+                return Self::current_revision_async(&client).await;
+            }
+
+            let tuples: Vec<(String, String)> = rows.iter().map(|r| (r.get(0), r.get(1))).collect();
+
+            let revision = Self::bump_revision_async(&client).await?;
+
+            client
+                .execute(
+                    "UPDATE _aegis_tuples SET revision_removed = $1
+                     WHERE object = $2 AND revision_removed IS NULL",
+                    &[&(revision.as_u64() as i64), &obj],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            for (subject, relation) in &tuples {
+                Self::append_event_async(
+                    &client, revision, "remove", subject, relation, object.as_str(), None,
+                )
+                .await?;
+            }
+
+            Ok(revision)
+        })
     }
 
     fn has_tuple(&self, key: &TupleKey) -> AegisResult<bool> {
@@ -447,9 +562,100 @@ impl StorageBackend for PostgresStorage {
     }
 
     fn query_tuples(
-        &self, _filter: &TupleFilter, _pagination: &PaginationParams, _consistency: &ConsistencyMode,
+        &self, filter: &TupleFilter, pagination: &PaginationParams, _consistency: &ConsistencyMode,
     ) -> AegisResult<PaginatedTuples> {
-        Err(AegisError::NotImplemented("PostgreSQL query tuples".into()))
+        let subj_type = filter.subject_type.clone();
+        let rel = filter.relation.as_ref().map(|r| r.as_str().to_string());
+        let obj_type = filter.object_type.clone();
+        let meta_key = filter.metadata_key.clone();
+
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let revision = Self::current_revision_async(&client).await?;
+
+            let mut conditions = vec!["revision_removed IS NULL".to_string()];
+            let mut params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>> = Vec::new();
+            let mut idx = 1u32;
+
+            if let Some(st) = subj_type {
+                params.push(Box::new(format!("{st}:%")));
+                conditions.push(format!("subject LIKE ${idx}"));
+                idx += 1;
+            }
+            if let Some(r) = rel {
+                params.push(Box::new(r));
+                conditions.push(format!("relation = ${idx}"));
+                idx += 1;
+            }
+            if let Some(ot) = obj_type {
+                params.push(Box::new(format!("{ot}:%")));
+                conditions.push(format!("object LIKE ${idx}"));
+                idx += 1;
+            }
+            if let Some(mk) = meta_key {
+                params.push(Box::new(format!("%{mk}%")));
+                conditions.push(format!("metadata::text LIKE ${idx}"));
+                idx += 1;
+            }
+
+            let where_clause = conditions.join(" AND ");
+            let offset = pagination.cursor.as_ref().map(|c| c.offset).unwrap_or(0);
+            let limit = pagination.limit;
+
+            let sql = format!(
+                "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                 WHERE {where_clause}
+                 ORDER BY subject, relation, object
+                 LIMIT ${idx} OFFSET ${}",
+                idx + 1,
+            );
+            params.push(Box::new(limit as i64));
+            params.push(Box::new(offset as i64));
+
+            let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
+                params.iter().map(|p| p.as_ref()).collect();
+
+            let rows = client
+                .query(&sql, &param_refs)
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let mut tuples = Vec::with_capacity(rows.len());
+            for row in &rows {
+                let subject_str: String = row.get("subject");
+                let relation_str: String = row.get("relation");
+                let object_str: String = row.get("object");
+                let created: DateTime<Utc> = row.get("created_at");
+                let meta_val: Option<serde_json::Value> = row.get("metadata");
+                let metadata = meta_val.and_then(|v| serde_json::from_value::<HashMap<String, String>>(v).ok());
+
+                let subject = SubjectId::new(&subject_str)
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                let relation = Relation::new(&relation_str)
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                let object = ResourceId::new(&object_str)
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+                tuples.push(RelationshipTuple {
+                    subject,
+                    relation,
+                    object,
+                    created_at: created,
+                    metadata,
+                });
+            }
+
+            let next_cursor = if tuples.len() as u64 == limit {
+                Some(PaginationCursor {
+                    offset: offset + limit,
+                    revision,
+                })
+            } else {
+                None
+            };
+
+            Ok(PaginatedTuples { tuples, next_cursor, revision })
+        })
     }
 
     fn current_revision(&self) -> AegisResult<Revision> {
@@ -465,7 +671,16 @@ impl StorageBackend for PostgresStorage {
     }
 
     fn begin_transaction(&self) -> AegisResult<Box<dyn StorageTransaction>> {
-        Err(AegisError::NotImplemented("PostgreSQL transactions".into()))
+        let node_id = self.node_id;
+        let handle = self.runtime.handle().clone();
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            client
+                .execute("BEGIN", &[])
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(Box::new(PostgresTransaction::new(client, handle, node_id)) as Box<dyn StorageTransaction>)
+        })
     }
 
     fn query_audit(
@@ -542,6 +757,40 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
+    fn read_schema_version(&self) -> AegisResult<u32> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            match client
+                .query_opt("SELECT version FROM _aegis_schema ORDER BY version DESC LIMIT 1", &[])
+                .await
+            {
+                Ok(Some(row)) => {
+                    let v: i32 = row.get(0);
+                    Ok(v as u32)
+                }
+                Ok(None) => Ok(0),
+                Err(ref e) if e.code() == Some(&tokio_postgres::error::SqlState::UNDEFINED_TABLE) => {
+                    Ok(0)
+                }
+                Err(e) => Err(AegisError::StorageQuery(e.to_string())),
+            }
+        })
+    }
+
+    fn write_schema_version(&self, version: u32) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            client
+                .execute(
+                    "INSERT INTO _aegis_schema (version, applied_at, checksum) VALUES ($1, NOW(), '')",
+                    &[&(version as i32)],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
     fn integrity_check(&self) -> AegisResult<IntegrityReport> {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
@@ -562,5 +811,216 @@ impl StorageBackend for PostgresStorage {
 
     fn close(&self) -> AegisResult<()> {
         Ok(())
+    }
+}
+
+/// A PostgreSQL transaction wrapping a pooled connection.
+#[cfg(feature = "postgres")]
+pub struct PostgresTransaction {
+    conn: Option<deadpool_postgres::Object>,
+    runtime: tokio::runtime::Handle,
+    _node_id: Uuid,
+}
+
+#[cfg(feature = "postgres")]
+impl PostgresTransaction {
+    fn new(
+        conn: deadpool_postgres::Object,
+        runtime: tokio::runtime::Handle,
+        _node_id: Uuid,
+    ) -> Self {
+        Self {
+            conn: Some(conn),
+            runtime,
+            _node_id,
+        }
+    }
+
+    fn conn(&self) -> AegisResult<&deadpool_postgres::Object> {
+        self.conn
+            .as_ref()
+            .ok_or_else(|| AegisError::Internal("transaction already consumed".into()))
+    }
+
+    fn block_on<T>(&self, fut: impl std::future::Future<Output = AegisResult<T>>) -> AegisResult<T> {
+        self.runtime.block_on(fut)
+    }
+
+    async fn bump_revision_async(client: &tokio_postgres::Client) -> AegisResult<Revision> {
+        client
+            .execute(
+                "UPDATE _aegis_meta SET value = CAST(CAST(value AS BIGINT) + 1 AS TEXT) WHERE key = 'revision'",
+                &[],
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        let row = client
+            .query_one(
+                "SELECT COALESCE(CAST(value AS BIGINT), 0) FROM _aegis_meta WHERE key = 'revision'",
+                &[],
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        let rev: i64 = row.get(0);
+        Ok(Revision::new(rev as u64))
+    }
+
+    async fn append_event_async(
+        client: &tokio_postgres::Client,
+        revision: Revision,
+        action: &str,
+        subject: &str,
+        relation: &str,
+        object: &str,
+        metadata: Option<&serde_json::Value>,
+    ) -> AegisResult<()> {
+        client
+            .execute(
+                "INSERT INTO _aegis_events (revision, action, subject, relation, object, metadata)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+                &[&(revision.as_u64() as i64), &action, &subject, &relation, &object, &metadata],
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl StorageTransaction for PostgresTransaction {
+    fn write(&mut self, tuple: &RelationshipTuple) -> AegisResult<()> {
+        self.conn()?; // validate connection
+        let tuple_clone = tuple.clone();
+        self.block_on(async {
+            let conn = self.conn.as_ref().unwrap();
+            let revision = Self::bump_revision_async(conn).await?;
+            let meta_val = tuple_clone
+                .metadata
+                .as_ref()
+                .map(|m| serde_json::to_value(m).unwrap_or_default());
+
+            conn
+                .execute(
+                    "UPDATE _aegis_tuples SET revision_removed = $1
+                     WHERE subject = $2 AND relation = $3 AND object = $4 AND revision_removed IS NULL",
+                    &[&(revision.as_u64() as i64), &tuple_clone.subject.as_str(), &tuple_clone.relation.as_str(), &tuple_clone.object.as_str()],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            conn
+                .execute(
+                    "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, revision_added)
+                     VALUES ($1, $2, $3, $4, $5, $6)",
+                    &[&tuple_clone.subject.as_str(), &tuple_clone.relation.as_str(), &tuple_clone.object.as_str(), &tuple_clone.created_at, &meta_val, &(revision.as_u64() as i64)],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            Self::append_event_async(
+                conn, revision, "add", tuple_clone.subject.as_str(),
+                tuple_clone.relation.as_str(), tuple_clone.object.as_str(), meta_val.as_ref(),
+            )
+            .await?;
+
+            Ok(())
+        })
+    }
+
+    fn delete(&mut self, key: &TupleKey) -> AegisResult<()> {
+        let key_clone = key.clone();
+        self.block_on(async {
+            let conn = self.conn.as_ref().unwrap();
+            let revision = Self::bump_revision_async(conn).await?;
+
+            conn
+                .execute(
+                    "UPDATE _aegis_tuples SET revision_removed = $1
+                     WHERE subject = $2 AND relation = $3 AND object = $4 AND revision_removed IS NULL",
+                    &[&(revision.as_u64() as i64), &key_clone.subject.as_str(), &key_clone.relation.as_str(), &key_clone.object.as_str()],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            Self::append_event_async(
+                conn, revision, "remove", key_clone.subject.as_str(),
+                key_clone.relation.as_str(), key_clone.object.as_str(), None,
+            )
+            .await?;
+
+            Ok(())
+        })
+    }
+
+    fn savepoint(&self, name: &str) -> AegisResult<()> {
+        let name_owned = name.to_string();
+        self.block_on(async {
+            let conn = self.conn.as_ref().unwrap();
+            conn
+                .execute(&format!("SAVEPOINT \"{}\"", name_owned), &[])
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn rollback_to_savepoint(&self, name: &str) -> AegisResult<()> {
+        let name_owned = name.to_string();
+        self.block_on(async {
+            let conn = self.conn.as_ref().unwrap();
+            conn
+                .execute(&format!("ROLLBACK TO SAVEPOINT \"{}\"", name_owned), &[])
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn release_savepoint(&self, name: &str) -> AegisResult<()> {
+        let name_owned = name.to_string();
+        self.block_on(async {
+            let conn = self.conn.as_ref().unwrap();
+            conn
+                .execute(&format!("RELEASE SAVEPOINT \"{}\"", name_owned), &[])
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn commit(self: Box<Self>) -> AegisResult<Revision> {
+        let s = *self;
+        let conn = s.conn
+            .ok_or_else(|| AegisError::Internal("transaction already consumed".into()))?;
+        let handle = s.runtime;
+        handle.block_on(async {
+            conn
+                .execute("COMMIT", &[])
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            let row = conn
+                .query_one(
+                    "SELECT COALESCE(CAST(value AS BIGINT), 0) FROM _aegis_meta WHERE key = 'revision'",
+                    &[],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            let rev: i64 = row.get(0);
+            Ok(Revision::new(rev as u64))
+        })
+    }
+
+    fn rollback(self: Box<Self>) -> AegisResult<()> {
+        let s = *self;
+        let conn = s.conn
+            .ok_or_else(|| AegisError::Internal("transaction already consumed".into()))?;
+        let handle = s.runtime;
+        handle.block_on(async {
+            conn
+                .execute("ROLLBACK", &[])
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
     }
 }
