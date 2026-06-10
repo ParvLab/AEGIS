@@ -133,6 +133,44 @@ enum Commands {
         #[arg(long, default_value = "aegis.db")]
         db: String,
     },
+    /// Backup tuples and events to a file
+    BackupCreate {
+        path: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Restore tuples and events from a backup file
+    BackupRestore {
+        path: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Export tuples in JSON format (optionally filtered by subject)
+    Export {
+        #[arg(long)]
+        subject: Option<String>,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+        #[arg(long)]
+        schema: Option<String>,
+    },
+    /// Import tuples from a JSON file
+    Import {
+        path: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+        #[arg(long)]
+        schema: Option<String>,
+    },
+    /// Lint a schema file for compatibility issues
+    SchemaLint {
+        path: String,
+    },
+    /// Run event log recovery and compaction
+    Recover {
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
 }
 
 fn load_db(path: &str, schema_path: Option<&str>) -> Result<GraphEngine> {
@@ -372,7 +410,146 @@ fn main() -> Result<()> {
             )?;
             println!("{}", serde_json::to_string(&result)?);
         }
+        Commands::BackupCreate { path, db } => {
+            let engine = load_db(db, None)?;
+            let all_tuples = engine
+                .storage()
+                .query_tuples(
+                    &TupleFilter::default(),
+                    &PaginationParams {
+                        limit: u64::MAX,
+                        cursor: None,
+                    },
+                    &ConsistencyMode::MinimizeLatency,
+                )?
+                .tuples;
+            let backup = serde_json::json!({
+                "version": 1,
+                "tuples": all_tuples,
+            });
+            let json = serde_json::to_string_pretty(&backup)?;
+            std::fs::write(path, json)
+                .with_context(|| format!("failed to write backup to {path}"))?;
+            println!(r#"{{"status":"ok","tuples":{}}}"#, all_tuples.len());
+        }
+        Commands::BackupRestore { path, db } => {
+            let engine = load_db(db, None)?;
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("failed to read backup from {path}"))?;
+            let backup: serde_json::Value = serde_json::from_str(&content)?;
+            let tuples: Vec<TupleImport> = serde_json::from_value(
+                backup.get("tuples").cloned().unwrap_or(serde_json::Value::Null),
+            )
+            .context("invalid backup format: missing or invalid 'tuples' field")?;
+            let mut count = 0usize;
+            for t in &tuples {
+                let subject_id = SubjectId::new(&t.subject)
+                    .with_context(|| format!("invalid subject: {}", t.subject))?;
+                let relation_val = Relation::new(&t.relation)
+                    .with_context(|| format!("invalid relation: {}", t.relation))?;
+                let object_id = ResourceId::new(&t.object)
+                    .with_context(|| format!("invalid object: {}", t.object))?;
+                let tuple = RelationshipTuple::new(subject_id, relation_val, object_id);
+                engine.write(&tuple)?;
+                count += 1;
+            }
+            println!(r#"{{"status":"ok","restored":{count}}}"#);
+        }
+        Commands::Export {
+            subject,
+            db,
+            schema,
+        } => {
+            let engine = load_db(db, schema.as_deref())?;
+            let tuples = if let Some(s) = subject {
+                let subject_id = SubjectId::new(s.as_str())
+                    .with_context(|| format!("invalid subject: {s}"))?;
+                engine.export_subject(&subject_id)?
+            } else {
+                engine
+                    .storage()
+                    .query_tuples(
+                        &TupleFilter::default(),
+                        &PaginationParams {
+                            limit: u64::MAX,
+                            cursor: None,
+                        },
+                        &ConsistencyMode::MinimizeLatency,
+                    )?
+                    .tuples
+            };
+            println!("{}", serde_json::to_string_pretty(&tuples)?);
+        }
+        Commands::Import {
+            path,
+            db,
+            schema,
+        } => {
+            let engine = load_db(db, schema.as_deref())?;
+            let content = std::fs::read_to_string(path)
+                .with_context(|| format!("failed to read import file {path}"))?;
+            let tuples: Vec<TupleImport> = serde_json::from_str(&content)
+                .context("invalid import format: expected array of tuples")?;
+            let mut count = 0usize;
+            for t in &tuples {
+                let subject_id = SubjectId::new(&t.subject)
+                    .with_context(|| format!("invalid subject: {}", t.subject))?;
+                let relation_val = Relation::new(&t.relation)
+                    .with_context(|| format!("invalid relation: {}", t.relation))?;
+                let object_id = ResourceId::new(&t.object)
+                    .with_context(|| format!("invalid object: {}", t.object))?;
+                let tuple = RelationshipTuple::new(subject_id, relation_val, object_id);
+                engine.write(&tuple)?;
+                count += 1;
+            }
+            println!(r#"{{"status":"ok","imported":{count}}}"#);
+        }
+        Commands::SchemaLint { path } => {
+            let yaml = std::fs::read_to_string(path)
+                .with_context(|| format!("failed to read schema file {path}"))?;
+            match parse_schema(&yaml) {
+                Ok(schema) => {
+                    let report = aegis_core::schema::check_schema_compatibility(&schema, &schema);
+                    if report.breaking.is_empty() && report.warnings.is_empty() {
+                        println!(r#"{{"status":"ok","types":{},"version":{}}}"#,
+                            schema.types.len(), schema.schema_version);
+                    } else {
+                        let output = serde_json::json!({
+                            "status": report.breaking.is_empty().then(|| "warning").unwrap_or("error"),
+                            "breaking": report.breaking,
+                            "warnings": report.warnings,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output)?);
+                    }
+                }
+                Err(e) => {
+                    let output = serde_json::json!({
+                        "status": "error",
+                        "error": e.to_string(),
+                    });
+                    println!("{}", serde_json::to_string_pretty(&output)?);
+                }
+            }
+        }
+        Commands::Recover { db } => {
+            let engine = load_db(db, None)?;
+            let removed = engine.storage().compact_events()?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "events_compacted": removed,
+                })
+            );
+        }
     }
 
     Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct TupleImport {
+    subject: String,
+    relation: String,
+    object: String,
 }

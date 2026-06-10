@@ -12,14 +12,17 @@ pub mod watch;
 
 use chrono::Utc;
 use crate::engine::cache::DecisionCache;
+use crate::engine::migration::MigrationRunner;
 use crate::engine::ratelimit::{RateLimitOp, TokenBucketRateLimiter};
 use crate::engine::watch::{SharedWatchers, WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
 use crate::error::{AegisError, AegisResult};
-use crate::storage::StorageBackend;
+use crate::storage::{StorageBackend, StorageTransaction, TupleFilter};
 use crate::types::{
     CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, FailClosedMode, HealthReport,
-    Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, Schema, SubjectId,
+    MigrationResult, Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, Schema,
+    SubjectId, TupleKey, PaginatedTuples, PaginationParams,
 };
+use crate::types::schema::SchemaCompatibilityReport;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, RwLock};
 use tracing::{error, field, info, span, Level};
@@ -578,6 +581,88 @@ impl GraphEngine {
                 "unknown ownership policy: '{policy}'; expected 'cascade', 'transfer', or 'fail'"
             ))),
         }
+    }
+
+    /// Write multiple tuples atomically within a single transaction.
+    pub fn write_batch(
+        &self,
+        tuples: &[RelationshipTuple],
+    ) -> AegisResult<RevisionToken> {
+        let _span = span!(Level::INFO, "aegis.write_batch", count = tuples.len()).entered();
+        let rl_key = "write_batch";
+        self.rate_limiter.check(rl_key, RateLimitOp::Write)?;
+        let revision = self.storage.write_tuples_batch(tuples)?;
+        for tuple in tuples {
+            self.emit_watch_event(
+                WatchEventType::TupleAdded,
+                tuple.subject.as_str(),
+                tuple.relation.as_str(),
+                tuple.object.as_str(),
+                revision,
+            );
+        }
+        info!(revision = field::display(&revision), "batch written");
+        Ok(RevisionToken::new(revision, self.node_id))
+    }
+
+    /// Begin a storage transaction for atomic multi-operation writes.
+    pub fn transaction(&self) -> AegisResult<Box<dyn StorageTransaction>> {
+        self.storage.begin_transaction()
+    }
+
+    /// List all tuples for a given object, optionally filtered by relation.
+    pub fn list_by_object(
+        &self,
+        object: &ResourceId,
+        relation: Option<&Relation>,
+    ) -> AegisResult<Vec<RelationshipTuple>> {
+        self.storage.list_by_object(object, relation)
+    }
+
+    /// List all tuples for a given subject, optionally filtered by relation.
+    pub fn list_by_subject(
+        &self,
+        subject: &SubjectId,
+        relation: Option<&Relation>,
+    ) -> AegisResult<Vec<RelationshipTuple>> {
+        self.storage.list_by_subject(subject, relation)
+    }
+
+    /// Query tuples with filters and pagination.
+    pub fn query(
+        &self,
+        filter: &TupleFilter,
+        pagination: &PaginationParams,
+        consistency: Option<ConsistencyMode>,
+    ) -> AegisResult<PaginatedTuples> {
+        let consistency = consistency.unwrap_or_default();
+        self.storage
+            .query_tuples(filter, pagination, &consistency)
+    }
+
+    /// Run schema migrations to reach the target version.
+    pub fn migrate(&self, target_version: u32) -> AegisResult<MigrationResult> {
+        let runner = MigrationRunner::new();
+        let current = self.storage.read_schema_version()?;
+        let result = runner.migrate(self.storage.as_ref(), current, target_version)?;
+        self.storage.write_schema_version(target_version)?;
+        Ok(result)
+    }
+
+    /// Check whether a new schema is compatible with the currently loaded schema.
+    pub fn check_schema(&self, new_schema: &Schema) -> SchemaCompatibilityReport {
+        let current = self.schema.read().unwrap();
+        crate::engine::migration::check_compatibility(&current, new_schema)
+    }
+
+    /// Delete all tuples for a given resource.
+    pub fn delete_object(&self, object: &ResourceId) -> AegisResult<RevisionToken> {
+        let _span = span!(Level::INFO, "aegis.delete_object", resource = object.as_str()).entered();
+        let rl_key = format!("delete_object:{}", object.as_str());
+        self.rate_limiter.check(&rl_key, RateLimitOp::Write)?;
+        let revision = self.storage.delete_object(object)?;
+        info!(revision = field::display(&revision), "object deleted");
+        Ok(RevisionToken::new(revision, self.node_id))
     }
 
     /// Access GDPR compliance operations.

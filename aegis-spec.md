@@ -17,7 +17,7 @@
 10. [Storage & Persistence Layer](#10-storage--persistence-layer)
 11. [Durability, Backup & Disaster Recovery](#11-durability-backup--disaster-recovery)
 12. [SDK Reference](#12-sdk-reference)
-13. [Deployment Modes](#13-deployment-modes)
+13. [Architecture Patterns](#13-architecture-patterns)
 14. [Security Model](#14-security-model)
 15. [Scalability Strategy](#15-scalability-strategy)
 16. [Multi-Tenancy](#16-multi-tenancy)
@@ -171,9 +171,6 @@ The contract is: **auth provider gives Aegis an identity; Aegis decides what tha
 
 | Tool | Purpose |
 |---|---|
-| Docker | Container packaging for all deployment modes |
-| Kubernetes | Orchestration for distributed and hybrid deployments |
-| PersistentVolumeClaim | SQLite persistence in containerized environments |
 | WAL (Write-Ahead Log) | Storage-level concurrency (SQLite); replication stream (future) |
 | CRDT | Future multi-region graph consistency |
 
@@ -698,35 +695,11 @@ const report = await auth.checkSchema({ schema: "./new-schema.yaml" })
 | **Version tracking** | Schema version field in DB; migration scripts numbered |
 | **Rollback** | Each migration has a reverse script for rollback (tested) |
 
-### Container Deployments
-
-**Docker:**
-```
-Container
- ├── App (Node.js / Go / etc.)
- ├── Aegis Runtime
- ├── Aegis Connection Manager
- └── /data/aegis.db  ← mounted persistent volume
-```
-
-**Kubernetes:**
-```yaml
-volumes:
-  - name: aegis-data
-    persistentVolumeClaim:
-      claimName: aegis-pvc
-volumeMounts:
-  - mountPath: /data
-    name: aegis-data
-```
-
-Container restarts do not lose the graph because storage is on the persistent volume, not in container memory.
-
 ---
 
 ## 11. Durability, Backup & Disaster Recovery
 
-Authorization data is mission-critical. Loss of the permission graph results in either universal access (catastrophic) or universal lockout (equally catastrophic). The following strategies are mandatory for production deployments.
+Authorization data is mission-critical. Loss of the permission graph results in either universal access (catastrophic) or universal lockout (equally catastrophic). The following strategies are mandatory for production.
 
 ### Backup
 
@@ -1126,11 +1099,11 @@ router.put(
 
 ---
 
-## 13. Deployment Modes
+## 13. Architecture Patterns
 
-### Mode 1: Embedded (Default)
+### Pattern 1: Embedded (Default)
 
-The application and Aegis run in the same process. Storage is either local (SQLite/RocksDB) or external (PostgreSQL).
+The application and Aegis run in the same process. Aegis is added as a library dependency (`cargo add`, `npm install`, `pip install`). Storage is either local (SQLite/RocksDB) or external (PostgreSQL).
 
 ```
 Application Process
@@ -1621,7 +1594,6 @@ const auth = new Aegis({
 - Policy linting CLI
 - Test helpers / fixtures
 - Input validation & constraints
-- Docker support
 
 ### V2 — Distributed Foundation
 
@@ -1741,9 +1713,7 @@ End-to-end tests validate the full system across SDK boundaries, language runtim
 | E2E-004 | SQLite backend persistence | Write tuples, restart process, verify tuples survive | All tuples present after restart |
 | E2E-005 | PostgreSQL backend persistence | Write tuples, restart process, verify tuples survive | All tuples present after restart |
 | E2E-006 | Multi-tenancy isolation | Write same resource name in two tenants, cross-tenant check | Cross-tenant check returns denied |
-| E2E-007 | Docker restart | Docker container with mounted volume, write, restart, verify | Data persists across container restart |
-| E2E-008 | K8s PVC persistence | Kubernetes pod with PVC, write, pod restart | Data persists across pod restart |
-| E2E-009 | Backup + restore | Create backup, delete graph, restore from backup | Graph state matches pre-delete state |
+| E2E-007 | Backup + restore | Create backup, delete graph, restore from backup | Graph state matches pre-delete state |
 | E2E-010 | Export + import | Export graph to JSON, import into new instance | New instance has same graph state |
 | E2E-011 | Event log reconstruction | Enable event log, write 100 tuples, recover from events | Graph state at final revision matches original |
 | E2E-012 | Point-in-time recovery | Write 10 tuples, record revision at step 5, recover to revision 5 | Graph state matches what existed at revision 5 |
@@ -1765,7 +1735,7 @@ End-to-end tests validate the full system across SDK boundaries, language runtim
 |---|---|---|---|
 | CI (unit) | In-memory SQLite | Embedded | Fast integration tests |
 | CI (integration) | SQLite file on disk | Embedded | Persistence and concurrent access |
-| CI (e2e) | PostgreSQL (Docker) | Embedded | Cross-backend compatibility |
+| CI (e2e) | PostgreSQL | Embedded | Cross-backend compatibility |
 | Staging | PostgreSQL | Distributed (2 instances) | Multi-instance consistency |
 | Staging (edge) | SQLite + CRDT | Hybrid (central + edge) | CRDT sync correctness |
 | Performance | RocksDB | Embedded | Throughput and latency benchmarks |

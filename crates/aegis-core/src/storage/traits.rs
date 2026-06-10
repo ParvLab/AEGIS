@@ -109,6 +109,13 @@ pub trait StorageBackend: Send + Sync {
         Ok(0)
     }
 
+    /// Compact paired add/remove events to reduce audit log size.
+    /// Only meaningful for backends that track individual events (SQLite, PostgreSQL).
+    /// Returns the number of removed events.
+    fn compact_events(&self) -> AegisResult<usize> {
+        Ok(0)
+    }
+
     /// Permanently remove soft-deleted tuples whose deletion revision
     /// corresponds to a timestamp before the given cutoff.
     /// Returns the number of deleted tuples.

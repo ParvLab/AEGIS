@@ -491,7 +491,7 @@ Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 |----------|-------|----------|-----------|
 | Full SDK Lifecycle | 4 | E2E-001–004 | TypeScript, Go, Rust, Python |
 | Multi-Language Interop | 3 | E2E-010–012 | Write in Go read in Node, write in Node read in Python, cross-language token |
-| Persistence & Recovery | 6 | E2E-020–025 | SQLite restart, PG restart, Docker restart, K8s restart, backup/restore, export/import |
+| Persistence & Recovery | 6 | E2E-020–025 | SQLite restart, PG restart, backup/restore, export/import |
 | Event Log Recovery | 3 | E2E-030–032 | Full recovery, PIT recovery, compaction |
 | Middleware Integration | 4 | E2E-040–043 | Express allowed/forbidden/missing-auth, Hono |
 | Deployment Modes | 4 | E2E-050–053 | Embedded, multi-instance PG, edge replica read, edge replica write reject |

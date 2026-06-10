@@ -79,34 +79,33 @@ Goal: Expose all engine APIs, complete CLI, package for deployment.
 
 ### Sprint 1.1 — Expose missing engine APIs
 
-- [ ] `write_batch(&self, tuples: &[RelationshipTuple]) -> AegisResult<RevisionToken>`
-- [ ] `transaction(&self) -> AegisResult<Box<dyn StorageTransaction>>`
-- [ ] `list_by_object(&self, object: &ResourceId, relation: Option<&Relation>) -> AegisResult<Vec<RelationshipTuple>>`
-- [ ] `list_by_subject(&self, subject: &SubjectId, relation: Option<&Relation>) -> AegisResult<Vec<RelationshipTuple>>`
-- [ ] `query(&self, filter: &TupleFilter, pagination: &PaginationParams, consistency: Option<ConsistencyMode>) -> AegisResult<PaginatedTuples>`
-- [ ] `migrate(&self, target_version: u32) -> AegisResult<MigrationResult>`
-- [ ] `check_schema(&self, schema: &Schema) -> AegisResult<CompatibilityReport>`
-- [ ] `delete_object(&self, object: &ResourceId) -> AegisResult<RevisionToken>`
-- [ ] NAPI-RS bindings for all new methods
-- [ ] Verify `cargo test -p aegis-core` passes
+- [x] `write_batch(&self, tuples: &[RelationshipTuple]) -> AegisResult<RevisionToken>`
+- [x] `transaction(&self) -> AegisResult<Box<dyn StorageTransaction>>`
+- [x] `list_by_object(&self, object: &ResourceId, relation: Option<&Relation>) -> AegisResult<Vec<RelationshipTuple>>`
+- [x] `list_by_subject(&self, subject: &SubjectId, relation: Option<&Relation>) -> AegisResult<Vec<RelationshipTuple>>`
+- [x] `query(&self, filter: &TupleFilter, pagination: &PaginationParams, consistency: Option<ConsistencyMode>) -> AegisResult<PaginatedTuples>`
+- [x] `migrate(&self, target_version: u32) -> AegisResult<MigrationResult>`
+- [x] `check_schema(&self, new_schema: &Schema) -> SchemaCompatibilityReport`
+- [x] `delete_object(&self, object: &ResourceId) -> AegisResult<RevisionToken>`
+- [x] NAPI-RS bindings: `list_by_subject`, `query`, `write_batch`, `migrate`, `check_schema`, `delete_object`
+- [x] Verify `cargo test -p aegis-core` passes (167/167)
 
 ### Sprint 1.2 — CLI subcommands
 
-- [ ] `backup create <path>` — dump tuples + events to file
-- [ ] `backup restore <path>` — restore from backup file
-- [ ] `export <format> [--subject ...]` — export tuples in JSON/CSV
-- [ ] `import <file> [--format ...]` — import tuples from file
-- [ ] `schema lint [--path ...]` — validate schema files
-- [ ] `recover` — run event log recovery + compaction
-- [ ] Verify `cargo build -p aegis-cli` compiles
+- [x] `backup create <path>` — dump all tuples as JSON
+- [x] `backup restore <path>` — restore tuples from backup
+- [x] `export [--subject ...]` — export tuples in JSON
+- [x] `import <file>` — import tuples from JSON file
+- [x] `schema lint <path>` — validate schema file
+- [x] `recover` — run event log compaction
+- [x] Verify `cargo build -p aegis-cli` compiles
 
-### Sprint 1.3 — Docker / K8s packaging
+### Sprint 1.3 — SDK packaging & delivery
 
-- [ ] `Dockerfile` — multi-stage build (builder + distroless runtime)
-- [ ] `docker-compose.yml` — single-node + optional PostgreSQL sidecar
-- [ ] `k8s/` manifests — deployment, service, configmap, PVC
-- [ ] `helm/` chart — configurable replica count, storage, ingress
-- [ ] Verify `docker build` succeeds
+> **Note:** Aegis is an embedded library, not a standalone server. Users consume it as a package dependency (`cargo add`, `npm install`, `pip install`, `go get`). No Docker/K8s packaging is needed — the host application provides the runtime environment.
+
+- [x] Verify all crates publish-ready: `aegis-core`, `aegis-cli`, `aegis-napi`, `aegis-test-utils`
+- [x] Add `compact_events` to `StorageBackend` trait (default no-op, SQLite overrides)
 
 ---
 

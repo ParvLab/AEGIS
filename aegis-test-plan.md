@@ -28,7 +28,7 @@
 |---|---|---|---|
 | **Unit** | Individual functions, schema parser, validator | Every commit | In-memory SQLite |
 | **Integration** | Component interactions (write + check + transaction + cache) | Every commit | File-based SQLite |
-| **E2E** | Full SDK lifecycle across language runtimes | Every PR | PostgreSQL (Docker) |
+| **E2E** | Full SDK lifecycle across language runtimes | Every PR | PostgreSQL |
 | **Stress** | Concurrent access, large graphs, edge cases | Nightly | RocksDB / SQLite |
 | **Recovery** | Backup/restore, event log replay, crash recovery | Weekly | File-based SQLite |
 
@@ -88,17 +88,14 @@ rmSync(dir, { recursive: true, force: true })
 
 ### PostgreSQL (E2E)
 
-```yaml
-# docker-compose.test.yml
-services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: aegis_test
-      POSTGRES_USER: aegis
-      POSTGRES_PASSWORD: aegis_test
-    ports:
-      - "5432:5432"
+PostgreSQL service required for E2E tests. Start via:
+
+```bash
+docker run -d --name aegis-pg \
+  -e POSTGRES_DB=aegis_test \
+  -e POSTGRES_USER=aegis \
+  -e POSTGRES_PASSWORD=aegis_test \
+  -p 5432:5432 postgres:16-alpine
 ```
 
 ### RocksDB (Stress)
@@ -242,10 +239,8 @@ const auth = new Aegis({
 |----|------|-------|--------|
 | E2E-020 | SQLite process restart | Init, write 10 tuples, close, re-init same DB | All 10 tuples present |
 | E2E-021 | PostgreSQL process restart | Same as E2E-020 with PostgreSQL | All 10 tuples present |
-| E2E-022 | Docker restart with volume | Docker container with mounted SQLite, write, restart | Data persists |
-| E2E-023 | K8s pod restart with PVC | Kubernetes pod with PVC, write, delete pod, recreate | Data persists |
-| E2E-024 | Backup and restore | Create backup, delete graph, restore | Full graph state restored |
-| E2E-025 | Export and import to new instance | Export graph as JSON, import to empty instance | New instance has identical state |
+| E2E-022 | Backup and restore | Create backup, delete graph, restore | Full graph state restored |
+| E2E-023 | Export and import to new instance | Export graph as JSON, import to empty instance | New instance has identical state |
 
 ### 4.4 Event Log Recovery
 

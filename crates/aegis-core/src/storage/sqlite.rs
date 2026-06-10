@@ -1140,6 +1140,10 @@ impl StorageBackend for SqliteStorage {
         Ok(count)
     }
 
+    fn compact_events(&self) -> AegisResult<usize> {
+        SqliteStorage::compact_events(self)
+    }
+
     fn close(&self) -> AegisResult<()> {
         if self.config.wal_mode && self.config.path != ":memory:" {
             if let Ok(conn) = self.pool.get() {
