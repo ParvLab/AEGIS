@@ -22,17 +22,44 @@ pub struct PostgresStorage {
 #[cfg(feature = "postgres")]
 impl PostgresStorage {
     pub fn new(connection_string: &str) -> AegisResult<Self> {
+        Self::with_pool_config(connection_string, 10)
+    }
+
+    /// Create storage with a configurable pool size.
+    pub fn with_pool_config(connection_string: &str, max_pool_size: usize) -> AegisResult<Self> {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
 
         let config = tokio_postgres::Config::from_str(connection_string)
             .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
 
-        let mgr = deadpool_postgres::Manager::new(config, tokio_postgres::NoTls);
-        let pool = deadpool_postgres::Pool::builder(mgr)
-            .max_size(10)
-            .build()
-            .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
+        // Detect TLS requirement from connection string sslmode parameter
+        let conn_lower = connection_string.to_lowercase();
+        let use_tls = conn_lower.contains("sslmode=require")
+            || conn_lower.contains("sslmode=verify-ca")
+            || conn_lower.contains("sslmode=verify-full");
+
+        let pool: deadpool_postgres::Pool = if use_tls {
+            let tls_config = rustls::ClientConfig::builder()
+                .with_root_certificates({
+                    let mut roots = rustls::RootCertStore::empty();
+                    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                    roots
+                })
+                .with_no_client_auth();
+            let tls = tokio_postgres_rustls::MakeRustlsConnect::new(tls_config);
+            let mgr = deadpool_postgres::Manager::new(config, tls);
+            deadpool_postgres::Pool::builder(mgr)
+                .max_size(max_pool_size)
+                .build()
+                .map_err(|e| AegisError::StorageConnection(e.to_string()))?
+        } else {
+            let mgr = deadpool_postgres::Manager::new(config, tokio_postgres::NoTls);
+            deadpool_postgres::Pool::builder(mgr)
+                .max_size(max_pool_size)
+                .build()
+                .map_err(|e| AegisError::StorageConnection(e.to_string()))?
+        };
 
         Ok(Self {
             pool,

@@ -1,21 +1,28 @@
 use crate::types::Revision;
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// Default time-to-live for cached decisions.
+const DEFAULT_TTL: Duration = Duration::from_secs(300); // 5 minutes
 
 /// A cached decision entry.
 #[derive(Debug, Clone)]
 struct CacheEntry {
     allowed: bool,
     revision: Revision,
+    created_at: Instant,
 }
 
-/// Simple decision cache with revision-based invalidation.
+/// Simple decision cache with revision-based and TTL-based invalidation.
 ///
 /// Cache key: `(subject, permission, resource)`
 /// On each lookup, compares the entry's revision against current revision.
 /// If stale (entry.revision < current_revision), evicts and returns None.
+/// If TTL expired, evicts and returns None.
 pub struct DecisionCache {
     entries: HashMap<(String, String, String), CacheEntry>,
     capacity: usize,
+    ttl: Duration,
     hits: u64,
     misses: u64,
 }
@@ -25,13 +32,20 @@ impl DecisionCache {
         Self {
             entries: HashMap::with_capacity(capacity),
             capacity,
+            ttl: DEFAULT_TTL,
             hits: 0,
             misses: 0,
         }
     }
 
+    /// Set a custom TTL for cache entries.
+    pub fn with_ttl(mut self, ttl: Duration) -> Self {
+        self.ttl = ttl;
+        self
+    }
+
     /// Look up a cached decision.
-    /// Returns `None` if not cached or stale.
+    /// Returns `None` if not cached, stale, or TTL expired.
     pub fn get(
         &mut self,
         subject: &str,
@@ -46,12 +60,15 @@ impl DecisionCache {
         );
 
         match self.entries.get(&key) {
-            Some(entry) if entry.revision >= current_revision => {
+            Some(entry)
+                if entry.revision >= current_revision
+                    && entry.created_at.elapsed() < self.ttl =>
+            {
                 self.hits += 1;
                 Some(entry.allowed)
             }
             Some(_) => {
-                // Stale entry - remove it
+                // Stale or expired entry - remove it
                 self.entries.remove(&key);
                 self.misses += 1;
                 None
@@ -90,6 +107,7 @@ impl DecisionCache {
             CacheEntry {
                 allowed,
                 revision,
+                created_at: Instant::now(),
             },
         );
     }

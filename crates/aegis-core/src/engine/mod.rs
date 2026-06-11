@@ -43,11 +43,28 @@ pub struct GraphEngine {
     watchers: SharedWatchers,
     rate_limiter: TokenBucketRateLimiter,
     telemetry_enabled: std::sync::atomic::AtomicBool,
+    api_key: Option<String>,
 }
 
 impl GraphEngine {
     /// Create a new graph engine with the given storage and schema.
     pub fn new(storage: Box<dyn StorageBackend>, schema: Schema) -> Self {
+        // Detect file descriptor limits at startup (Unix only)
+        #[cfg(unix)]
+        {
+            let mut rlim = std::mem::MaybeUninit::<libc::rlimit>::uninit();
+            if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, rlim.as_mut_ptr()) == 0 } {
+                let rlim = unsafe { rlim.assume_init() };
+                if rlim.rlim_cur < 1024 {
+                    tracing::warn!(
+                        "low file descriptor limit: soft={}, hard={}. Consider 'ulimit -n 4096'",
+                        rlim.rlim_cur,
+                        rlim.rlim_max,
+                    );
+                }
+            }
+        }
+
         Self {
             storage,
             schema: RwLock::new(schema),
@@ -60,6 +77,34 @@ impl GraphEngine {
             watchers: Arc::new(Mutex::new(HashMap::new())),
             rate_limiter: TokenBucketRateLimiter::new(ratelimit::RateLimitConfig::default()),
             telemetry_enabled: std::sync::atomic::AtomicBool::new(false),
+            api_key: None,
+        }
+    }
+
+    /// Set a custom TTL for the decision cache.
+    pub fn with_cache_ttl(mut self, ttl: std::time::Duration) -> Self {
+        self.cache = Mutex::new(DecisionCache::new(10_000).with_ttl(ttl));
+        self
+    }
+
+    /// Set an API key required for write/delete operations.
+    pub fn with_api_key(mut self, api_key: String) -> Self {
+        self.api_key = Some(api_key);
+        self
+    }
+
+    /// Verify an API key against the configured key (if any).
+    /// Returns Ok(()) if no API key is configured or if it matches.
+    pub fn verify_api_key(&self, key: Option<&str>) -> AegisResult<()> {
+        if let Some(ref configured) = self.api_key {
+            match key {
+                Some(k) if k == configured => Ok(()),
+                _ => Err(AegisError::OperationNotPermitted(
+                    "invalid or missing API key".to_string(),
+                )),
+            }
+        } else {
+            Ok(())
         }
     }
 

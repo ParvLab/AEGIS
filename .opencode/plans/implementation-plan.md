@@ -183,29 +183,29 @@ Goal: Production-grade security posture, fail-closed guarantees, operational rea
 - [x] Signal handling — SIGTERM/SIGINT triggers graceful shutdown
 - [x] Health endpoint — liveness (storage reachable) + readiness (all subsystems ok)
 - [x] Memory limits — bound RocksDB block cache, SQLite mmap size
-- [ ] File descriptor limits — detect ulimit and warn at startup
+- [x] File descriptor limits — detect ulimit and warn at startup
 - [x] Startup probe — verify storage access, schema loaded, rate limiter ready
 
 ### Sprint 4.4 — Security audit
 
 - [x] Secrets audit: verify no secrets in logs, error messages, metrics
 - [x] Dependency audit: `cargo audit` for known CVEs
-- [ ] Penetration testing checklist:
-  - [ ] Fuzz tuple/identity/resource inputs
-  - [ ] Verify authorization boundary (no privilege escalation)
-  - [ ] Verify deletion is soft (recoverable) unless explicit hard-delete
-  - [ ] Verify audit log is append-only (not modifiable by writers)
-- [ ] TLS for PostgreSQL/CRDT HTTP transport when configured
-- [ ] API key / mTLS authentication for admin endpoints
+- [x] Penetration testing checklist:
+  - [x] Fuzz tuple/identity/resource inputs
+  - [x] Verify authorization boundary (no privilege escalation)
+  - [x] Verify deletion is soft (recoverable) unless explicit hard-delete
+  - [x] Verify audit log is append-only (not modifiable by writers)
+- [x] TLS for PostgreSQL/CRDT HTTP transport when configured
+- [x] API key / mTLS authentication for admin endpoints
 
 ### Sprint 4.5 — Performance & stress
 
 - [x] Traversal cache hit ratio > 90% on tree-shaped graphs
-- [ ] Decision cache TTL-based eviction
-- [ ] Connection pool tuning (SQLite WAL, PostgreSQL)
-- [ ] Benchmark suite: `cargo bench` with baselines
-- [ ] Memory profile: no leaks on long-running instances (24h soak)
-- [ ] Throughput target: > 10,000 `check` ops/sec on single node
+- [x] Decision cache TTL-based eviction
+- [x] Connection pool tuning (SQLite WAL, PostgreSQL)
+- [x] Benchmark suite: `cargo bench` with baselines
+- [x] Memory profile: no leaks on long-running instances (24h soak)
+- [x] Throughput target: > 10,000 `check` ops/sec on single node
 
 ---
 
