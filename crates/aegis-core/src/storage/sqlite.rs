@@ -1004,15 +1004,19 @@ impl StorageBackend for SqliteStorage {
 
     fn query_audit(
         &self,
-        object: &ResourceId,
+        object: Option<&ResourceId>,
         from_revision: Option<Revision>,
         to_revision: Option<Revision>,
         pagination: &PaginationParams,
     ) -> AegisResult<Vec<AuditEntry>> {
         let conn = self.conn()?;
-        let mut conditions = vec!["object = ?1".to_string()];
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
-            vec![Box::new(object.as_str().to_string())];
+        let mut conditions: Vec<String> = Vec::new();
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+
+        if let Some(obj) = object {
+            params_vec.push(Box::new(obj.as_str().to_string()));
+            conditions.push(format!("object = ?{}", params_vec.len()));
+        }
 
         if let Some(from) = from_revision {
             params_vec.push(Box::new(from.as_u64() as i64));
@@ -1023,7 +1027,11 @@ impl StorageBackend for SqliteStorage {
             conditions.push(format!("revision <= ?{}", params_vec.len()));
         }
 
-        let where_clause = conditions.join(" AND ");
+        let where_clause = if conditions.is_empty() {
+            "1=1".to_string()
+        } else {
+            conditions.join(" AND ")
+        };
         let offset = pagination
             .cursor
             .as_ref()
@@ -1965,7 +1973,7 @@ mod tests {
 
         let audit = store
             .query_audit(
-                &ResourceId::new("repo:fluxbus").unwrap(),
+                Some(&ResourceId::new("repo:fluxbus").unwrap()),
                 None,
                 None,
                 &PaginationParams::default(),
@@ -1990,7 +1998,7 @@ mod tests {
 
         let audit = store
             .query_audit(
-                &ResourceId::new("repo:a").unwrap(),
+                Some(&ResourceId::new("repo:a").unwrap()),
                 Some(r2),
                 Some(r2),
                 &PaginationParams::default(),

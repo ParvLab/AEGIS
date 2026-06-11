@@ -3,8 +3,10 @@
 //! Provides structured logging via `tracing` and optional OpenTelemetry export
 //! behind the `telemetry` feature flag.
 
-use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
+
+#[cfg(feature = "telemetry")]
+use tracing_subscriber::prelude::*;
 
 /// Guard that flushes telemetry on drop.
 pub struct TelemetryGuard {

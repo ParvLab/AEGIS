@@ -684,10 +684,9 @@ impl StorageBackend for PostgresStorage {
     }
 
     fn query_audit(
-        &self, object: &ResourceId, from_revision: Option<Revision>,
+        &self, object: Option<&ResourceId>, from_revision: Option<Revision>,
         to_revision: Option<Revision>, pagination: &PaginationParams,
     ) -> AegisResult<Vec<AuditEntry>> {
-        let obj = object.as_str().to_string();
         let from = from_revision.map(|r| r.as_u64() as i64);
         let to = to_revision.map(|r| r.as_u64() as i64);
         let offset = pagination.cursor.as_ref().map(|c| c.offset).unwrap_or(0);
@@ -697,20 +696,31 @@ impl StorageBackend for PostgresStorage {
             let client = self.get_client().await?;
             let mut sql = String::from(
                 "SELECT revision, action, subject, relation, object, timestamp, metadata
-                 FROM _aegis_events WHERE object = $1",
+                 FROM _aegis_events",
             );
-            let mut params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>> =
-                vec![Box::new(obj)];
-            let mut idx = 2;
+            let mut params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>> = Vec::new();
+            let mut conditions: Vec<String> = Vec::new();
+            let mut idx = 1;
+
+            if let Some(obj) = object {
+                conditions.push(format!("object = ${idx}"));
+                params.push(Box::new(obj.as_str().to_string()));
+                idx += 1;
+            }
             if let Some(f) = from {
-                sql.push_str(&format!(" AND revision >= ${idx}"));
+                conditions.push(format!("revision >= ${idx}"));
                 params.push(Box::new(f));
                 idx += 1;
             }
             if let Some(t) = to {
-                sql.push_str(&format!(" AND revision <= ${idx}"));
+                conditions.push(format!("revision <= ${idx}"));
                 params.push(Box::new(t));
                 idx += 1;
+            }
+
+            if !conditions.is_empty() {
+                sql.push_str(" WHERE ");
+                sql.push_str(&conditions.join(" AND "));
             }
             sql.push_str(" ORDER BY revision ASC");
 

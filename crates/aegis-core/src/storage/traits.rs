@@ -88,10 +88,10 @@ pub trait StorageBackend: Send + Sync {
     /// Begin a transaction. Returns a transaction handle.
     fn begin_transaction(&self) -> AegisResult<Box<dyn StorageTransaction>>;
 
-    /// Query audit log for a given object within a time range.
+    /// Query audit log for a given object (or all objects if None) within a time range.
     fn query_audit(
         &self,
-        object: &ResourceId,
+        object: Option<&ResourceId>,
         from_revision: Option<Revision>,
         to_revision: Option<Revision>,
         pagination: &PaginationParams,

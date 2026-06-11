@@ -6,7 +6,7 @@
 use crate::engine::GraphEngine;
 use crate::error::AegisResult;
 use crate::types::{
-    AuditEntry, RelationshipTuple, ResourceId, Revision, SubjectId,
+    AuditEntry, RelationshipTuple, Revision, SubjectId,
 };
 use chrono::{DateTime, Days, Utc};
 
@@ -76,21 +76,14 @@ impl<'a> GdprManager<'a> {
         let revision = self.engine.storage().current_revision()?;
         let active_tuples = self.engine.storage().list_by_subject(subject, None)?;
 
-        // Query all audit entries for this subject by iterating pages
-        let object_for_audit = ResourceId::new(subject.as_str())
-            .unwrap_or_else(|_| ResourceId::new("unknown").unwrap());
+        // Query all audit entries, then filter by subject in Rust
         let audit_entries = self
             .engine
             .storage()
-            .query_audit(
-                &object_for_audit,
-                None,
-                None,
-                &crate::types::PaginationParams {
-                    limit: u64::MAX,
-                    cursor: None,
-                },
-            )?
+            .query_audit(None, None, None, &crate::types::PaginationParams {
+                limit: u64::MAX,
+                cursor: None,
+            })?
             .into_iter()
             .filter(|e| e.subject == subject.as_str())
             .collect();
@@ -142,6 +135,15 @@ impl<'a> GdprManager<'a> {
         self.engine
             .storage()
             .delete_soft_deleted_tuples_before(cutoff)
+    }
+
+    /// Compact the audit log by removing pair-matched add/remove entries.
+    ///
+    /// Removes event pairs where a tuple was added and later removed with
+    /// no intermediate add for the same key — these are semantically no-ops
+    /// and safe to delete.
+    pub fn compact_events(&self) -> AegisResult<usize> {
+        self.engine.storage().compact_events()
     }
 }
 
@@ -263,5 +265,181 @@ mod tests {
         let gdpr = GdprManager::new_with_config(&engine, config);
         assert_eq!(gdpr.config().event_retention_days, 30);
         assert_eq!(gdpr.config().tuple_retention_days, 7);
+    }
+
+    #[test]
+    fn test_gdpr_e2e_transfer_ownership() {
+        let engine = make_engine();
+        let alice = SubjectId::new("user:alice").unwrap();
+        let bob = SubjectId::new("user:bob").unwrap();
+        let repo = ResourceId::new("repo:fluxbus").unwrap();
+
+        // Write tuples for alice
+        engine
+            .write(&RelationshipTuple::new(
+                alice.clone(),
+                Relation::new("owner").unwrap(),
+                repo.clone(),
+            ))
+            .unwrap();
+
+        let gdpr = GdprManager::new(&engine);
+
+        // Export before transfer — alice has 1 tuple
+        let export_before = gdpr.export_subject_data(&alice).unwrap();
+        assert_eq!(export_before.active_tuples.len(), 1);
+
+        // Transfer ownership from alice to bob
+        let result = engine
+            .delete_subject_with_policy(&alice, "transfer", Some(&bob))
+            .unwrap();
+        assert!(result.revision.as_u64() > 0);
+
+        // Export after transfer — alice has 0 tuples
+        let export_alice = gdpr.export_subject_data(&alice).unwrap();
+        assert_eq!(export_alice.active_tuples.len(), 0);
+
+        // Bob now has the tuple
+        let bob_tuples = engine.storage().list_by_subject(&bob, None).unwrap();
+        assert_eq!(bob_tuples.len(), 1);
+        assert_eq!(bob_tuples[0].object.as_str(), "repo:fluxbus");
+        assert_eq!(bob_tuples[0].relation.as_str(), "owner");
+    }
+
+    #[test]
+    fn test_gdpr_e2e_erase_and_export() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:alice").unwrap();
+        let repo_a = ResourceId::new("repo:a").unwrap();
+        let repo_b = ResourceId::new("repo:b").unwrap();
+
+        // Write multiple tuples
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                repo_a.clone(),
+            ))
+            .unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("editor").unwrap(),
+                repo_b.clone(),
+            ))
+            .unwrap();
+
+        let gdpr = GdprManager::new(&engine);
+
+        // Export has 2 tuples
+        let export = gdpr.export_subject_data(&subject).unwrap();
+        assert_eq!(export.active_tuples.len(), 2);
+
+        // Right to erasure (cascade delete)
+        gdpr.right_to_erasure(&subject).unwrap();
+        let after = gdpr.export_subject_data(&subject).unwrap();
+        assert_eq!(after.active_tuples.len(), 0);
+
+        // Erase again on empty subject is a no-op
+        gdpr.right_to_erasure(&subject).unwrap();
+    }
+
+    #[test]
+    fn test_gdpr_e2e_compact_events() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:alice").unwrap();
+        let repo = ResourceId::new("repo:fluxbus").unwrap();
+        let key = crate::types::TupleKey {
+            subject: subject.clone(),
+            relation: Relation::new("owner").unwrap(),
+            object: repo.clone(),
+        };
+
+        // Write then delete — creates an add/remove pair
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                repo.clone(),
+            ))
+            .unwrap();
+        engine.delete(&key).unwrap();
+
+        let gdpr = GdprManager::new(&engine);
+
+        // Export shows 0 active tuples (add+remove cancel out for state)
+        let export = gdpr.export_subject_data(&subject).unwrap();
+        assert_eq!(export.active_tuples.len(), 0);
+
+        // Audit events exist before compaction
+        assert!(export.audit_entries.len() >= 2);
+
+        // Compact the event log
+        let removed = gdpr.compact_events().unwrap();
+        assert!(removed > 0, "should have removed paired add/remove events");
+
+        // After compaction, export still shows 0 active tuples
+        let after = gdpr.export_subject_data(&subject).unwrap();
+        assert_eq!(after.active_tuples.len(), 0);
+    }
+
+    #[test]
+    fn test_gdpr_e2e_cascade_policy() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:alice").unwrap();
+        let repo = ResourceId::new("repo:fluxbus").unwrap();
+
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                repo.clone(),
+            ))
+            .unwrap();
+
+        // Cascade delete via delete_subject_with_policy
+        let result = engine
+            .delete_subject_with_policy(&subject, "cascade", None)
+            .unwrap();
+        assert!(result.revision.as_u64() > 0);
+
+        let tuples = engine.storage().list_by_subject(&subject, None).unwrap();
+        assert_eq!(tuples.len(), 0);
+    }
+
+    #[test]
+    fn test_gdpr_e2e_fail_policy() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:alice").unwrap();
+        let repo = ResourceId::new("repo:fluxbus").unwrap();
+
+        // No tuples — fail policy should succeed (no-op)
+        let result = engine
+            .delete_subject_with_policy(&subject, "fail", None)
+            .unwrap();
+        // revision is 0 because no tuples were ever written
+        assert_eq!(result.revision.as_u64(), 0);
+
+        // Write a tuple
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                repo.clone(),
+            ))
+            .unwrap();
+
+        // Fail policy should error because tuples exist
+        let err = engine
+            .delete_subject_with_policy(&subject, "fail", None)
+            .unwrap_err();
+        assert!(
+            match err {
+                crate::error::AegisError::OperationNotPermitted(_) => true,
+                _ => false,
+            },
+            "expected OperationNotPermitted, got {:?}",
+            err
+        );
     }
 }

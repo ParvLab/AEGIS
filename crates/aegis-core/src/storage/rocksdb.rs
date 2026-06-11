@@ -642,14 +642,13 @@ impl StorageBackend for RocksDbStorage {
 
     fn query_audit(
         &self,
-        object: &ResourceId,
+        object: Option<&ResourceId>,
         from_revision: Option<Revision>,
         to_revision: Option<Revision>,
         pagination: &PaginationParams,
     ) -> AegisResult<Vec<AuditEntry>> {
         let cf_events = self.db.cf_handle(CF_EVENTS)
             .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
-        let obj_str = object.as_str();
 
         let offset = pagination.cursor.as_ref().map(|c| c.offset).unwrap_or(0);
         let limit = pagination.limit as usize;
@@ -667,8 +666,10 @@ impl StorageBackend for RocksDbStorage {
                 if rev < from { continue; }
                 if rev > to { break; }
 
-                let event_obj = event["object"].as_str().unwrap_or("");
-                if event_obj != obj_str { continue; }
+                if let Some(obj) = object {
+                    let event_obj = event["object"].as_str().unwrap_or("");
+                    if event_obj != obj.as_str() { continue; }
+                }
 
                 let action = if event["action"] == "add" {
                     TupleMutation::Add

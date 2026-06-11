@@ -121,24 +121,24 @@ Goal: Multi-node replication, distributed tracing, rate limiting hardening.
 - [x] `InMemoryTransport` — channel-based transport for testing
 - [x] `HttpSyncTransport` (behind `crdt` feature) — HTTP client to push/pull from peers
 - [x] `CrdtReplicator` — record_operation, flush, apply_remote_operations, sync_from_peers
-- [ ] `DeltaBundle` — structured diff with version vector for batch exchange
-- [ ] Full two-node sync test: node A writes → sync via transport → node B verifies
-- [ ] Verify `cargo test -- crdt` passes
+- [x] `DeltaBundle` — structured diff with version vector for batch exchange
+- [x] Full two-node sync test: node A writes → sync via transport → node B verifies
+- [x] Verify `cargo test -- crdt` passes
 
 ### Sprint 2.2 — OpenTelemetry integration
 
-- [ ] Span creation for `check`, `write`, `delete`, `query_tuples`
-- [ ] OTLP exporter configuration
-- [ ] Decision cache hit/miss metrics
-- [ ] Rate limiter metrics (tokens consumed, throttled requests)
-- [ ] Health endpoint returns telemetry status
+- [x] Span creation for `check`, `write`, `delete`, `query_tuples`
+- [x] OTLP exporter configuration
+- [x] Decision cache hit/miss metrics
+- [x] Rate limiter metrics (tokens consumed, throttled requests)
+- [x] Health endpoint returns telemetry status
 
 ### Sprint 2.3 — Watch subscriptions
 
-- [ ] `WatchSubscription` — client-side stream handle
-- [ ] `WatchEvent` types — tuple_added, tuple_removed, heartbeat
-- [ ] Polling-based watcher for backends that lack push notifications
-- [ ] Tests: subscribe → write → receive event
+- [x] `WatchSubscription` — client-side stream handle
+- [x] `WatchEvent` types — tuple_added, tuple_removed, heartbeat
+- [x] Polling-based watcher for backends that lack push notifications
+- [x] Tests: subscribe → write → receive event
 
 ---
 
@@ -148,11 +148,11 @@ Goal: Production readiness — GDPR compliance, fail-closed hardening, performan
 
 ### Sprint 3.1 — GDPR compliance
 
-- [ ] Right to erasure via policy system (cascade/transfer/fail)
-- [ ] Data portability export (all subject data)
-- [ ] Retention policy enforcement (scheduled)
-- [ ] Audit log compaction (pair-matched add/remove removal)
-- [ ] Tests: GDPR E2E scenarios
+- [x] Right to erasure via policy system (cascade/transfer/fail)
+- [x] Data portability export (all subject data)
+- [x] Retention policy enforcement (scheduled)
+- [x] Audit log compaction (pair-matched add/remove removal)
+- [x] Tests: GDPR E2E scenarios
 
 ---
 

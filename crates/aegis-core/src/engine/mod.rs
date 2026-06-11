@@ -522,7 +522,17 @@ impl GraphEngine {
         to_revision: Option<Revision>,
         pagination: &crate::types::PaginationParams,
     ) -> AegisResult<Vec<crate::types::AuditEntry>> {
-        self.storage.query_audit(object, from_revision, to_revision, pagination)
+        self.storage.query_audit(Some(object), from_revision, to_revision, pagination)
+    }
+
+    /// Query the audit log for all objects within an optional revision range.
+    pub fn query_audit_all(
+        &self,
+        from_revision: Option<Revision>,
+        to_revision: Option<Revision>,
+        pagination: &crate::types::PaginationParams,
+    ) -> AegisResult<Vec<crate::types::AuditEntry>> {
+        self.storage.query_audit(None, from_revision, to_revision, pagination)
     }
 
     /// Export all tuples for a given subject (GDPR compliance).
