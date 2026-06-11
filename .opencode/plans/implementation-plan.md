@@ -162,34 +162,34 @@ Goal: Production-grade security posture, fail-closed guarantees, operational rea
 
 ### Sprint 4.1 — Fail-closed hardening
 
-- [ ] Storage connection loss → return `Err(AegisError::StorageConnection)` on all operations
-- [ ] Schema validation error → reject write, fail-closed for `check`
-- [ ] Rate limiter exhaustion → return `Err(AegisError::RateLimited)`
-- [ ] Panic boundary — catch panics in async tasks, convert to `AegisError`
-- [ ] Graceful degradation: if cache unavailable, fall through to storage (not fail)
+- [x] Storage connection loss → return `Err(AegisError::StorageConnection)` on all operations
+- [x] Schema validation error → reject write, fail-closed for `check`
+- [x] Rate limiter exhaustion → return `Err(AegisError::RateLimited)`
+- [x] Panic boundary — catch panics in async tasks, convert to `AegisError`
+- [x] Graceful degradation: if cache unavailable, fall through to storage (not fail)
 
 ### Sprint 4.2 — Input validation & DoS protection
 
-- [ ] Max tuple size: reject tuples larger than configured limit (default 64KB)
-- [ ] Max metadata pairs: reject metadata with > 16 entries
-- [ ] Max identity length: already 256 chars, verify enforcement
-- [ ] Max query depth: BFS traversal limit (default 50, configurable)
-- [ ] Max pagination limit: cap at 10,000 per page
-- [ ] Resource name validation: no path traversal, no null bytes
+- [x] Max tuple size: reject tuples larger than configured limit (default 64KB)
+- [x] Max metadata pairs: reject metadata with > 16 entries
+- [x] Max identity length: already 256 chars, verify enforcement
+- [x] Max query depth: BFS traversal limit (default 50, configurable)
+- [x] Max pagination limit: cap at 10,000 per page
+- [x] Resource name validation: no path traversal, no null bytes
 
 ### Sprint 4.3 — Production hardening
 
-- [ ] Graceful shutdown — drain in-flight requests, checkpoint WAL, close storage
-- [ ] Signal handling — SIGTERM/SIGINT triggers graceful shutdown
-- [ ] Health endpoint — liveness (storage reachable) + readiness (all subsystems ok)
-- [ ] Memory limits — bound RocksDB block cache, SQLite mmap size
+- [x] Graceful shutdown — drain in-flight requests, checkpoint WAL, close storage
+- [x] Signal handling — SIGTERM/SIGINT triggers graceful shutdown
+- [x] Health endpoint — liveness (storage reachable) + readiness (all subsystems ok)
+- [x] Memory limits — bound RocksDB block cache, SQLite mmap size
 - [ ] File descriptor limits — detect ulimit and warn at startup
-- [ ] Startup probe — verify storage access, schema loaded, rate limiter ready
+- [x] Startup probe — verify storage access, schema loaded, rate limiter ready
 
 ### Sprint 4.4 — Security audit
 
-- [ ] Secrets audit: verify no secrets in logs, error messages, metrics
-- [ ] Dependency audit: `cargo audit` for known CVEs
+- [x] Secrets audit: verify no secrets in logs, error messages, metrics
+- [x] Dependency audit: `cargo audit` for known CVEs
 - [ ] Penetration testing checklist:
   - [ ] Fuzz tuple/identity/resource inputs
   - [ ] Verify authorization boundary (no privilege escalation)
@@ -200,7 +200,7 @@ Goal: Production-grade security posture, fail-closed guarantees, operational rea
 
 ### Sprint 4.5 — Performance & stress
 
-- [ ] Traversal cache hit ratio > 90% on tree-shaped graphs
+- [x] Traversal cache hit ratio > 90% on tree-shaped graphs
 - [ ] Decision cache TTL-based eviction
 - [ ] Connection pool tuning (SQLite WAL, PostgreSQL)
 - [ ] Benchmark suite: `cargo bench` with baselines

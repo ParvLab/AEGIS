@@ -1,6 +1,7 @@
+use crate::engine::cache::TraversalCache;
+use crate::error::{AegisError, AegisResult};
 use crate::storage::StorageBackend;
 use crate::types::{Relation, ResourceId, Revision, SubjectId};
-use crate::error::{AegisError, AegisResult};
 use std::collections::{HashSet, VecDeque};
 
 /// A single step in a traversal trace.
@@ -45,7 +46,7 @@ pub fn bfs_traversal(
     target: &ResourceId,
     revision: Option<Revision>,
 ) -> AegisResult<TraversalResult> {
-    bfs_traversal_with_limits(storage, subject, relation, target, revision, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS)
+    bfs_traversal_with_limits(storage, subject, relation, target, revision, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None)
 }
 
 /// BFS traversal with configurable depth and visit limits.
@@ -57,6 +58,7 @@ pub fn bfs_traversal_with_limits(
     revision: Option<Revision>,
     max_depth: usize,
     max_visits: usize,
+    mut cache: Option<&mut TraversalCache>,
 ) -> AegisResult<TraversalResult> {
     let mut visited: HashSet<(String, String)> = HashSet::new();
     let mut queue: VecDeque<(SubjectId, Vec<TraceStep>)> = VecDeque::new();
@@ -80,13 +82,49 @@ pub fn bfs_traversal_with_limits(
             continue;
         }
 
-        let tuples = match storage.list_by_subject(&current_subject, Some(relation)) {
-            Ok(t) => t,
-            Err(e) => {
-                if matches!(e, AegisError::StorageNotInitialized) {
-                    continue;
+        let tuples = {
+            let current_rev = revision.unwrap_or(Revision::ZERO);
+            if let Some(ref mut c) = cache {
+                if let Some(cached_objects) = c.get(current_subject.as_str(), relation.as_str(), current_rev) {
+                    let mut result = Vec::new();
+                    for obj_str in &cached_objects {
+                        if let Ok(obj) = ResourceId::new(obj_str) {
+                            result.push(crate::types::RelationshipTuple::new(
+                                current_subject.clone(),
+                                relation.clone(),
+                                obj,
+                            ));
+                        }
+                    }
+                    result
+                } else {
+                    let tuples = match storage.list_by_subject(&current_subject, Some(relation)) {
+                        Ok(t) => t,
+                        Err(e) => {
+                            if matches!(e, AegisError::StorageNotInitialized) {
+                                Vec::new()
+                            } else {
+                                return Err(e);
+                            }
+                        }
+                    };
+                    let objects: Vec<String> = tuples.iter().map(|t| t.object.as_str().to_string()).collect();
+                    if !objects.is_empty() {
+                        c.insert(current_subject.as_str(), relation.as_str(), objects, current_rev);
+                    }
+                    tuples
                 }
-                return Err(e);
+            } else {
+                match storage.list_by_subject(&current_subject, Some(relation)) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        if matches!(e, AegisError::StorageNotInitialized) {
+                            Vec::new()
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                }
             }
         };
 

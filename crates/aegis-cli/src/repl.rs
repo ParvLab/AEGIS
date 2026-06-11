@@ -118,6 +118,7 @@ pub fn run_repl(db_path: &str, schema_path: Option<&str>) -> Result<()> {
     }
 
     let _ = rl.save_history(&history_file);
+    let _ = engine.close();
     Ok(())
 }
 

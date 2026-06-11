@@ -11,7 +11,7 @@ pub mod traversal;
 pub mod watch;
 
 use chrono::Utc;
-use crate::engine::cache::DecisionCache;
+use crate::engine::cache::{DecisionCache, TraversalCache};
 use crate::engine::migration::MigrationRunner;
 use crate::engine::ratelimit::{RateLimitOp, TokenBucketRateLimiter};
 use crate::engine::watch::{SharedWatchers, WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
@@ -35,6 +35,7 @@ pub struct GraphEngine {
     storage: Box<dyn StorageBackend>,
     schema: RwLock<Schema>,
     cache: Mutex<DecisionCache>,
+    traversal_cache: Mutex<TraversalCache>,
     node_id: uuid::Uuid,
     hooks: hooks::SharedHookRegistry,
     fail_closed: FailClosedMode,
@@ -51,6 +52,7 @@ impl GraphEngine {
             storage,
             schema: RwLock::new(schema),
             cache: Mutex::new(DecisionCache::new(10_000)),
+            traversal_cache: Mutex::new(TraversalCache::new(1_000)),
             node_id: uuid::Uuid::new_v4(),
             hooks: hooks::SharedHookRegistry::new(),
             fail_closed: FailClosedMode::DenyOnError,
@@ -295,14 +297,18 @@ impl GraphEngine {
 
             let max_depth = self.rate_limiter.max_traversal_depth();
             let max_visits = self.rate_limiter.max_traversal_visits();
+            let rev = Some(revision);
+            let mut cache_guard = self.traversal_cache.lock().ok();
+            let cache_ref = cache_guard.as_deref_mut();
             let result = match traversal::bfs_traversal_with_limits(
                 self.storage.as_ref(),
                 subject,
                 &relation,
                 resource,
-                Some(revision),
+                rev,
                 max_depth,
                 max_visits,
+                cache_ref,
             ) {
                 Ok(r) => r,
                 Err(e) => {
