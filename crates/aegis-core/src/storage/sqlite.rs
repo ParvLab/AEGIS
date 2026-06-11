@@ -73,6 +73,7 @@ pub struct SqliteConfig {
     pub max_readers: u32,
     pub busy_timeout_ms: u32,
     pub wal_mode: bool,
+    pub mmap_size: u64,
 }
 
 impl Default for SqliteConfig {
@@ -82,6 +83,7 @@ impl Default for SqliteConfig {
             max_readers: 4,
             busy_timeout_ms: 5000,
             wal_mode: true,
+            mmap_size: 0,
         }
     }
 }
@@ -93,6 +95,7 @@ impl SqliteConfig {
             max_readers: 4,
             busy_timeout_ms: 5000,
             wal_mode: false,
+            mmap_size: 0,
         }
     }
 }
@@ -175,6 +178,11 @@ impl SqliteStorage {
 
         conn.execute_batch("PRAGMA foreign_keys = ON;")
             .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
+
+        if config.mmap_size > 0 {
+            conn.execute_batch(&format!("PRAGMA mmap_size = {};", config.mmap_size))
+                .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
+        }
 
         Ok(())
     }
@@ -2121,6 +2129,7 @@ mod tests {
             max_readers: 4,
             busy_timeout_ms: 5000,
             wal_mode: true,
+            mmap_size: 0,
         };
         let store = SqliteStorage::new(config).unwrap();
 

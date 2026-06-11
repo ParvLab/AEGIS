@@ -3,6 +3,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Estimated overhead for JSON serialization framing (brackets, commas, quotes).
+const SERIALIZATION_OVERHEAD: usize = 128;
+
 /// The atomic unit of the authorization graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationshipTuple {
@@ -15,13 +18,17 @@ pub struct RelationshipTuple {
 
 impl RelationshipTuple {
     pub fn new(subject: SubjectId, relation: Relation, object: ResourceId) -> Self {
-        Self {
+        let tuple = Self {
             subject,
             relation,
             object,
             created_at: Utc::now(),
             metadata: None,
-        }
+        };
+        // Size check should never fail for a tuple without metadata,
+        // but call it to enforce the invariant.
+        let _ = tuple.ensure_size();
+        tuple
     }
 
     pub fn with_metadata(
@@ -31,13 +38,38 @@ impl RelationshipTuple {
         metadata: HashMap<String, String>,
     ) -> Result<Self, MetadataValidationError> {
         validate_metadata(&metadata)?;
-        Ok(Self {
+        let tuple = Self {
             subject,
             relation,
             object,
             created_at: Utc::now(),
             metadata: Some(metadata),
-        })
+        };
+        tuple.ensure_size()?;
+        Ok(tuple)
+    }
+
+    /// Check that the serialized tuple size does not exceed the maximum.
+    fn ensure_size(&self) -> Result<(), MetadataValidationError> {
+        let estimated = self.estimated_serialized_size();
+        if estimated > MAX_TUPLE_SERIALIZED_SIZE {
+            return Err(MetadataValidationError::TupleTooLarge(estimated));
+        }
+        Ok(())
+    }
+
+    /// Rough estimate of serialized size (must be <= true serialized size).
+    fn estimated_serialized_size(&self) -> usize {
+        let mut size = SERIALIZATION_OVERHEAD;
+        size += self.subject.as_str().len();
+        size += self.relation.as_str().len();
+        size += self.object.as_str().len();
+        if let Some(ref meta) = self.metadata {
+            for (k, v) in meta {
+                size += k.len() + v.len() + 8;
+            }
+        }
+        size
     }
 
     /// The canonical key for this tuple (subject + relation + object).
@@ -69,6 +101,8 @@ pub enum TupleAction {
 const MAX_METADATA_PAIRS: usize = 16;
 const MAX_METADATA_KEY_LENGTH: usize = 64;
 const MAX_METADATA_VALUE_LENGTH: usize = 512;
+/// Maximum serialized size of a relationship tuple in bytes.
+const MAX_TUPLE_SERIALIZED_SIZE: usize = 65_536; // 64 KiB
 
 pub fn validate_metadata(
     metadata: &HashMap<String, String>,
@@ -121,6 +155,9 @@ pub enum MetadataValidationError {
 
     #[error("metadata value too long: max {max} characters, got {actual}")]
     ValueTooLong { max: usize, actual: usize },
+
+    #[error("tuple too large: estimated {0} bytes, max 65536")]
+    TupleTooLarge(usize),
 }
 
 #[cfg(test)]

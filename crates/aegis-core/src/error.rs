@@ -82,6 +82,9 @@ pub enum AegisError {
 
     #[error("operation timed out after {0}ms")]
     Timeout(u64),
+
+    #[error("engine is closed and no longer accepting requests")]
+    EngineClosed,
 }
 
 /// Convenience alias for Result types throughout the Aegis codebase.

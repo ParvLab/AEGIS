@@ -117,6 +117,39 @@ impl GraphEngine {
         self
     }
 
+    fn with_cache<F, T>(&self, f: F) -> Option<T>
+    where
+        F: FnOnce(&mut DecisionCache) -> T,
+    {
+        self.cache.lock().ok().map(|mut guard| f(&mut *guard))
+    }
+
+    fn with_schema<F, T>(&self, f: F) -> Option<T>
+    where
+        F: FnOnce(&Schema) -> T,
+    {
+        self.schema.read().ok().map(|guard| f(&*guard))
+    }
+
+    fn check_closed(&self) -> AegisResult<()> {
+        if self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(AegisError::EngineClosed);
+        }
+        Ok(())
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Startup probe: returns Ok if the engine is initialized and healthy.
+    pub fn startup_probe(&self) -> AegisResult<()> {
+        self.check_closed()?;
+        self.storage.current_revision()?;
+        self.with_schema(|_| ()).ok_or(AegisError::EngineClosed)?;
+        Ok(())
+    }
+
     /// Access the underlying storage backend.
     pub fn storage(&self) -> &dyn StorageBackend {
         self.storage.as_ref()
@@ -131,7 +164,7 @@ impl GraphEngine {
     pub fn reload_schema(&self, new_schema: Schema) -> AegisResult<()> {
         let mut schema = self.schema.write().unwrap();
         *schema = new_schema;
-        self.cache.lock().unwrap().clear();
+        self.with_cache(|cache| cache.clear());
         Ok(())
     }
 
@@ -139,8 +172,8 @@ impl GraphEngine {
     pub fn health(&self) -> HealthReport {
         let revision = self.storage.current_revision().ok();
         let integrity = self.storage.integrity_check().ok();
-        let cache = self.cache.lock().unwrap();
-        let schema = self.schema.read().unwrap();
+        let cache_info = self.with_cache(|cache| (cache.hit_rate(), cache.len())).unwrap_or((0.0, 0));
+        let schema = self.schema.read().unwrap_or_else(|e| e.into_inner());
         HealthReport {
             healthy: revision.is_some() && integrity.as_ref().map(|i| i.passed).unwrap_or(false),
             revision: revision.unwrap_or(Revision::ZERO),
@@ -148,8 +181,8 @@ impl GraphEngine {
             backend: self.storage.backend_type().to_string(),
             backend_healthy: integrity.as_ref().map(|i| i.passed).unwrap_or(false),
             telemetry_healthy: self.telemetry_enabled.load(std::sync::atomic::Ordering::Relaxed),
-            cache_hit_rate: cache.hit_rate(),
-            cache_entries: cache.len(),
+            cache_hit_rate: cache_info.0,
+            cache_entries: cache_info.1,
             storage_integrity: integrity.as_ref().map(|i| i.passed).unwrap_or(false),
             error: None,
         }
@@ -158,7 +191,7 @@ impl GraphEngine {
     /// Graceful shutdown: flush cache, checkpoint WAL, close connections.
     pub fn close(&self) -> AegisResult<()> {
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
-        self.cache.lock().unwrap().clear();
+        self.with_cache(|cache| cache.clear());
         self.storage.close()
     }
 
@@ -224,8 +257,10 @@ impl GraphEngine {
         if !dry_run {
             let cache_span = span!(Level::DEBUG, crate::telemetry::spans::CACHE_LOOKUP);
             let _cache_guard = cache_span.enter();
-            let mut cache = self.cache.lock().unwrap();
-            if let Some(allowed) = cache.get(subject.as_str(), permission, resource.as_str(), revision) {
+            let from_cache = self.with_cache(|cache| {
+                cache.get(subject.as_str(), permission, resource.as_str(), revision)
+            });
+            if let Some(Some(allowed)) = from_cache {
                 info!(
                     allowed = allowed,
                     revision = field::display(&revision),
@@ -283,8 +318,9 @@ impl GraphEngine {
 
         if !dry_run {
             // Cache the decision
-            let mut cache = self.cache.lock().unwrap();
-            cache.insert(subject.as_str(), permission, resource.as_str(), allowed, revision);
+            self.with_cache(|cache| {
+                cache.insert(subject.as_str(), permission, resource.as_str(), allowed, revision);
+            });
 
             self.hooks.trigger(&hooks::HookEvent::OnCheck {
                 subject: subject.as_str().to_string(),
@@ -410,9 +446,26 @@ impl GraphEngine {
         )
         .entered();
 
+        self.check_closed()?;
+
         // Rate limit check
         let rl_key = format!("write:{}", tuple.object.as_str());
         self.rate_limiter.check(&rl_key, RateLimitOp::Write)?;
+
+        // Schema validation
+        let resource_type = resource_type_name(tuple.object.as_str());
+        let schema = self.schema.read().unwrap();
+        let type_def = match schema.types.get(&resource_type) {
+            Some(t) => t,
+            None => return Err(AegisError::UnknownSubjectType(resource_type)),
+        };
+        if !type_def.relations.contains_key(tuple.relation.as_str()) {
+            return Err(AegisError::UnknownRelation {
+                type_name: resource_type,
+                relation: tuple.relation.to_string(),
+            });
+        }
+        drop(schema);
 
         let revision = self.storage.write_tuple(tuple)?;
 
@@ -444,6 +497,8 @@ impl GraphEngine {
         )
         .entered();
 
+        self.check_closed()?;
+
         // Rate limit check
         let rl_key = format!("delete:{}", key.object.as_str());
         self.rate_limiter.check(&rl_key, RateLimitOp::Write)?;
@@ -469,12 +524,11 @@ impl GraphEngine {
 
     /// Invalidate the decision cache.
     pub fn invalidate_cache(&self) {
-        self.cache.lock().unwrap().clear();
+        self.with_cache(|cache| cache.clear());
     }
 
-    /// Invalidate cache entries older than a revision.
     pub fn invalidate_cache_before(&self, revision: Revision) {
-        self.cache.lock().unwrap().invalidate_before(revision);
+        self.with_cache(|cache| cache.invalidate_before(revision));
     }
 
     /// Resolve the revision to use for a check operation.
@@ -661,8 +715,9 @@ impl GraphEngine {
         .entered();
 
         let consistency = consistency.unwrap_or_default();
+        let pagination = pagination.clone().capped();
         self.storage
-            .query_tuples(filter, pagination, &consistency)
+            .query_tuples(filter, &pagination, &consistency)
     }
 
     /// Run schema migrations to reach the target version.

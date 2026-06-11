@@ -8,7 +8,8 @@ use crate::types::{
 };
 use chrono::{DateTime, Utc};
 use rocksdb::{
-    ColumnFamily, ColumnFamilyDescriptor, DBIterator, Direction, IteratorMode, Options, DB,
+    BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, DBIterator, Direction,
+    IteratorMode, Options, DB,
 };
 use serde_json;
 use std::collections::HashMap;
@@ -51,6 +52,14 @@ impl RocksDbStorage {
         let mut opts = Options::default();
         opts.create_missing_column_families(true);
         opts.create_if_missing(true);
+
+        // Configure block cache (8 MiB per column family)
+        let cache = Cache::new(8 * 1024 * 1024);
+        let mut block_opts = BlockBasedOptions::default();
+        block_opts.set_block_cache(&cache);
+        block_opts.set_block_size(4 * 1024); // 4 KiB blocks
+        block_opts.set_cache_index_and_filter_blocks(true);
+        opts.set_block_based_table_factory(&block_opts);
 
         let cfs = vec![
             CF_META,

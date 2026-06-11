@@ -168,6 +168,13 @@ mod tests {
                         description: None,
                     },
                 );
+                relations.insert(
+                    "editor".to_string(),
+                    crate::types::schema::RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut permissions = std::collections::HashMap::new();
                 permissions.insert(
                     "admin".to_string(),

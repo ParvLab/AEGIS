@@ -168,6 +168,27 @@ pub struct PaginationParams {
     pub cursor: Option<PaginationCursor>,
 }
 
+impl PaginationParams {
+    /// Maximum number of results per page.
+    pub const MAX_LIMIT: u64 = 10_000;
+
+    /// Create a new PaginationParams with limit capped at MAX_LIMIT.
+    pub fn new(limit: u64, cursor: Option<PaginationCursor>) -> Self {
+        Self {
+            limit: limit.min(Self::MAX_LIMIT),
+            cursor,
+        }
+    }
+
+    /// Cap the limit at MAX_LIMIT (used when deserializing from untrusted input).
+    pub fn capped(self) -> Self {
+        Self {
+            limit: self.limit.min(Self::MAX_LIMIT),
+            cursor: self.cursor,
+        }
+    }
+}
+
 impl Default for PaginationParams {
     fn default() -> Self {
         Self {

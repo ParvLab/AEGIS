@@ -42,6 +42,7 @@ pub fn initialize(path: String, schema_yaml: String) -> napi::Result<()> {
         max_readers: 4,
         busy_timeout_ms: 5000,
         wal_mode: true,
+        mmap_size: 0,
     };
     let mut storage =
         SqliteStorage::new(config).map_err(|e| napi::Error::from_reason(e.to_string()))?;
