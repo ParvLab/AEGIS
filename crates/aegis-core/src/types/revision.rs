@@ -116,6 +116,7 @@ pub struct HealthReport {
     pub schema_version: u32,
     pub backend: String,
     pub backend_healthy: bool,
+    pub telemetry_healthy: bool,
     pub cache_hit_rate: f64,
     pub cache_entries: usize,
     pub storage_integrity: bool,

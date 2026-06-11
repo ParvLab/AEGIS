@@ -115,11 +115,15 @@ Goal: Multi-node replication, distributed tracing, rate limiting hardening.
 
 ### Sprint 2.1 — CRDT sync layer
 
-- [ ] VersionVector — merge conflicts, causality tracking
-- [ ] Replicator — pull/push delta exchange
-- [ ] Delta exchange — serialize/deserialize tuple diffs
-- [ ] HTTP transport — REST endpoints for sync
-- [ ] Tests: two-node sync, conflict resolution
+- [x] `VersionVector` — merge conflicts, causality tracking
+- [x] `CrdtOperation` / `CrdtAction` — add/remove operations with version metadata
+- [x] `SyncTransport` trait — host app provides transport (HTTP, gRPC, Kafka, etc.)
+- [x] `InMemoryTransport` — channel-based transport for testing
+- [x] `HttpSyncTransport` (behind `crdt` feature) — HTTP client to push/pull from peers
+- [x] `CrdtReplicator` — record_operation, flush, apply_remote_operations, sync_from_peers
+- [ ] `DeltaBundle` — structured diff with version vector for batch exchange
+- [ ] Full two-node sync test: node A writes → sync via transport → node B verifies
+- [ ] Verify `cargo test -- crdt` passes
 
 ### Sprint 2.2 — OpenTelemetry integration
 

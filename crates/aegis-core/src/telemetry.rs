@@ -3,17 +3,23 @@
 //! Provides structured logging via `tracing` and optional OpenTelemetry export
 //! behind the `telemetry` feature flag.
 
+use tracing_subscriber::prelude::*;
 use tracing_subscriber::EnvFilter;
 
 /// Guard that flushes telemetry on drop.
 pub struct TelemetryGuard {
-    _private: (),
+    /// Whether OpenTelemetry was initialized.
+    pub otel_enabled: bool,
+    #[cfg(feature = "telemetry")]
+    provider: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
 }
 
 impl Drop for TelemetryGuard {
     fn drop(&mut self) {
         #[cfg(feature = "telemetry")]
-        flush_otel();
+        if let Some(provider) = self.provider.take() {
+            let _ = provider.shutdown();
+        }
     }
 }
 
@@ -30,7 +36,11 @@ pub fn init_logger() -> TelemetryGuard {
         .with_thread_ids(true)
         .init();
 
-    TelemetryGuard { _private: () }
+    TelemetryGuard {
+        otel_enabled: false,
+        #[cfg(feature = "telemetry")]
+        provider: None,
+    }
 }
 
 /// Initialize OpenTelemetry with OTLP export.
@@ -41,36 +51,36 @@ pub fn init_logger() -> TelemetryGuard {
 #[cfg(feature = "telemetry")]
 pub fn init_otel() -> Result<TelemetryGuard, Box<dyn std::error::Error>> {
     use opentelemetry::global;
-    use opentelemetry_otlp::WithExportConfig;
+    use opentelemetry_sdk::trace::SdkTracerProvider;
+    use opentelemetry_sdk::Resource;
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .build()?;
 
-    let provider = opentelemetry::sdk::trace::TracerProvider::builder()
-        .with_batch_exporter(exporter, opentelemetry::runtime::Tokio)
+    let provider = SdkTracerProvider::builder()
+        .with_batch_exporter(exporter)
+        .with_resource(Resource::builder().with_service_name("aegis").build())
         .build();
 
-    global::set_tracer_provider(provider);
+    global::set_tracer_provider(provider.clone());
 
-    // Re-register the tracing subscriber with OTLP layer
     let otel_layer = tracing_opentelemetry::layer();
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
+
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let fmt_layer = tracing_subscriber::fmt::layer()
         .with_target(true)
-        .with_thread_ids(true)
-        .finish()
+        .with_thread_ids(true);
+
+    tracing_subscriber::registry()
+        .with(fmt_layer.with_filter(filter))
         .with(otel_layer)
         .init();
 
-    Ok(TelemetryGuard { _private: () })
-}
-
-#[cfg(feature = "telemetry")]
-fn flush_otel() {
-    opentelemetry::global::shutdown_tracer_provider();
+    Ok(TelemetryGuard {
+        otel_enabled: true,
+        provider: Some(provider),
+    })
 }
 
 /// Span names used throughout the engine.
@@ -79,6 +89,7 @@ pub mod spans {
     pub const EXPLAIN: &str = "aegis.explain";
     pub const WRITE: &str = "aegis.write";
     pub const DELETE: &str = "aegis.delete";
+    pub const QUERY: &str = "aegis.query";
     pub const WATCH_SEND: &str = "aegis.watch_send";
     pub const HOOK_TRIGGER: &str = "aegis.hook_trigger";
     pub const CACHE_LOOKUP: &str = "aegis.cache_lookup";

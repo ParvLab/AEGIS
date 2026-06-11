@@ -20,7 +20,7 @@ use crate::storage::{StorageBackend, StorageTransaction, TupleFilter};
 use crate::types::{
     CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, FailClosedMode, HealthReport,
     MigrationResult, Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, Schema,
-    SubjectId, TupleKey, PaginatedTuples, PaginationParams,
+    SubjectId, PaginatedTuples, PaginationParams,
 };
 use crate::types::schema::SchemaCompatibilityReport;
 use std::collections::HashMap;
@@ -41,6 +41,7 @@ pub struct GraphEngine {
     closed: std::sync::atomic::AtomicBool,
     watchers: SharedWatchers,
     rate_limiter: TokenBucketRateLimiter,
+    telemetry_enabled: std::sync::atomic::AtomicBool,
 }
 
 impl GraphEngine {
@@ -56,7 +57,14 @@ impl GraphEngine {
             closed: std::sync::atomic::AtomicBool::new(false),
             watchers: Arc::new(Mutex::new(HashMap::new())),
             rate_limiter: TokenBucketRateLimiter::new(ratelimit::RateLimitConfig::default()),
+            telemetry_enabled: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// Mark telemetry as enabled (called after init_otel).
+    pub fn set_telemetry_enabled(&self, enabled: bool) {
+        self.telemetry_enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Access the hook registry to register callbacks.
@@ -139,6 +147,7 @@ impl GraphEngine {
             schema_version: schema.schema_version,
             backend: self.storage.backend_type().to_string(),
             backend_healthy: integrity.as_ref().map(|i| i.passed).unwrap_or(false),
+            telemetry_healthy: self.telemetry_enabled.load(std::sync::atomic::Ordering::Relaxed),
             cache_hit_rate: cache.hit_rate(),
             cache_entries: cache.len(),
             storage_integrity: integrity.as_ref().map(|i| i.passed).unwrap_or(false),
@@ -635,6 +644,12 @@ impl GraphEngine {
         pagination: &PaginationParams,
         consistency: Option<ConsistencyMode>,
     ) -> AegisResult<PaginatedTuples> {
+        let _span = span!(
+            Level::INFO,
+            crate::telemetry::spans::QUERY,
+        )
+        .entered();
+
         let consistency = consistency.unwrap_or_default();
         self.storage
             .query_tuples(filter, pagination, &consistency)

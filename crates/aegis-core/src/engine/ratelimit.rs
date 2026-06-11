@@ -87,10 +87,23 @@ impl TokenBucketRateLimiter {
         state.last_refill = now;
 
         if state.tokens < 1.0 {
+            tracing::warn!(
+                "rate_limit.throttled key={} op={}",
+                key,
+                match op { RateLimitOp::Check => "check", RateLimitOp::Write => "write" },
+            );
             return Err(AegisError::RateLimitExceeded(key.to_string()));
         }
 
         state.tokens -= 1.0;
+
+        tracing::debug!(
+            "rate_limit.allowed key={} op={} tokens_remaining={}",
+            key,
+            match op { RateLimitOp::Check => "check", RateLimitOp::Write => "write" },
+            state.tokens,
+        );
+
         Ok(())
     }
 

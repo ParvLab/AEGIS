@@ -80,6 +80,32 @@ impl Default for VersionVector {
     }
 }
 
+/// A batch of CRDT operations with the sender's version vector.
+/// Used for structured delta exchange between peers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeltaBundle {
+    /// The sender's node ID.
+    pub node_id: NodeId,
+    /// The sender's full version vector at the time of sending.
+    pub version: VersionVector,
+    /// The operations in this batch.
+    pub operations: Vec<CrdtOperation>,
+}
+
+impl DeltaBundle {
+    pub fn new(node_id: NodeId, version: VersionVector, operations: Vec<CrdtOperation>) -> Self {
+        Self {
+            node_id,
+            version,
+            operations,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.operations.is_empty()
+    }
+}
+
 /// A single CRDT operation (add or remove a tuple).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrdtOperation {
@@ -155,6 +181,7 @@ impl CrdtOperation {
 
 /// Sync state for a single peer.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct PeerState {
     node_id: NodeId,
     /// Last known version vector from this peer.
@@ -348,6 +375,7 @@ impl CrdtReplicator {
     }
 
     /// Flush all pending operations to all known peers.
+    /// Returns the number of operations sent.
     pub fn flush(&self) -> AegisResult<usize> {
         let pending: Vec<CrdtOperation> = {
             let mut p = self.pending.lock().unwrap();
@@ -359,14 +387,16 @@ impl CrdtReplicator {
             return Ok(0);
         }
 
+        let bundle = DeltaBundle::new(self.node_id, self.vector(), pending);
+
         let peers = self.peers.read().unwrap();
         let addresses: Vec<String> = peers.values().map(|p| p.address.clone()).collect();
         drop(peers);
 
         let mut sent = 0;
         for addr in &addresses {
-            if self.transport.send_operations(addr, &pending).is_ok() {
-                sent += pending.len();
+            if self.transport.send_operations(addr, &bundle.operations).is_ok() {
+                sent += bundle.operations.len();
             }
         }
 
@@ -617,5 +647,64 @@ mod tests {
 
         replicator.remove_peer(&node_b);
         assert_eq!(replicator.peer_count(), 0);
+    }
+
+    #[test]
+    fn test_two_node_sync() {
+        let node_a = NodeId::new_v4();
+        let node_b = NodeId::new_v4();
+
+        let mut storage_a = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage_a.initialize().unwrap();
+        let mut storage_b = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage_b.initialize().unwrap();
+
+        // Set up shared in-memory transport
+        let (tx_b, rx_b) = std::sync::mpsc::channel();
+        let transport = InMemoryTransport::new();
+        transport.register(node_b, tx_b);
+
+        // Node A replicator, peer is node B
+        let replicator_a = CrdtReplicator::new(node_a, Box::new(InMemoryTransport::new()));
+        replicator_a.add_peer(node_b, node_b.to_string());
+
+        // Create operation simulating node A writing a tuple
+        let mut vv = VersionVector::new();
+        vv.increment(node_a);
+        let op = CrdtOperation {
+            node_id: node_a,
+            counter: 1,
+            action: CrdtAction::Add,
+            subject: "user:alice".to_string(),
+            relation: "owner".to_string(),
+            object: "repo:fluxbus".to_string(),
+            metadata: None,
+            version: vv.clone(),
+        };
+
+        // Send from node A's transport to node B
+        transport
+            .send_operations(&node_b.to_string(), &[op.clone()])
+            .unwrap();
+
+        // Node B receives the operation
+        let received = rx_b.recv().unwrap();
+        assert_eq!(received.len(), 1);
+        assert_eq!(received[0].subject, "user:alice");
+
+        // Apply received operations to node B's storage
+        let replicator_b = CrdtReplicator::new(node_b, Box::new(InMemoryTransport::new()));
+        let applied = replicator_b
+            .apply_remote_operations(&received, &storage_b)
+            .unwrap();
+        assert_eq!(applied, 1);
+
+        // Verify node B has the tuple
+        let key = TupleKey {
+            subject: SubjectId::new("user:alice").unwrap(),
+            relation: Relation::new("owner").unwrap(),
+            object: ResourceId::new("repo:fluxbus").unwrap(),
+        };
+        assert!(storage_b.has_tuple(&key).unwrap());
     }
 }

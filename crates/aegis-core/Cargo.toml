@@ -25,13 +25,15 @@ rocksdb = { workspace = true, optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 
 [features]
 hot-reload = ["notify", "sha2"]
 postgres = ["tokio-postgres", "deadpool-postgres", "tokio"]
 rocksdb = ["dep:rocksdb"]
-telemetry = ["dep:opentelemetry", "dep:opentelemetry-otlp"]
+telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 crdt = []
 crdt-http = ["crdt", "dep:reqwest"]
