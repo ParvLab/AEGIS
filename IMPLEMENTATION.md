@@ -7,7 +7,7 @@
 
 ## Current Status (June 2026)
 
-**Sprints 0–7 Complete — 213 tests pass (211 unit + 2 integration), 0 failures**
+**Sprints 0–7 Complete — 217 tests pass (211 unit + 6 integration), 0 failures**
 
 | Sprint | Focus | Status | Key Deliverables |
 |--------|-------|--------|-----------------|
@@ -18,8 +18,8 @@
 | 4 | CLI & REPL | ✅ | 19 commands, REPL with tab completion + colors, --dry-run |
 | 5 | Test Coverage | ✅ | 24 new tests across 12 categories |
 | **6** | **Polish & Cleanup** | **✅** | **Dead code removal, deps cleanup, LRU cache, rate limiter GC, health fields, CI hardening, supply-chain docs** |
-| 7 | Go & Python SDKs | ⬜ | Post-GA |
-| 8 | Distributed Features | ⬜ | Post-GA |
+| 7 | Go & Python SDKs | ✅ | C FFI, Go CGo SDK, PyO3 bindings |
+| 8 | Distributed Features | ❌ | Removed — embedded-only scope |
 
 **Architecture:** Purely embedded — zero servers, ports, HTTP/gRPC listeners. SQLite + RocksDB as embedded storage backends (PG/MySQL available programmatically, not in CLI).
 
@@ -167,7 +167,7 @@ Phase 1 + 2 complete
 
 **Files created:** 22 source files across 2 crates
 
-**Tests:** 213 total (211 core + 2 integration) — all passing
+**Tests:** 217 total (211 unit + 6 integration) — all passing
 
 ---
 
@@ -448,7 +448,7 @@ Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 | SDK Cross-Language | 9 | SDK-001–009 |
 | Performance Benchmarks | 11 | BENCH-001–011 |
 
-### Total: 213 implemented (211 unit + 2 integration), 0 failures — [tracked in `.opencode/plans/implementation-plan.md`]
+### Total: 217 implemented (211 unit + 6 integration), 0 failures — [tracked in `.opencode/plans/implementation-plan.md`]
 
 ---
 

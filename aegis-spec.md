@@ -171,8 +171,7 @@ The contract is: **auth provider gives Aegis an identity; Aegis decides what tha
 
 | Tool | Purpose |
 |---|---|
-| WAL (Write-Ahead Log) | Storage-level concurrency (SQLite); replication stream (future) |
-| CRDT | (removed — embedded-only) |
+| WAL (Write-Ahead Log) | Storage-level concurrency (SQLite) |
 
 ---
 

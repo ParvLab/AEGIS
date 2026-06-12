@@ -100,6 +100,26 @@ impl SqliteConfig {
     }
 }
 
+// ── Connection Customizer ─────────────────────────────────────
+
+#[derive(Debug)]
+struct SqliteConnectionConfigurator {
+    config: SqliteConfig,
+}
+
+impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for SqliteConnectionConfigurator {
+    fn on_acquire(&self, conn: &mut Connection) -> Result<(), rusqlite::Error> {
+        conn.execute_batch(&format!("PRAGMA busy_timeout = {};", self.config.busy_timeout_ms))?;
+        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        if self.config.mmap_size > 0 {
+            conn.execute_batch(&format!("PRAGMA mmap_size = {};", self.config.mmap_size))?;
+        }
+        Ok(())
+    }
+}
+
 // ── Storage Adapter ────────────────────────────────────────────
 
 pub struct SqliteStorage {
@@ -120,8 +140,10 @@ impl SqliteStorage {
             SqliteConnectionManager::file(&config.path)
         };
 
+        let customizer = SqliteConnectionConfigurator { config: config.clone() };
         let pool = Pool::builder()
             .max_size(config.max_readers + 1) // +1 for potential write connection
+            .connection_customizer(Box::new(customizer))
             .build(manager)
             .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
 
@@ -163,6 +185,8 @@ impl SqliteStorage {
     }
 
     /// Configure PRAGMA settings on a connection.
+    /// (Connection customizer handles PRAGMAs on every checkout; this exists
+    /// for the initial DDL connection before the pool is fully established.)
     fn configure_connection(conn: &Connection, config: &SqliteConfig) -> AegisResult<()> {
         conn.execute_batch(&format!(
             "PRAGMA busy_timeout = {};",

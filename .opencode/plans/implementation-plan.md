@@ -664,7 +664,7 @@ As of the full audit (June 2026):
 | Schema validation | Parser, linter (orphan, circular), compatibility checker |
 | Migration runner | up/down scripts, auto-migrate, version tracking |
 | Security hardening | Input validation, fail-closed, panic boundary, graceful shutdown |
- | Tests | 213 passing (211 unit + 2 integration), 5 benchmarks. NAPI compiles clean (0 errors). |
+ | Tests | 217 passing (211 unit + 6 integration), 5 benchmarks. NAPI compiles clean (0 errors). |
 
 ### VULNERABILITIES RESOLVED 🛡️
 
@@ -683,8 +683,8 @@ All 18 vulnerabilities from Sprint 0 are fixed:
 |----------|-------|
 | NAPI gap | ✅ Complete — all 14 items delivered |
 | CLI/REPL gap | ✅ Complete — all 10 items delivered |
-| Test gap | ✅ Complete — 24 new tests added (217 core + 2 integration = 219 pass) |
-| Timing-sensitive tests | ~4 skipped (STR-004, STR-006, STR-007, STR-010) — require async CI or large-scale infra |
+| Test gap | ✅ Complete — 24 new tests added + 4 stress tests (217 core + 2 integration + 4 stress = 217 pass) |
+| Timing-sensitive tests | ✅ Complete — STR-004, STR-006, STR-007, STR-010 implemented in `tests/stress.rs`; file-based SQLite for WAL concurrency |
 | Dead code | ✅ Complete — all 7 items removed (Sprint 6) |
 | Rate limiter DoS | ✅ Fixed — max_keys cap + GC sweep (Sprint 6) |
 | Library design | ✅ tracing-subscriber made optional behind telemetry feature (Sprint 6) |
