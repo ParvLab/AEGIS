@@ -265,8 +265,6 @@ const auth = new Aegis({
 |----|------|-------|--------|
 | E2E-050 | Embedded single-process | Application with embedded Aegis, perform operations | All operations succeed in-process |
 | E2E-051 | Multi-instance shared PostgreSQL | 2 app instances sharing same PostgreSQL backend | Both instances see same data |
-| E2E-052 | Edge replica (read-only) | Central write, edge replica reads | Edge returns correct data |
-| E2E-053 | Edge replica rejects writes | Attempt write on edge replica | Write rejected with error |
 
 ---
 

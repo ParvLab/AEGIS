@@ -19,10 +19,6 @@ pub mod testing;
 pub mod types;
 
 /// Re-export the most commonly used types at the crate root.
-pub use crate::engine::crdt::{
-    CrdtAction, CrdtOperation, CrdtReplicator, DeltaBundle, InMemoryTransport, NodeId,
-    SyncTransport, VersionVector,
-};
 pub use crate::engine::gdpr::{GdprConfig, GdprManager, SubjectDataExport};
 pub use crate::engine::ratelimit::{RateLimitConfig, RateLimitOp, TokenBucketRateLimiter};
 pub use crate::engine::watch::{WatchEvent, WatchEventType, WatchFilter, WatchSubscription};

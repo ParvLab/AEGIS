@@ -23,7 +23,7 @@ End-to-end implementation plan organized by **9 sprints** covering every remaini
 | S5 | Test Coverage | 12 categories (~35+ tests) | ~2 weeks | **GA GATE** |
 | S6 | Polish & Cleanup | 8 items (dead code, deps, CI, etc.) | ~1 week | **GA GATE** |
 | S7 | Go + Python SDKs | 2 new SDK crates | ~7 weeks | Post-GA |
-| S8 | Distributed Features | 6 items (CRDT full loop, edge, etc.) | ~9 weeks | Post-GA |
+| S8 | ~~Distributed Features~~ | ~~Removed — not applicable (embedded-only)~~ | ~~—~~ | ❌ |
 
 ---
 
@@ -640,56 +640,6 @@ Goal: First-class SDKs for Go and Python ecosystems (in-workspace, not separate 
 
 ---
 
-## Sprint 8 — Distributed Features (Post-GA)
-
-Goal: Full V3 spec — CRDT sync, edge replicas, distributed cache, multi-region.
-
-### S8.1 — CRDT full sync loop
-
-Current: CRDT types + `CrdtReplicator` + `InMemoryTransport` exist. No bidirectional sync loop.
-
-- [ ] `CrdtStorage` wrapper: wraps a `StorageBackend`, records all mutations as CRDT ops
-- [ ] Background sync task: periodic flush of pending ops to peers
-- [ ] Pull endpoint: HTTP/gRPC server that accepts delta pull requests
-- [ ] Push endpoint: HTTP/gRPC server that accepts incoming deltas
-- [ ] Conflict resolution: LWW on concurrent adds, add-wins on concurrent add/remove
-- [ ] Full multi-node integration test: 3 nodes, write on each, all converge
-
-### S8.2 — Edge read replicas
-
-- [ ] Read-only mode flag on engine init
-- [ ] Writes return `AegisError::OperationNotPermitted` in read-only mode
-- [ ] `ConsistencyMode::FullyConsistent` triggers sync from primary before read
-- [ ] Watch-based cache invalidation from primary
-
-### S8.3 — Distributed decision cache
-
-- [ ] `DistributedCache` trait with `get()` / `set()` / `invalidate()`
-- [ ] Redis implementation via `redis-rs`
-- [ ] TTL + revision-based invalidation (same as in-process)
-- [ ] Fallback to in-process cache when Redis unavailable
-
-### S8.4 — Multi-region consistency tokens
-
-- [ ] Token encodes: `(revision, nodeId, wall_clock, region, schema_hash)`
-- [ ] Cross-region validation: bounded staleness (e.g., 100ms tolerance)
-- [ ] Clock skew detection and warning
-
-### S8.5 — Distributed traversal dispatch
-
-- [ ] Partition graph by tenant namespace
-- [ ] gRPC service for remote sub-traversal execution
-- [ ] Fan-out: dispatch sibling branches to remote nodes
-- [ ] Fan-in: collect results with short-circuit on first allow
-
-### S8.6 — WAL-based sync (CDC)
-
-- [ ] Ship SQLite WAL pages from primary to replicas
-- [ ] Replicas apply WAL pages to reconstruct state
-- [ ] Alternative: PostgreSQL logical replication slot integration
-
----
-
 ## Appendix: Current State (Reference)
 
 As of the full audit (June 2026):
@@ -703,7 +653,7 @@ As of the full audit (June 2026):
 | Transactions | `StorageTransaction` trait, savepoints, batch writes |
 | Consistency | 3 modes (MinimizeLatency, AtRevision, FullyConsistent) |
 | Cache | Decision + traversal caches, TTL + revision-based invalidation |
-| CRDT layer | VersionVector, DeltaBundle, CrdtReplicator, InMemoryTransport, HttpSyncTransport |
+| ~~CRDT layer~~ | ~~Removed — not applicable (embedded-only)~~ |
 | GDPR | Export, erasure (cascade/transfer/fail), retention, compaction |
 | Watch subscriptions | WatchSubscription, SharedWatchers, multi-filter |
 | Rate limiter | Token bucket per-key |
@@ -740,7 +690,7 @@ All 18 vulnerabilities from Sprint 0 are fixed:
 | Library design | ✅ tracing-subscriber made optional behind telemetry feature (Sprint 6) |
 | CI hardening | ✅ cargo-deny, fuzz targets, dependabot, Scorecards (Sprint 6) |
 | Go/Python SDKs | 2 new SDKs (Post-GA) |
-| Distributed | 6 V3 features (CRDT full loop, edge replicas, distributed cache, multi-region tokens, distributed traversal, WAL sync) (Post-GA) |
+| Distributed | ❌ Explicitly removed — not applicable (embedded-only architecture) |
 
 ---
 

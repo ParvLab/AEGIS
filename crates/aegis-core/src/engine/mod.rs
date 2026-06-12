@@ -1,6 +1,5 @@
 pub mod cache;
 pub mod condition;
-pub mod crdt;
 pub mod gdpr;
 pub mod hooks;
 #[cfg(feature = "hot-reload")]

@@ -32,7 +32,6 @@ opentelemetry = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
-reqwest = { workspace = true, optional = true }
 libc = { workspace = true }
 
 [dev-dependencies]
@@ -55,5 +54,4 @@ postgres = ["tokio-postgres", "deadpool-postgres", "tokio", "tokio-postgres-rust
 mysql = ["dep:mysql_async", "tokio"]
 rocksdb = ["dep:rocksdb"]
 telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tracing-subscriber"]
-crdt = []
-crdt-http = ["crdt", "dep:reqwest"]
+

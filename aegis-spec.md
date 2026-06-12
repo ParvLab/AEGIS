@@ -31,7 +31,7 @@
 
 ## 1. Project Summary
 
-**Aegis** is an embedded, distributed, relationship-based authorization runtime (ReBAC). It is inspired by production-grade systems like Google Zanzibar and SpiceDB, but built with a fundamentally different philosophy:
+**Aegis** is an embedded, relationship-based authorization runtime (ReBAC). It is inspired by production-grade systems like Google Zanzibar and SpiceDB, but built with a fundamentally different philosophy:
 
 > *Authorization should feel like a library, not infrastructure.*
 
@@ -93,7 +93,7 @@ Aegis runs inside the application process itself. Permission checks are local fu
 | **Durability** | Authorization data must persist across restarts, crashes, and migrations |
 | **Local Evaluation** | Checks are fast because they run in-process, not over the network |
 | **Concurrent Safety** | Safe for multi-threaded access with clear locking semantics |
-| **Progressive Scalability** | Start embedded; scale to distributed without changing the API |
+| **Embedded-first** | Purely embedded, no servers, ports, or infrastructure |
 
 ---
 
@@ -172,7 +172,7 @@ The contract is: **auth provider gives Aegis an identity; Aegis decides what tha
 | Tool | Purpose |
 |---|---|
 | WAL (Write-Ahead Log) | Storage-level concurrency (SQLite); replication stream (future) |
-| CRDT | Future multi-region graph consistency |
+| CRDT | (removed — embedded-only) |
 
 ---
 
@@ -273,7 +273,6 @@ The contract is: **auth provider gives Aegis an identity; Aegis decides what tha
 **7. Event Log (future)**
 - Append-only relationship event stream
 - Enables graph reconstruction, rollback, and sync
-- CRDT delta sync layer
 
 ---
 
@@ -530,7 +529,7 @@ Aegis provides **revision-based snapshot isolation** inspired by Google Zanzibar
 |---|---|---|
 | `minimize_latency` (default) | Reads from latest available local snapshot. May be slightly stale in multi-instance deployments. | Hot-path permission checks |
 | `at_revision(token)` | Reads from a snapshot at least as fresh as the given revision token. Guarantees read-your-writes. | After a relationship write, check reflects it |
-| `fully_consistent` | Reads the absolute latest committed state. Highest latency in distributed setups. | Audit, compliance, administrative checks |
+| \`fully_consistent\` | Reads the absolute latest committed state. Highest latency. | Audit, compliance, administrative checks |
 
 ### Revision Token
 
@@ -1117,34 +1116,6 @@ Application Process
 
 **Best for:** startups, SaaS products, developer tools, local-first apps.
 
-### Mode 2: Distributed / Cluster
-
-Multiple application instances share a central Aegis-aware storage layer. Optional Aegis coordination layer for distributed caching and watch streams.
-
-```
-Applications (N instances)
-       ↓
- Aegis Cluster (coordination layer)
-       ↓
- Distributed Storage (PostgreSQL / CockroachDB)
-```
-
-**Best for:** enterprises, large-scale SaaS, multi-region systems.
-
-### Mode 3: Hybrid Edge
-
-Central graph with edge replicas for low-latency offline evaluation.
-
-```
-Central Graph (authoritative)
-       ↓
-  Edge Replicas (read-only, synced via CRDT)
-       ↓
-  Local Evaluation (near-user, offline-capable)
-```
-
-**Best for:** CDN-native apps, edge runtimes, IoT, mobile-first platforms.
-
 ---
 
 ## 14. Security Model
@@ -1236,7 +1207,6 @@ Every write to the graph is:
 - Graph sharding by tenant or resource namespace
 - Distributed recursive evaluation with work dispatch
 - Consistency tokens for snapshot-consistent reads across shards
-- CRDT-based replication streams via WAL
 - Partial graph sync for edge nodes
 
 ### Performance Optimizations
@@ -1250,25 +1220,6 @@ Every write to the graph is:
 | Parallel Evaluation | Concurrent sibling branch evaluation in Rust async |
 | Short-circuit | First `allow` in OR branches terminates remaining checks via structured cancellation |
 | Cycle Detection | Prevents infinite loops in circular graphs |
-
-### CRDT-Based Graph Sync (V3+)
-
-Multi-node deployments use an **OR-Set CRDT** (Observed-Removed Set) over relationship tuples for convergent synchronization:
-
-- Each tuple `(subject, relation, object)` is a unique element in the set
-- Deletes are tracked via tombstones (add-wins semantics)
-- Merge is commutative, associative, and idempotent
-- Delta-state sync: only transmit differences between nodes
-- SQLite remains authoritative transactional store; CRDT layer syncs between instances
-
-```
-Node A (primary)
-  │
-  ├── CRDT delta ──→ Node B (edge)
-  │
-  └── CRDT delta ──→ Node C (edge)
-
-All nodes converge to the same state given the same operations.
 ```
 
 ---
@@ -1614,7 +1565,6 @@ const auth = new Aegis({
 
 ### V3 — Scale
 
-- CRDT-based graph replication
 - Distributed traversal dispatch
 - Multi-region consistency tokens
 - Partial graph sync for edge nodes
@@ -1726,8 +1676,6 @@ End-to-end tests validate the full system across SDK boundaries, language runtim
 | E2E-019 | Watch subscription | Subscribe to changes on an object, write a tuple, verify event received | Event received with correct subject/relation/object |
 | E2E-020 | Audit log queries | Perform writes/deletes, query audit log by time range | All relevant entries returned with correct timestamps |
 | E2E-021 | GDPR user deletion with transfer | Delete user with `ownershipPolicy: "transfer"` | Ownership transferred, user's other relations removed |
-| E2E-024 | CRDT sync (V3+) | Two nodes with CRDT sync, write on node A, read on node B | Node B converges to same state |
-| E2E-025 | Edge replica read-only | Write to central, read from edge replica | Edge replica returns same result as central for reads |
 
 ### Test Environment Matrix
 
@@ -1737,7 +1685,6 @@ End-to-end tests validate the full system across SDK boundaries, language runtim
 | CI (integration) | SQLite file on disk | Embedded | Persistence and concurrent access |
 | CI (e2e) | PostgreSQL | Embedded | Cross-backend compatibility |
 | Staging | PostgreSQL | Distributed (2 instances) | Multi-instance consistency |
-| Staging (edge) | SQLite + CRDT | Hybrid (central + edge) | CRDT sync correctness |
 | Performance | RocksDB | Embedded | Throughput and latency benchmarks |
 
 ### Edge Cases Coverage
@@ -1788,7 +1735,6 @@ All Aegis errors extend a base `AegisError` type:
 | Multi-server production | PostgreSQL (shared) |
 | High-write throughput | RocksDB |
 | Browser / edge runtime | IndexedDB |
-| Multi-region | PostgreSQL + CRDT replication (V3) |
 
 ---
 
