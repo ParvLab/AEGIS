@@ -11,6 +11,7 @@ napi-build = "2"
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
+chrono = "0.4"
 napi = { version = "2", features = ["napi8", "serde-json"] }
 napi-derive = "2"
 
