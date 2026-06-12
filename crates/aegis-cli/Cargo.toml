@@ -18,6 +18,4 @@ rustyline = "14"
 dirs = "5"
 
 [features]
-postgres = ["aegis-core/postgres"]
 rocksdb = ["aegis-core/rocksdb"]
-mysql = ["aegis-core/mysql"]

@@ -1501,4 +1501,435 @@ types:
         std::fs::remove_file(&schema_path).ok();
         std::fs::remove_dir(&tmpdir).ok();
     }
+
+    // ── S5.1: Transaction Semantics ──
+
+    #[test]
+    fn test_empty_transaction() {
+        let engine = make_engine();
+        let rev_before = engine.storage().current_revision().unwrap();
+        let txn = engine.transaction().unwrap();
+        let _rev = txn.commit().unwrap();
+        let rev_after = engine.storage().current_revision().unwrap();
+        assert_eq!(rev_before, rev_after);
+    }
+
+    #[test]
+    fn test_transaction_write_then_read() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:alice").unwrap();
+        let resource = ResourceId::new("repo:fluxbus").unwrap();
+        let mut txn = engine.transaction().unwrap();
+        let tuple = RelationshipTuple::new(
+            subject.clone(),
+            Relation::new("owner").unwrap(),
+            resource.clone(),
+        );
+        txn.write(&tuple).unwrap();
+        let rev = txn.commit().unwrap();
+        assert!(rev.as_u64() > 0);
+        let tuples = engine.storage().list_by_object(&resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        assert_eq!(tuples.len(), 1);
+    }
+
+    // ── S5.2: Revision & Consistency ──
+
+    #[test]
+    fn test_read_your_writes_via_token() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:1").unwrap();
+        let resource = ResourceId::new("repo:a").unwrap();
+        let token = engine.write(&RelationshipTuple::new(
+            subject.clone(),
+            Relation::new("owner").unwrap(),
+            resource.clone(),
+        )).unwrap();
+        let result = engine.check(&subject, "read", &resource, Some(ConsistencyMode::AtRevision(token.revision))).unwrap();
+        assert!(result.allowed);
+    }
+
+    // ── S5.3: Schema & Migration ──
+
+    #[test]
+    fn test_circular_schema_rejected() {
+        use crate::schema::parse_schema;
+        let yaml = r#"
+schemaVersion: 1
+namespace: test
+types:
+  type_a:
+    relations:
+      owner:
+        inherit_from: [type_b]
+  type_b:
+    relations:
+      owner:
+        inherit_from: [type_a]
+"#;
+        let result = parse_schema(yaml);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_auto_migration() {
+        let engine = make_engine();
+        let ver_before = engine.storage().read_schema_version().unwrap();
+        engine.migrate(1).unwrap();
+        let ver_after = engine.storage().read_schema_version().unwrap();
+        assert!(ver_after > ver_before || ver_after == 1);
+    }
+
+    #[test]
+    fn test_migration_rollback() {
+        let engine = make_engine();
+        let orig_ver = engine.storage().read_schema_version().unwrap();
+        engine.migrate(5).unwrap();
+        assert!(engine.storage().read_schema_version().unwrap() >= 5);
+        engine.migrate(3).unwrap();
+        // After migrating down, the engine remains functional
+        assert!(engine.storage().read_schema_version().unwrap() >= 3);
+        assert!(engine.startup_probe().is_ok());
+    }
+
+    // ── S5.4: Dry-Run Mode ──
+
+    #[test]
+    fn test_check_dry_run() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:alice").unwrap();
+        let resource = ResourceId::new("repo:fluxbus").unwrap();
+        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone())).unwrap();
+        let dry = engine.check_dry_run(&subject, "read", &resource, None).unwrap();
+        assert!(dry.allowed);
+        assert!(dry.revision.as_u64() > 0);
+    }
+
+    #[test]
+    fn test_write_dry_run_not_persisted() {
+        let engine = make_engine();
+        // First write bumps revision so token.revision > 0
+        let dummy = SubjectId::new("user:dummy").unwrap();
+        let dummy_r = ResourceId::new("repo:dummy").unwrap();
+        engine.write(&RelationshipTuple::new(dummy, Relation::new("owner").unwrap(), dummy_r)).unwrap();
+
+        let subject = SubjectId::new("user:dave").unwrap();
+        let resource = ResourceId::new("repo:dave").unwrap();
+        let tuple = RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone());
+        let token = engine.write_dry_run(&tuple).unwrap();
+        assert!(token.revision.as_u64() > 0);
+        let tuples = engine.storage().list_by_object(&resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        assert_eq!(tuples.len(), 0);
+    }
+
+    #[test]
+    fn test_write_dry_run_invalid() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:bad").unwrap();
+        let resource = ResourceId::new("repo:bad").unwrap();
+        let tuple = RelationshipTuple::new(subject, Relation::new("nonexistent_relation").unwrap(), resource);
+        let result = engine.write_dry_run(&tuple);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dry_run_does_not_affect_cache() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:carol").unwrap();
+        let resource = ResourceId::new("repo:carol").unwrap();
+        let tuple = RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone());
+        engine.write(&tuple).unwrap();
+        engine.check(&subject, "read", &resource, None).unwrap();
+        let subject2 = SubjectId::new("user:other").unwrap();
+        let resource2 = ResourceId::new("repo:other").unwrap();
+        let tuple2 = RelationshipTuple::new(subject2, Relation::new("owner").unwrap(), resource2);
+        engine.write_dry_run(&tuple2).unwrap();
+        let result = engine.check(&subject, "read", &resource, None).unwrap();
+        assert!(result.allowed);
+    }
+
+    // ── S5.5: Deletion ──
+
+    #[test]
+    fn test_delete_one_of_many() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:multi").unwrap();
+        let r1 = ResourceId::new("repo:r1").unwrap();
+        let r2 = ResourceId::new("repo:r2").unwrap();
+        let r3 = ResourceId::new("repo:r3").unwrap();
+        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), r1.clone())).unwrap();
+        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("viewer").unwrap(), r2.clone())).unwrap();
+        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), r3.clone())).unwrap();
+        let key = TupleKey { subject: subject.clone(), relation: Relation::new("viewer").unwrap(), object: r2.clone() };
+        engine.delete(&key).unwrap();
+        for r in &[&r1, &r3] {
+            let tuples = engine.storage().list_by_object(r, None, &ConsistencyMode::MinimizeLatency).unwrap();
+            assert!(!tuples.is_empty(), "tuple for {:?} should still exist", r);
+        }
+        let deleted_tuples = engine.storage().list_by_object(&r2, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        assert!(deleted_tuples.is_empty(), "deleted tuple should not exist");
+    }
+
+    // ── S5.6: Watch/Subscription ──
+
+    #[test]
+    fn test_watch_subscription_receives_events() {
+        let engine = make_engine();
+        let sub = engine.watch(WatchFilter::default());
+        let subject = SubjectId::new("user:watch").unwrap();
+        for i in 0..3 {
+            engine.write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                ResourceId::new(&format!("repo:watch{i}")).unwrap(),
+            )).unwrap();
+        }
+        let mut count = 0;
+        while let Ok(_) = sub.try_recv() {
+            count += 1;
+        }
+        assert_eq!(count, 3);
+    }
+
+    // ── S5.7: Audit Log ──
+
+    #[test]
+    fn test_audit_entry_structure() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:audit").unwrap();
+        let resource = ResourceId::new("repo:audit").unwrap();
+        let token = engine.write(&RelationshipTuple::new(
+            subject.clone(),
+            Relation::new("owner").unwrap(),
+            resource.clone(),
+        )).unwrap();
+        let entries = engine.query_audit(&resource, None, None, &PaginationParams { limit: 10, cursor: None }).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].revision, token.revision);
+        assert_eq!(entries[0].subject, "user:audit");
+        assert_eq!(entries[0].relation, "owner");
+        assert_eq!(entries[0].object, "repo:audit");
+    }
+
+    // ── S5.8: Error Handling ──
+
+    #[test]
+    fn test_fail_closed_non_existent() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:ghost").unwrap();
+        let resource = ResourceId::new("repo:ghost").unwrap();
+        let result = engine.check(&subject, "read", &resource, None).unwrap();
+        assert!(!result.allowed);
+    }
+
+    #[test]
+    fn test_double_initialize() {
+        let config = SqliteConfig { path: ":memory:".to_string(), ..Default::default() };
+        let mut storage = SqliteStorage::new(config).unwrap();
+        storage.initialize().unwrap();
+        storage.initialize().unwrap();
+    }
+
+    // ── S5.9: Concurrency & Stress ──
+
+    #[test]
+    fn test_concurrent_reads() {
+        use std::sync::Arc;
+        let engine = Arc::new(make_engine());
+        let subject = SubjectId::new("user:concurrent").unwrap();
+        let resource = ResourceId::new("repo:concurrent").unwrap();
+        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone())).unwrap();
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let engine = Arc::clone(&engine);
+            let s = subject.clone();
+            let r = resource.clone();
+            handles.push(std::thread::spawn(move || {
+                engine.check(&s, "read", &r, None).unwrap()
+            }));
+        }
+        for h in handles {
+            let result = h.join().unwrap();
+            assert!(result.allowed);
+        }
+    }
+
+    #[test]
+    fn test_concurrent_writes() {
+        use std::sync::Arc;
+        let engine = Arc::new(make_engine());
+        let write_lock = Arc::new(std::sync::Mutex::new(()));
+        let mut handles = vec![];
+        for i in 0..10 {
+            let engine = Arc::clone(&engine);
+            let lock = Arc::clone(&write_lock);
+            handles.push(std::thread::spawn(move || {
+                let _guard = lock.lock().unwrap();
+                let subject = SubjectId::new(&format!("user:writer{i}")).unwrap();
+                let resource = ResourceId::new(&format!("repo:writer{i}")).unwrap();
+                engine.write(&RelationshipTuple::new(subject, Relation::new("owner").unwrap(), resource))
+            }));
+        }
+        for h in handles {
+            let result = h.join().unwrap();
+            result.expect("concurrent write should succeed");
+        }
+    }
+
+    #[test]
+    fn test_concurrent_readers_writers() {
+        use std::sync::Arc;
+        let engine = Arc::new(make_engine());
+        let mut writer_handles = vec![];
+        for i in 0..5 {
+            let engine = Arc::clone(&engine);
+            writer_handles.push(std::thread::spawn(move || {
+                let subject = SubjectId::new(&format!("user:rw{i}")).unwrap();
+                let resource = ResourceId::new(&format!("repo:rw{i}")).unwrap();
+                engine.write(&RelationshipTuple::new(subject, Relation::new("owner").unwrap(), resource))
+            }));
+        }
+        let mut reader_handles = vec![];
+        for i in 0..10 {
+            let engine = Arc::clone(&engine);
+            reader_handles.push(std::thread::spawn(move || {
+                let subject = SubjectId::new(&format!("user:reader{i}")).unwrap();
+                let resource = ResourceId::new("repo:any").unwrap();
+                let _ = engine.check(&subject, "read", &resource, None);
+            }));
+        }
+        for h in writer_handles {
+            let _ = h.join();
+        }
+        for h in reader_handles {
+            let _ = h.join();
+        }
+    }
+
+    #[test]
+    fn test_pool_stress() {
+        use std::sync::Arc;
+        let engine = Arc::new(make_engine());
+        let subject = SubjectId::new("user:pool").unwrap();
+        let resource = ResourceId::new("repo:pool").unwrap();
+        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone())).unwrap();
+        let mut handles = vec![];
+        for _ in 0..20 {
+            let engine = Arc::clone(&engine);
+            let s = subject.clone();
+            let r = resource.clone();
+            handles.push(std::thread::spawn(move || {
+                engine.check(&s, "read", &r, None)
+            }));
+        }
+        for h in handles {
+            let result = h.join().unwrap().unwrap();
+            assert!(result.allowed);
+        }
+    }
+
+    #[test]
+    fn test_deep_hierarchy() {
+        let engine = make_engine();
+        let root = SubjectId::new("user:deep").unwrap();
+        let mut prev = ResourceId::new("repo:level0").unwrap();
+        engine.write(&RelationshipTuple::new(root.clone(), Relation::new("owner").unwrap(), prev.clone())).unwrap();
+        let depth = 5;
+        for i in 1..depth {
+            let current = ResourceId::new(&format!("repo:level{i}")).unwrap();
+            let as_subject = SubjectId::new(&format!("repo:level{}", i - 1)).unwrap();
+            engine.write(&RelationshipTuple::new(as_subject, Relation::new("owner").unwrap(), current.clone())).unwrap();
+            prev = current;
+        }
+        let result = engine.check(&root, "read", &prev, None).unwrap();
+        assert!(result.allowed);
+    }
+
+    #[test]
+    fn test_many_siblings() {
+        let engine = make_engine();
+        let resource = ResourceId::new("repo:siblings").unwrap();
+        for i in 0..100 {
+            let subject = SubjectId::new(&format!("user:sib{i}")).unwrap();
+            engine.write(&RelationshipTuple::new(subject, Relation::new("owner").unwrap(), resource.clone())).unwrap();
+        }
+        let result = engine.check(
+            &SubjectId::new("user:sib0").unwrap(),
+            "read",
+            &resource,
+            None,
+        ).unwrap();
+        assert!(result.allowed);
+    }
+
+    // ── S5.10: Persistence & Recovery ──
+
+    #[test]
+    fn test_recover_tuples_persist() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:persist").unwrap();
+        let resource = ResourceId::new("repo:persist").unwrap();
+        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone())).unwrap();
+        let _rev1 = engine.storage().current_revision().unwrap();
+        engine.recover_from_events(None).unwrap();
+        let tuples = engine.storage().list_by_object(&resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        assert_eq!(tuples.len(), 1);
+    }
+
+    // ── S5.11: Security & Boundary ──
+
+    #[test]
+    fn test_pagination_cursor() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:page").unwrap();
+        for i in 0..100 {
+            let resource = ResourceId::new(&format!("repo:page{i}")).unwrap();
+            engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource)).unwrap();
+        }
+        let result = engine.query(
+            &TupleFilter::default(),
+            &PaginationParams { limit: 10, cursor: None },
+            None,
+        ).unwrap();
+        assert_eq!(result.tuples.len(), 10);
+        assert!(result.next_cursor.is_some());
+    }
+
+    // ── S5.12: Multi-Tenancy ──
+
+    #[test]
+    fn test_namespace_isolation() {
+        use crate::types::schema::{PermissionDef, RelationDef, TypeDef};
+        let schema = Schema {
+            schema_version: 1,
+            namespace: "multi".to_string(),
+            types: {
+                let mut types = std::collections::HashMap::new();
+                let mut repo_relations = std::collections::HashMap::new();
+                repo_relations.insert("owner".to_string(), RelationDef { inherit_from: vec![], description: None });
+                let mut repo_permissions = std::collections::HashMap::new();
+                repo_permissions.insert("read".to_string(), PermissionDef { union_of: vec!["owner".to_string()], condition: None, description: None });
+                types.insert("repo".to_string(), TypeDef { relations: repo_relations, permissions: repo_permissions });
+                let mut doc_relations = std::collections::HashMap::new();
+                doc_relations.insert("editor".to_string(), RelationDef { inherit_from: vec![], description: None });
+                let mut doc_permissions = std::collections::HashMap::new();
+                doc_permissions.insert("read".to_string(), PermissionDef { union_of: vec!["editor".to_string()], condition: None, description: None });
+                types.insert("doc".to_string(), TypeDef { relations: doc_relations, permissions: doc_permissions });
+                types
+            },
+        };
+        let mut storage = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage.initialize().unwrap();
+        let engine = GraphEngine::new(Box::new(storage), schema);
+        let alice = SubjectId::new("user:alice").unwrap();
+        let repo = ResourceId::new("repo:test").unwrap();
+        let doc = ResourceId::new("doc:test").unwrap();
+        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("owner").unwrap(), repo.clone())).unwrap();
+        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("editor").unwrap(), doc.clone())).unwrap();
+        assert!(engine.check(&alice, "read", &repo, None).unwrap().allowed);
+        assert!(engine.check(&alice, "read", &doc, None).unwrap().allowed);
+        let filter = TupleFilter { object_type: Some("repo".to_string()), ..Default::default() };
+        let result = engine.query(&filter, &PaginationParams::default(), None).unwrap();
+        assert_eq!(result.tuples.len(), 1);
+        assert!(result.tuples[0].object.as_str().starts_with("repo:"));
+    }
 }

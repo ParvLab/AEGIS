@@ -12,14 +12,8 @@ use aegis_core::storage::StorageBackend;
 use aegis_core::storage::TupleFilter;
 use aegis_core::types::*;
 
-#[cfg(feature = "postgres")]
-use aegis_core::storage::PostgresStorage;
 #[cfg(feature = "rocksdb")]
 use aegis_core::storage::RocksDbStorage;
-#[cfg(feature = "mysql")]
-use aegis_core::storage::mysql::MysqlConfig;
-#[cfg(feature = "mysql")]
-use aegis_core::storage::MysqlStorage;
 
 mod repl;
 
@@ -29,13 +23,9 @@ struct Cli {
     #[command(subcommand)]
     command: Commands,
 
-    /// Storage backend type: sqlite, postgres, rocksdb, mysql
+    /// Storage backend type: sqlite, rocksdb
     #[arg(long, default_value = "sqlite", global = true)]
     storage: String,
-
-    /// Connection string for database backends (postgresql://user:pass@host/db, mysql://user:pass@host/db)
-    #[arg(long, global = true)]
-    connection_string: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -196,6 +186,9 @@ enum Commands {
         db: String,
         #[arg(long)]
         to_revision: Option<i64>,
+        /// Dry-run: show what would be recovered without executing
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Delete a subject with an ownership policy (GDPR right to erasure)
     DeleteSubject {
@@ -212,7 +205,6 @@ enum Commands {
 fn load_storage(
     db_path: &str,
     storage_type: &str,
-    _conn_str: Option<&str>,
 ) -> Result<Box<dyn StorageBackend>> {
     match storage_type {
         "sqlite" => {
@@ -227,20 +219,6 @@ fn load_storage(
                 .context("failed to initialize storage")?;
             Ok(Box::new(storage))
         }
-        #[cfg(feature = "postgres")]
-        "postgres" | "pg" => {
-            let cs = _conn_str.context("--connection-string is required for postgres backend")?;
-            let mut storage = PostgresStorage::new(cs)
-                .context("failed to create Postgres storage")?;
-            storage
-                .initialize()
-                .context("failed to initialize storage")?;
-            Ok(Box::new(storage))
-        }
-        #[cfg(not(feature = "postgres"))]
-        "postgres" | "pg" => {
-            anyhow::bail!("postgres backend is not enabled. Rebuild aegis-cli with --features postgres");
-        }
         #[cfg(feature = "rocksdb")]
         "rocksdb" => {
             let mut storage = RocksDbStorage::new(db_path)
@@ -254,58 +232,14 @@ fn load_storage(
         "rocksdb" => {
             anyhow::bail!("rocksdb backend is not enabled. Rebuild aegis-cli with --features rocksdb");
         }
-        #[cfg(feature = "mysql")]
-        "mysql" => {
-            let cs = _conn_str.context("--connection-string is required for mysql backend")?;
-            let config = parse_mysql_connection_string(cs)?;
-            let mut storage = MysqlStorage::new(config)
-                .context("failed to create MySQL storage")?;
-            storage
-                .initialize()
-                .context("failed to initialize storage")?;
-            Ok(Box::new(storage))
-        }
-        #[cfg(not(feature = "mysql"))]
-        "mysql" => {
-            anyhow::bail!("mysql backend is not enabled. Rebuild aegis-cli with --features mysql");
-        }
         _ => anyhow::bail!(
-            "unknown storage backend: {storage_type}. Supported: sqlite, postgres, rocksdb, mysql"
+            "unknown storage backend: {storage_type}. Supported: sqlite, rocksdb"
         ),
     }
 }
 
-#[cfg(feature = "mysql")]
-fn parse_mysql_connection_string(cs: &str) -> Result<MysqlConfig> {
-    let remainder = cs
-        .strip_prefix("mysql://")
-        .with_context(|| "mysql connection string must start with mysql://")?;
-    let (userinfo, rest) = remainder
-        .split_once('@')
-        .with_context(|| "invalid mysql connection string: expected user:pass@host/db")?;
-    let (user, pass) = userinfo
-        .split_once(':')
-        .with_context(|| "invalid mysql connection string: expected user:pass")?;
-    let (hostinfo, database) = rest
-        .split_once('/')
-        .with_context(|| "invalid mysql connection string: expected host/db")?;
-    let (host, port) = if let Some((h, p)) = hostinfo.split_once(':') {
-        (h.to_string(), p.parse::<u16>().with_context(|| "invalid port in connection string")?)
-    } else {
-        (hostinfo.to_string(), 3306u16)
-    };
-    Ok(MysqlConfig {
-        host,
-        port,
-        user: user.to_string(),
-        password: pass.to_string(),
-        database: database.to_string(),
-        pool_size: 10,
-    })
-}
-
-fn load_db(path: &str, schema_path: Option<&str>, storage_type: &str, conn_str: Option<&str>) -> Result<GraphEngine> {
-    let storage = load_storage(path, storage_type, conn_str)?;
+fn load_db(path: &str, schema_path: Option<&str>, storage_type: &str) -> Result<GraphEngine> {
+    let storage = load_storage(path, storage_type)?;
 
     let schema = if let Some(sp) = schema_path {
         let yaml = std::fs::read_to_string(sp)
@@ -326,7 +260,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
 
     let mk_engine = |db: &str, schema: Option<&str>| -> Result<GraphEngine> {
-        load_db(db, schema, &cli.storage, cli.connection_string.as_deref())
+        load_db(db, schema, &cli.storage)
     };
 
     match &cli.command {
@@ -505,7 +439,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&tuples)?);
         }
         Commands::Repl { db, schema, json } => {
-            repl::run_repl(db, schema.as_deref(), &cli.storage, cli.connection_string.as_deref(), *json)?;
+            repl::run_repl(db, schema.as_deref(), &cli.storage, *json)?;
         }
         Commands::Query {
             subject_type,
@@ -703,17 +637,35 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Recover { db, to_revision } => {
+        Commands::Recover {
+            db,
+            to_revision,
+            dry_run,
+        } => {
             let engine = mk_engine(db, None)?;
             let to_rev = to_revision.map(|r| Revision::new(r as u64));
-            let revision = engine.recover_from_events(to_rev)?;
-            println!(
-                "{}",
-                serde_json::json!({
-                    "status": "ok",
-                    "revision": revision.as_u64(),
-                })
-            );
+            if *dry_run {
+                let current_rev = engine.storage().current_revision()?;
+                let target_rev = to_rev.unwrap_or(current_rev);
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "status": "dry_run",
+                        "current_revision": current_rev.as_u64(),
+                        "target_revision": target_rev.as_u64(),
+                        "message": format!("Would recover events up to revision {target_rev} (current: {current_rev})"),
+                    })
+                );
+            } else {
+                let revision = engine.recover_from_events(to_rev)?;
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "status": "ok",
+                        "revision": revision.as_u64(),
+                    })
+                );
+            }
         }
         Commands::DeleteSubject {
             subject,
