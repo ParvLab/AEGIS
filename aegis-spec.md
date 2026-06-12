@@ -1546,33 +1546,22 @@ const auth = new Aegis({
 - Test helpers / fixtures
 - Input validation & constraints
 
-### V2 — Distributed Foundation
+### V2 — (Not planned — embedded-only scope)
 
-- Event log (append-only relationship mutations)
-- PostgreSQL backend
-- Watch streams (subscribe to graph changes)
-- Graph synchronization between instances
-- Edge read replicas (read-only, synced)
-- Distributed decision cache
-- OpenTelemetry integration
-- Structured logging
-- Audit log retention & archival
+Aegis is designed as an **embedded ReBAC engine** only. Distributed features (multi-instance sync,
+edge replicas, event log, etc.) are **out of scope**. The feature set below is completed in V1:
+
+- PostgreSQL, MySQL, RocksDB backends (optional, behind feature flags)
+- Watch streams (synchronous MPSC, no I/O threads)
+- OpenTelemetry integration (counters, histograms, gauges)
+- Structured logging (via `tracing`)
 - GDPR compliance APIs (deleteSubject, exportSubject, cascading ownership)
-- Webhook / event hooks
-- Schema hot-reload
-- Go SDK + Python SDK
-- MySQL backend
-
-### V3 — Scale
-
-- Distributed traversal dispatch
-- Multi-region consistency tokens
-- Partial graph sync for edge nodes
-- Consistency-level controls per check (minimize_latency, at_revision, fully_consistent)
+- Schema hot-reload (polling, behind `hot-reload` feature)
+- Audit log integrity & retention
+- Go SDK + Python SDK (via C FFI / PyO3)
 - ABAC (attribute-based conditions on relationship metadata)
-- WAL-based sync between instances
-- RocksDB backend
-- Rate limiting & abuse prevention
+- Consistency-level controls per check (minimize_latency, at_revision, fully_consistent)
+- Rate limiting & abuse prevention (token bucket per-key)
 
 ---
 

@@ -7,7 +7,7 @@
 
 ## Current Status (June 2026)
 
-**Sprints 0–6 Complete — 221 tests pass (219 unit + 2 integration), 0 failures**
+**Sprints 0–7 Complete — 213 tests pass (211 unit + 2 integration), 0 failures**
 
 | Sprint | Focus | Status | Key Deliverables |
 |--------|-------|--------|-----------------|
@@ -167,7 +167,7 @@ Phase 1 + 2 complete
 
 **Files created:** 22 source files across 2 crates
 
-**Tests:** 221 total (219 core + 2 integration) — all passing
+**Tests:** 213 total (211 core + 2 integration) — all passing
 
 ---
 
@@ -448,7 +448,7 @@ Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 | SDK Cross-Language | 9 | SDK-001–009 |
 | Performance Benchmarks | 11 | BENCH-001–011 |
 
-### Total: 221 implemented (219 unit + 2 integration), 0 failures — [tracked in `.opencode/plans/implementation-plan.md`]
+### Total: 213 implemented (211 unit + 2 integration), 0 failures — [tracked in `.opencode/plans/implementation-plan.md`]
 
 ---
 

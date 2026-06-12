@@ -664,7 +664,7 @@ As of the full audit (June 2026):
 | Schema validation | Parser, linter (orphan, circular), compatibility checker |
 | Migration runner | up/down scripts, auto-migrate, version tracking |
 | Security hardening | Input validation, fail-closed, panic boundary, graceful shutdown |
- | Tests | 221 passing (219 unit + 2 integration), 5 benchmarks. NAPI compiles clean (0 errors). |
+ | Tests | 213 passing (211 unit + 2 integration), 5 benchmarks. NAPI compiles clean (0 errors). |
 
 ### VULNERABILITIES RESOLVED 🛡️
 

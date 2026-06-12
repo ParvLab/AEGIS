@@ -48,6 +48,7 @@ pub struct GraphEngine {
     fail_closed: FailClosedMode,
     closed: std::sync::atomic::AtomicBool,
     watchers: SharedWatchers,
+    #[cfg(feature = "hot-reload")]
     shutdown_flag: Arc<AtomicBool>,
     #[cfg(feature = "hot-reload")]
     schema_watcher: Mutex<Option<SchemaWatcher>>,
@@ -90,6 +91,7 @@ impl GraphEngine {
             fail_closed: FailClosedMode::DenyOnError,
             closed: std::sync::atomic::AtomicBool::new(false),
             watchers: Arc::new(Mutex::new(HashMap::new())),
+            #[cfg(feature = "hot-reload")]
             shutdown_flag: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "hot-reload")]
             schema_watcher: Mutex::new(None),
@@ -231,7 +233,7 @@ impl GraphEngine {
     /// Enable or disable parallel sibling BFS evaluation.
     /// When enabled (default), sibling relations are evaluated concurrently.
     /// The first `allow` short-circuits remaining evaluations.
-    pub fn with_parallel_eval(mut self, enabled: bool) -> Self {
+    pub fn with_parallel_eval(self, enabled: bool) -> Self {
         self.parallel_eval.store(enabled, Ordering::Relaxed);
         self
     }
