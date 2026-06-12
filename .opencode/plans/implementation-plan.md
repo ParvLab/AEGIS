@@ -592,6 +592,7 @@ Goal: Remove technical debt, dead code, unused dependencies. Harden CI pipeline.
 - [x] `invalidate_before()` rebuilds access_order from retained entries
 - [x] `clear()` clears both structures
 - [x] Test: `test_lru_eviction` verifies correct eviction order
+- [x] Benchmark: `benches/cache.rs` — LRU zipfian hit rate benchmark
 
 ### S6.7 — CI pipeline hardening ✅
 
@@ -599,6 +600,8 @@ Goal: Remove technical debt, dead code, unused dependencies. Harden CI pipeline.
 - [x] Added `cargo-deny` job to CI workflow
 - [x] Added `cargo fuzz` target: `crates/aegis-core/fuzz/` with `schema_parser` and `tuple_input` targets
 - [x] Added `.github/dependabot.yml` — weekly Cargo dependency updates
+- [x] Added `cargo-outdated` job — weekly check for stale deps
+- [x] Added `cargo-semver-checks` job — API compat check on PR
 
 ### S6.8 — Supply-chain documentation ✅
 
@@ -609,27 +612,31 @@ Goal: Remove technical debt, dead code, unused dependencies. Harden CI pipeline.
 
 ---
 
-## Sprint 7 — Go & Python SDKs (Post-GA)
+## Sprint 7 — Go & Python SDKs ✅
 
-Goal: First-class SDKs for Go and Python ecosystems.
+Goal: First-class SDKs for Go and Python ecosystems (in-workspace, not separate repos).
 
-### S7.1 — Go SDK
+### S7.1 — Go SDK (via C FFI) ✅
 
-- [ ] New repository: `aegis-go`
-- [ ] CGo bindings via `cgo` helper crate
-- [ ] Idiomatic Go `Aegis` struct with `context.Context` support
-- [ ] All 20+ core APIs matching spec §12
-- [ ] Tests: E2E-002 (Go lifecycle), E2E-010 (cross-language interop)
-- [ ] Documentation and examples
+- [x] Created `crates/aegis-ffi/` — C ABI `cdylib + staticlib` with opaque `AegisEngine` handle
+- [x] Exported C functions: `aegis_engine_create/destroy`, `check`, `write`, `delete`, `health`, `aegis_free_string`
+- [x] `#[repr(C)]` result structs with `*mut c_char` error strings (null = success)
+- [x] Panic-safe: all operations wrapped in `catch_unwind`
+- [x] Created `aegis-go/` Go package with CGo bindings
+- [x] Go types: `Aegis`, `Config`, `CheckResult`, `WriteResult`, `HealthReport`
+- [x] Go methods: `New`, `Check`, `Write`, `Delete`, `Health`, `Close`
+- [x] Mutex-protected access, `runtime.SetFinalizer` for auto-cleanup
+- [x] Tests: `TestNewAndHealth`, `TestCheckDeny`, `TestWriteAndCheck`, `TestCloseIsIdempotent`
 
-### S7.2 — Python SDK
+### S7.2 — Python SDK (via PyO3) ✅
 
-- [ ] New repository/package: `aegis-python`
-- [ ] PyO3 bindings
-- [ ] PEP 8 naming conventions, `asyncio`-compatible async API
-- [ ] All 20+ core APIs
-- [ ] Tests: E2E-004, E2E-011
-- [ ] `pip install aegis-auth` packaging
+- [x] Created `crates/aegis-pyo3/` — PyO3 `cdylib` with `abi3-py39` stable ABI
+- [x] Python class `Aegis` with `check`, `write`, `delete`, `health`, `explain`, `close`
+- [x] Python context manager support (`__enter__`/`__exit__`)
+- [x] Python data classes: `CheckResult`, `WriteResult`, `HealthReport`, `WatchEvent`
+- [x] `PyO3` added to workspace dependencies
+- [x] `pyproject.toml` with maturin build config (`pip install aegis-auth`)
+- [x] Clean compilation: `cargo check -p aegis-pyo3` passes
 
 ---
 

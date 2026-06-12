@@ -5,6 +5,8 @@ members = [
     "crates/aegis-cli",
     "crates/aegis-napi",
     "crates/aegis-test-utils",
+    "crates/aegis-ffi",
+    "crates/aegis-pyo3",
 ]
 
 [workspace.package]
@@ -33,6 +35,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["rt-tokio", "trace", "metrics", "testing"] }
 tracing-opentelemetry = "0.32"
 libc = "0.2"
+pyo3 = { version = "0.23", features = ["experimental-async", "chrono", "abi3-py39"] }
 
 [profile.release]
 panic = "abort"

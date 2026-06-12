@@ -5,6 +5,8 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  schedule:
+    - cron: '0 6 * * 1'
 
 env:
   CARGO_TERM_COLOR: always
@@ -75,5 +77,27 @@ jobs:
         run: cargo install cargo-audit
       - name: Audit dependencies
         run: cargo audit
+
+  cargo-outdated:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install cargo-outdated
+        run: cargo install cargo-outdated
+      - name: Check outdated deps
+        run: cargo outdated --exit-code 1
+
+  cargo-semver-checks:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install cargo-semver-checks
+        run: cargo install cargo-semver-checks
+      - name: Check semver
+        run: cargo semver-checks check-release
 
 

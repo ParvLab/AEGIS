@@ -37,11 +37,17 @@ libc = { workspace = true }
 
 [dev-dependencies]
 criterion = "0.5"
+fastrand = "2"
 
 [[bench]]
 name = "check"
 harness = false
 path = "benches/check.rs"
+
+[[bench]]
+name = "cache"
+harness = false
+path = "benches/cache.rs"
 
 [features]
 hot-reload = []

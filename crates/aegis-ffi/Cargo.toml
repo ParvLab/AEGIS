@@ -1,0 +1,16 @@
+[package]
+name = "aegis-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Aegis C FFI bindings for cross-language SDKs (Go, Zig, etc.)"
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+chrono = "0.4"
+libc = "0.2"
+
+[lib]
+name = "aegis_ffi"
+crate-type = ["cdylib", "staticlib"]
