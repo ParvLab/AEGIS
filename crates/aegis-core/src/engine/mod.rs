@@ -189,7 +189,9 @@ impl GraphEngine {
         let id = uuid::Uuid::new_v4();
         let (tx, rx) = std::sync::mpsc::channel();
         let watcher_tx = tx.clone();
-        self.watchers.lock().unwrap().insert(id, (filter.clone(), watcher_tx));
+        if let Ok(mut watchers) = self.watchers.lock() {
+            watchers.insert(id, (filter.clone(), watcher_tx));
+        }
         WatchSubscription::new(id, filter, rx, tx, Arc::clone(&self.watchers))
     }
 
@@ -207,7 +209,7 @@ impl GraphEngine {
             revision,
             timestamp: chrono::Utc::now(),
         };
-        let mut watchers = self.watchers.lock().unwrap();
+        let Ok(mut watchers) = self.watchers.lock() else { return };
         watchers.retain(|_, (filter, tx)| {
             if !filter.matches(&event) {
                 return true;
@@ -277,7 +279,7 @@ impl GraphEngine {
     /// Requires the `hot-reload` feature.
     #[cfg(feature = "hot-reload")]
     pub fn start_background_poller(self: &Arc<Self>) {
-        let mut guard = self.watcher_thread.lock().unwrap();
+        let Ok(mut guard) = self.watcher_thread.lock() else { return };
         if guard.is_some() {
             return;
         }
@@ -453,6 +455,7 @@ impl GraphEngine {
         resource: &ResourceId,
         revision: Revision,
         consistency: Option<ConsistencyMode>,
+        context: condition::ConditionEvalContext,
     ) -> AegisResult<bool> {
         let condition_str = resolved.condition;
         for rel_name in &resolved.relations {
@@ -481,7 +484,7 @@ impl GraphEngine {
                 Err(e) => return Err(e),
             };
 
-            if result.found && evaluate_condition_if_present(&condition_str) {
+            if result.found && evaluate_condition_if_present(&condition_str, &context) {
                 return Ok(true);
             }
         }
@@ -497,13 +500,15 @@ impl GraphEngine {
         resource: &ResourceId,
         revision: Revision,
         consistency: Option<ConsistencyMode>,
+        context: condition::ConditionEvalContext,
     ) -> AegisResult<bool> {
         let found = std::sync::atomic::AtomicBool::new(false);
-        let condition_str = Arc::new(resolved.condition);
         let max_depth = self.rate_limiter.max_traversal_depth();
         let max_visits = self.rate_limiter.max_traversal_visits();
 
         let rel_names: Vec<String> = resolved.relations.clone();
+        let condition_str = std::sync::Arc::new(resolved.condition);
+        let ctx = std::sync::Arc::new(context);
         let subject = Arc::new(SubjectId::new(subject.as_str()).map_err(|e| {
             AegisError::Validation(e)
         })?);
@@ -518,8 +523,9 @@ impl GraphEngine {
                     Err(_) => continue,
                 };
                 let found_ref = &found;
-                let cond = Arc::clone(&condition_str);
-                let subj = Arc::clone(&subject);
+                let cond = std::sync::Arc::clone(&condition_str);
+                let ctx_ref = std::sync::Arc::clone(&ctx);
+                let subj = std::sync::Arc::clone(&subject);
                 let _handle = s.spawn(move || {
                     if found_ref.load(std::sync::atomic::Ordering::Relaxed) {
                         return;
@@ -537,7 +543,7 @@ impl GraphEngine {
                         Some(&mut cache),
                     );
                     if let Ok(r) = result {
-                        if r.found && evaluate_condition_if_present(cond.as_ref()) {
+                        if r.found && evaluate_condition_if_present(cond.as_ref(), ctx_ref.as_ref()) {
                             found_ref.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
@@ -559,7 +565,7 @@ impl GraphEngine {
         resource: &ResourceId,
         consistency: Option<ConsistencyMode>,
     ) -> AegisResult<CheckResult> {
-        self.check_inner(subject, permission, resource, consistency, false)
+        self.check_inner(subject, permission, resource, consistency, false, None)
     }
 
     /// Dry-run check: evaluates without caching or triggering hooks.
@@ -570,7 +576,31 @@ impl GraphEngine {
         resource: &ResourceId,
         consistency: Option<ConsistencyMode>,
     ) -> AegisResult<CheckResult> {
-        self.check_inner(subject, permission, resource, consistency, true)
+        self.check_inner(subject, permission, resource, consistency, true, None)
+    }
+
+    /// Check with ABAC context (metadata for condition evaluation).
+    pub fn check_with_context(
+        &self,
+        subject: &SubjectId,
+        permission: &str,
+        resource: &ResourceId,
+        consistency: Option<ConsistencyMode>,
+        context: condition::ConditionEvalContext,
+    ) -> AegisResult<CheckResult> {
+        self.check_inner(subject, permission, resource, consistency, false, Some(context))
+    }
+
+    /// Dry-run check with ABAC context.
+    pub fn check_dry_run_with_context(
+        &self,
+        subject: &SubjectId,
+        permission: &str,
+        resource: &ResourceId,
+        consistency: Option<ConsistencyMode>,
+        context: condition::ConditionEvalContext,
+    ) -> AegisResult<CheckResult> {
+        self.check_inner(subject, permission, resource, consistency, true, Some(context))
     }
 
     /// Internal check implementation with dry_run flag.
@@ -581,6 +611,7 @@ impl GraphEngine {
         resource: &ResourceId,
         consistency: Option<ConsistencyMode>,
         dry_run: bool,
+        context: Option<condition::ConditionEvalContext>,
     ) -> AegisResult<CheckResult> {
         let backend_str = self.storage.backend_type().to_string();
         let _span = span!(
@@ -610,7 +641,7 @@ impl GraphEngine {
             }
         };
 
-        if !dry_run {
+        if !dry_run && context.is_none() {
             let cache_span = span!(Level::DEBUG, crate::telemetry::spans::CACHE_LOOKUP);
             let _cache_guard = cache_span.enter();
             let from_cache = self.with_cache(|cache| {
@@ -652,13 +683,15 @@ impl GraphEngine {
 
         // Try each relation — any match means allowed (union semantics)
         // Parallel evaluation via scoped threads when enabled.
+        let has_context = context.is_some();
+        let ctx = context.unwrap_or_default();
         let allowed = match if self.parallel_eval.load(Ordering::Relaxed) && resolved.relations.len() > 1 {
             self.evaluate_relations_parallel(
-                resolved, subject, resource, revision, consistency,
+                resolved, subject, resource, revision, consistency, ctx,
             )
         } else {
             self.evaluate_relations_sequential(
-                resolved, subject, resource, revision, consistency,
+                resolved, subject, resource, revision, consistency, ctx,
             )
         } {
             Ok(a) => a,
@@ -669,7 +702,7 @@ impl GraphEngine {
             }
         };
 
-        if !dry_run {
+        if !dry_run && !has_context {
             // Cache the decision
             self.with_cache(|cache| {
                 cache.insert(subject.as_str(), permission, resource.as_str(), allowed, revision);
@@ -1072,6 +1105,15 @@ impl GraphEngine {
         self.storage.list_by_subject(subject, relation, c)
     }
 
+    /// List all tuples matching a relation on an object.
+    pub fn list_by_relation(
+        &self,
+        object: &ResourceId,
+        relation: &Relation,
+    ) -> AegisResult<Vec<RelationshipTuple>> {
+        self.storage.list_by_relation(object, relation)
+    }
+
     /// Query tuples with filters and pagination.
     pub fn query(
         &self,
@@ -1143,21 +1185,15 @@ impl Drop for GraphEngine {
 
 /// Evaluate an ABAC condition expression against available context.
 /// Returns `true` if no condition is present or the condition evaluates to `true`.
-fn evaluate_condition_if_present(condition_str: &Option<String>) -> bool {
+fn evaluate_condition_if_present(
+    condition_str: &Option<String>,
+    context: &condition::ConditionEvalContext,
+) -> bool {
     match condition_str {
-        Some(cond) => {
-            match condition::parse_condition(cond) {
-                Ok(expr) => {
-                    let ctx = condition::ConditionEvalContext {
-                        subject_meta: std::collections::HashMap::new(),
-                        resource_meta: std::collections::HashMap::new(),
-                        env: std::collections::HashMap::new(),
-                    };
-                    condition::evaluate_condition(&expr, &ctx)
-                }
-                Err(_) => false,
-            }
-        }
+        Some(cond) => match condition::parse_condition(cond) {
+            Ok(expr) => condition::evaluate_condition(&expr, context),
+            Err(_) => false,
+        },
         None => true,
     }
 }
@@ -1172,7 +1208,7 @@ mod tests {
     use super::*;
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
     use crate::types::*;
-    use std::io::Write;
+
 
     fn make_engine() -> GraphEngine {
         let schema = Schema {
@@ -1604,7 +1640,7 @@ types:
     #[test]
     fn test_migration_rollback() {
         let engine = make_engine();
-        let orig_ver = engine.storage().read_schema_version().unwrap();
+        let _orig_ver = engine.storage().read_schema_version().unwrap();
         engine.migrate(5).unwrap();
         assert!(engine.storage().read_schema_version().unwrap() >= 5);
         engine.migrate(3).unwrap();
@@ -1953,5 +1989,86 @@ types:
         let result = engine.query(&filter, &PaginationParams::default(), None).unwrap();
         assert_eq!(result.tuples.len(), 1);
         assert!(result.tuples[0].object.as_str().starts_with("repo:"));
+    }
+
+    #[test]
+    fn test_abac_condition_with_context() {
+        use crate::types::schema::{PermissionDef, RelationDef, TypeDef};
+        let schema = Schema {
+            schema_version: 1,
+            namespace: "test".to_string(),
+            types: {
+                let mut types = std::collections::HashMap::new();
+                let mut relations = std::collections::HashMap::new();
+                relations.insert("viewer".to_string(), RelationDef { inherit_from: vec![], description: None });
+                let mut permissions = std::collections::HashMap::new();
+                permissions.insert("read".to_string(), PermissionDef {
+                    union_of: vec!["viewer".to_string()],
+                    condition: Some("role eq admin".to_string()),
+                    description: None,
+                });
+                types.insert("repo".to_string(), TypeDef { relations, permissions });
+                types
+            },
+        };
+        let mut storage = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage.initialize().unwrap();
+        let engine = GraphEngine::new(Box::new(storage), schema);
+        let alice = SubjectId::new("user:alice").unwrap();
+        let repo = ResourceId::new("repo:test").unwrap();
+        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("viewer").unwrap(), repo.clone())).unwrap();
+
+        // Without context — condition present but no metadata → denied
+        let result = engine.check(&alice, "read", &repo, None).unwrap();
+        assert!(!result.allowed, "condition without context should deny");
+
+        // With matching context — role eq admin
+        let mut ctx = crate::engine::condition::ConditionEvalContext::default();
+        ctx.subject_meta.insert("role".to_string(), "admin".to_string());
+        let result = engine.check_with_context(&alice, "read", &repo, None, ctx).unwrap();
+        assert!(result.allowed, "matching context should allow");
+
+        // With non-matching context — role eq viewer
+        let mut ctx = crate::engine::condition::ConditionEvalContext::default();
+        ctx.subject_meta.insert("role".to_string(), "viewer".to_string());
+        let result = engine.check_with_context(&alice, "read", &repo, None, ctx).unwrap();
+        assert!(!result.allowed, "non-matching context should deny");
+    }
+
+    #[test]
+    fn test_abac_condition_dry_run() {
+        use crate::types::schema::{PermissionDef, RelationDef, TypeDef};
+        let schema = Schema {
+            schema_version: 1,
+            namespace: "test".to_string(),
+            types: {
+                let mut types = std::collections::HashMap::new();
+                let mut relations = std::collections::HashMap::new();
+                relations.insert("viewer".to_string(), RelationDef { inherit_from: vec![], description: None });
+                let mut permissions = std::collections::HashMap::new();
+                permissions.insert("read".to_string(), PermissionDef {
+                    union_of: vec!["viewer".to_string()],
+                    condition: Some("role eq admin".to_string()),
+                    description: None,
+                });
+                types.insert("repo".to_string(), TypeDef { relations, permissions });
+                types
+            },
+        };
+        let mut storage = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage.initialize().unwrap();
+        let engine = GraphEngine::new(Box::new(storage), schema);
+        let alice = SubjectId::new("user:alice").unwrap();
+        let repo = ResourceId::new("repo:test").unwrap();
+        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("viewer").unwrap(), repo.clone())).unwrap();
+
+        let mut ctx = crate::engine::condition::ConditionEvalContext::default();
+        ctx.subject_meta.insert("role".to_string(), "admin".to_string());
+        let result = engine.check_dry_run_with_context(&alice, "read", &repo, None, ctx).unwrap();
+        assert!(result.allowed, "dry-run with matching context should allow");
+
+        // dry_run without context
+        let result = engine.check_dry_run(&alice, "read", &repo, None).unwrap();
+        assert!(!result.allowed, "dry-run without context should deny");
     }
 }

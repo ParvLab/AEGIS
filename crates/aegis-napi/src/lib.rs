@@ -172,7 +172,6 @@ pub struct WatchEventNAP {
 pub struct ExportSubjectResultNAP {
     pub subject: String,
     pub active_tuples: Vec<TupleNAP>,
-    pub audit_entries: Vec<AuditEntryNAP>,
     pub export_revision: i64,
     pub exported_at: String,
 }
@@ -660,7 +659,6 @@ impl JsAegis {
             Ok(ExportSubjectResultNAP {
                 subject: subject.clone(),
                 active_tuples: tuples.iter().map(tuple_to_nap).collect(),
-                audit_entries: Vec::new(),
                 export_revision: revision.as_u64() as i64,
                 exported_at: chrono::Utc::now()
                     .format("%Y-%m-%dT%H:%M:%S%.3fZ")

@@ -73,21 +73,45 @@ impl PyHealthReport {
     }
 }
 
-#[pyclass(name = "WatchEvent")]
+#[pyclass(name = "ExplainTrace")]
 #[derive(Clone)]
-struct PyWatchEvent {
-    #[pyo3(get)]
-    event_type: String,
+struct PyExplainTrace {
     #[pyo3(get)]
     subject: String,
     #[pyo3(get)]
     relation: String,
     #[pyo3(get)]
     object: String,
+}
+
+#[pymethods]
+impl PyExplainTrace {
+    fn __repr__(&self) -> String {
+        format!("ExplainTrace({} {} {})", self.subject, self.relation, self.object)
+    }
+}
+
+#[pyclass(name = "ExplainResult")]
+#[derive(Clone)]
+struct PyExplainResult {
+    #[pyo3(get)]
+    allowed: bool,
     #[pyo3(get)]
     revision: i64,
     #[pyo3(get)]
-    timestamp: String,
+    trace: Vec<PyExplainTrace>,
+    #[pyo3(get)]
+    resolved_via: String,
+    #[pyo3(get)]
+    duration_ms: i64,
+}
+
+#[pymethods]
+impl PyExplainResult {
+    fn __repr__(&self) -> String {
+        format!("ExplainResult(allowed={}, revision={}, resolved_via={})",
+            self.allowed, self.revision, self.resolved_via)
+    }
 }
 
 // ── Main engine class ──
@@ -175,7 +199,7 @@ impl PyAegis {
         })
     }
 
-    fn explain(&self, subject: &str, permission: &str, resource: &str) -> PyResult<String> {
+    fn explain(&self, subject: &str, permission: &str, resource: &str) -> PyResult<PyExplainResult> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
@@ -183,7 +207,17 @@ impl PyAegis {
         let resource_id = ResourceId::new(resource).map_err(py_err)?;
         let result = self.engine.explain(&subject_id, permission, &resource_id, None)
             .map_err(py_err)?;
-        Ok(format!("allowed={} trace={:?}", result.allowed, result.trace))
+        Ok(PyExplainResult {
+            allowed: result.allowed,
+            revision: result.revision.as_u64() as i64,
+            trace: result.trace.iter().map(|t| PyExplainTrace {
+                subject: t.subject.clone(),
+                relation: t.relation.clone(),
+                object: t.object.clone(),
+            }).collect(),
+            resolved_via: result.resolved_via,
+            duration_ms: result.duration_ms as i64,
+        })
     }
 
     fn close(&self) -> PyResult<()> {
@@ -221,6 +255,7 @@ fn aegis(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyCheckResult>()?;
     m.add_class::<PyWriteResult>()?;
     m.add_class::<PyHealthReport>()?;
-    m.add_class::<PyWatchEvent>()?;
+    m.add_class::<PyExplainTrace>()?;
+    m.add_class::<PyExplainResult>()?;
     Ok(())
 }

@@ -20,11 +20,15 @@ pub(crate) static METRIC_CACHE_HITS: AtomicU64 = AtomicU64::new(0);
 pub(crate) static METRIC_CACHE_MISSES: AtomicU64 = AtomicU64::new(0);
 
 // ── Gauge statics ──────────────────────────────────────────────────────────
-pub(crate) static METRIC_GRAPH_TUPLE_COUNT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static METRIC_GRAPH_TENANT_COUNT: AtomicU64 = AtomicU64::new(0);
-pub(crate) static METRIC_STORAGE_CONNECTIONS_ACTIVE: AtomicU64 = AtomicU64::new(0);
 pub(crate) static METRIC_SCHEMA_VERSION: AtomicU64 = AtomicU64::new(0);
 pub(crate) static METRIC_REVISION_CURRENT: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(feature = "telemetry")]
+pub(crate) static METRIC_GRAPH_TUPLE_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "telemetry")]
+pub(crate) static METRIC_GRAPH_TENANT_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "telemetry")]
+pub(crate) static METRIC_STORAGE_CONNECTIONS_ACTIVE: AtomicU64 = AtomicU64::new(0);
 
 /// Guard that flushes telemetry on drop.
 pub struct TelemetryGuard {
@@ -147,21 +151,6 @@ pub fn inc_cache_hit() {
 /// Record a cache miss.
 pub fn inc_cache_miss() {
     METRIC_CACHE_MISSES.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Update graph tuple count gauge.
-pub fn update_graph_tuple_count(val: u64) {
-    METRIC_GRAPH_TUPLE_COUNT.store(val, Ordering::Relaxed);
-}
-
-/// Update graph tenant count gauge.
-pub fn update_graph_tenant_count(val: u64) {
-    METRIC_GRAPH_TENANT_COUNT.store(val, Ordering::Relaxed);
-}
-
-/// Update active storage connections gauge.
-pub fn update_storage_connections_active(val: u64) {
-    METRIC_STORAGE_CONNECTIONS_ACTIVE.store(val, Ordering::Relaxed);
 }
 
 /// Update schema version gauge.

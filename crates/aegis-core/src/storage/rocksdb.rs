@@ -384,7 +384,10 @@ impl StorageBackend for RocksDbStorage {
                 "timestamp": Utc::now().to_rfc3339(),
             });
             let event_id = Uuid::new_v4();
-            batch.put_cf(&cf_events, event_key(revision, event_id), serde_json::to_string(&event).unwrap().as_bytes());
+            let json_bytes = serde_json::to_string(&event)
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+                .into_bytes();
+            batch.put_cf(&cf_events, event_key(revision, event_id), &json_bytes);
         }
 
         self.db.write(batch)
@@ -426,7 +429,10 @@ impl StorageBackend for RocksDbStorage {
                 "timestamp": Utc::now().to_rfc3339(),
             });
             let event_id = Uuid::new_v4();
-            batch.put_cf(&cf_events, event_key(revision, event_id), serde_json::to_string(&event).unwrap().as_bytes());
+            let json_bytes = serde_json::to_string(&event)
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+                .into_bytes();
+            batch.put_cf(&cf_events, event_key(revision, event_id), &json_bytes);
         }
 
         self.db.write(batch)

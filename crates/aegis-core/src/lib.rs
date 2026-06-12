@@ -15,12 +15,14 @@ pub mod error;
 pub mod schema;
 pub mod storage;
 pub mod telemetry;
+#[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
 pub mod types;
 
 /// Re-export the most commonly used types at the crate root.
 pub use crate::engine::gdpr::{GdprConfig, GdprManager, SubjectDataExport};
 pub use crate::engine::ratelimit::{RateLimitConfig, RateLimitOp, TokenBucketRateLimiter};
+pub use crate::engine::condition::ConditionEvalContext;
 pub use crate::engine::watch::{WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
 pub use crate::engine::GraphEngine;
 pub use crate::error::{AegisError, AegisResult};

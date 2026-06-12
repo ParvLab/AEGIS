@@ -68,7 +68,9 @@ impl TokenBucketRateLimiter {
     /// Check if an operation is allowed for the given key.
     /// Returns `RateLimitExceeded` error if the rate limit is exceeded.
     pub fn check(&self, key: &str, op: RateLimitOp) -> AegisResult<()> {
-        let mut buckets = self.buckets.lock().unwrap();
+        let mut buckets = self.buckets.lock().map_err(|e| {
+            AegisError::Internal(format!("rate limiter lock poisoned: {e}"))
+        })?;
 
         // Evict the least-recently-accessed entry if we need to insert a new key
         // and the map is at capacity.
@@ -106,9 +108,10 @@ impl TokenBucketRateLimiter {
         state.last_accessed = now;
 
         if state.tokens < 1.0 {
+            let sanitized: String = key.chars().filter(|&c| c.is_alphanumeric() || c == ':' || c == '_' || c == '-').take(128).collect();
             tracing::warn!(
                 "rate_limit.throttled key={} op={}",
-                key,
+                sanitized,
                 match op { RateLimitOp::Check => "check", RateLimitOp::Write => "write" },
             );
             return Err(AegisError::RateLimitExceeded(key.to_string()));
@@ -116,9 +119,10 @@ impl TokenBucketRateLimiter {
 
         state.tokens -= 1.0;
 
+        let sanitized: String = key.chars().filter(|&c| c.is_alphanumeric() || c == ':' || c == '_' || c == '-').take(128).collect();
         tracing::debug!(
             "rate_limit.allowed key={} op={} tokens_remaining={}",
-            key,
+            sanitized,
             match op { RateLimitOp::Check => "check", RateLimitOp::Write => "write" },
             state.tokens,
         );
@@ -140,12 +144,14 @@ impl TokenBucketRateLimiter {
 
     /// Remove buckets that haven't been accessed since the given duration.
     pub fn gc(&self, max_age: std::time::Duration) {
-        let mut buckets = self.buckets.lock().unwrap();
-        let cutoff = Instant::now() - max_age;
-        buckets.retain(|_, state| state.last_accessed >= cutoff);
+        if let Ok(mut buckets) = self.buckets.lock() {
+            let cutoff = Instant::now() - max_age;
+            buckets.retain(|_, state| state.last_accessed >= cutoff);
+        }
     }
 
     /// Clear all rate limiter state (e.g., on schema reload).
+    #[cfg(test)]
     pub fn reset(&self) {
         self.buckets.lock().unwrap().clear();
     }

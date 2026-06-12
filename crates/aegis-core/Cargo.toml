@@ -54,4 +54,5 @@ postgres = ["tokio-postgres", "deadpool-postgres", "tokio", "tokio-postgres-rust
 mysql = ["dep:mysql_async", "tokio"]
 rocksdb = ["dep:rocksdb"]
 telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tracing-subscriber"]
+test-utils = []
 

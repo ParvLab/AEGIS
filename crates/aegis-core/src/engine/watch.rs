@@ -115,7 +115,9 @@ impl WatchSubscription {
     }
 
     pub fn unsubscribe(&self) {
-        self.watchers.lock().unwrap().remove(&self.id);
+        if let Ok(mut watchers) = self.watchers.lock() {
+            watchers.remove(&self.id);
+        }
     }
 }
 

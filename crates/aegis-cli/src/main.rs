@@ -150,8 +150,6 @@ enum Commands {
         db: String,
         #[arg(long)]
         schema: Option<String>,
-        #[arg(long, default_value = "json")]
-        format: String,
     },
     /// Restore tuples and events from a backup file
     BackupRestore {
@@ -475,7 +473,6 @@ fn main() -> Result<()> {
             path,
             db,
             schema,
-            format: _format,
         } => {
             let engine = mk_engine(db, None)?;
             let all_tuples = engine

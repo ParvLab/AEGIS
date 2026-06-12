@@ -8,7 +8,6 @@ description = "Aegis C FFI bindings for cross-language SDKs (Go, Zig, etc.)"
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
-chrono = "0.4"
 libc = "0.2"
 
 [lib]

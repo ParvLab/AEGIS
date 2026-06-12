@@ -91,13 +91,16 @@ impl SharedHookRegistry {
 
     /// Register a new hook callback.
     pub fn register(&self, hook: HookFn) {
-        self.inner.lock().unwrap().register(hook);
+        if let Ok(mut inner) = self.inner.lock() {
+            inner.register(hook);
+        }
     }
 
     /// Trigger all registered hooks with the given event.
     pub fn trigger(&self, event: &HookEvent) {
-        let registry = self.inner.lock().unwrap();
-        registry.trigger(event);
+        if let Ok(registry) = self.inner.lock() {
+            registry.trigger(event);
+        }
     }
 }
 

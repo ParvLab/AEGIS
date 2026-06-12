@@ -1496,6 +1496,31 @@ impl SqliteTransaction {
     }
 }
 
+fn validate_savepoint_name(name: &str) -> AegisResult<()> {
+    if name.is_empty() {
+        return Err(AegisError::Validation(crate::types::ValidationError::Empty));
+    }
+    if name.len() > 64 {
+        return Err(AegisError::Validation(
+            crate::types::ValidationError::TooLong {
+                max: 64,
+                actual: name.len(),
+            },
+        ));
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+    {
+        return Err(AegisError::Validation(
+            crate::types::ValidationError::InvalidCharacters(format!(
+                "invalid characters in savepoint name '{name}': must contain only alphanumeric, underscore, or hyphen"
+            )),
+        ));
+    }
+    Ok(())
+}
+
 impl StorageTransaction for SqliteTransaction {
     fn write(&mut self, tuple: &RelationshipTuple) -> AegisResult<()> {
         let conn = self.conn()?;
@@ -1574,18 +1599,21 @@ impl StorageTransaction for SqliteTransaction {
     }
 
     fn savepoint(&self, name: &str) -> AegisResult<()> {
+        validate_savepoint_name(name)?;
         let conn = self.conn()?;
         conn.execute_batch(&format!("SAVEPOINT \"{}\"", name))
             .map_err(|e| AegisError::StorageQuery(e.to_string()))
     }
 
     fn rollback_to_savepoint(&self, name: &str) -> AegisResult<()> {
+        validate_savepoint_name(name)?;
         let conn = self.conn()?;
         conn.execute_batch(&format!("ROLLBACK TO SAVEPOINT \"{}\"", name))
             .map_err(|e| AegisError::StorageQuery(e.to_string()))
     }
 
     fn release_savepoint(&self, name: &str) -> AegisResult<()> {
+        validate_savepoint_name(name)?;
         let conn = self.conn()?;
         conn.execute_batch(&format!("RELEASE SAVEPOINT \"{}\"", name))
             .map_err(|e| AegisError::StorageQuery(e.to_string()))
@@ -2317,5 +2345,46 @@ mod tests {
 
         let recovered = store.recover_from_events(None).unwrap();
         assert_eq!(recovered.as_u64(), 0);
+    }
+
+    #[test]
+    fn test_savepoint_name_validation() {
+        let mut store = storage();
+        store.initialize().unwrap();
+
+        // Valid names
+        let tx = store.begin_transaction().unwrap();
+        tx.savepoint("sp1").unwrap();
+        tx.savepoint("my_savepoint_42").unwrap();
+        tx.savepoint("a").unwrap();
+        tx.rollback().ok();
+
+        // Empty name
+        let tx = store.begin_transaction().unwrap();
+        let err = tx.savepoint("").unwrap_err();
+        assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::Empty)), "empty name should fail: {err}");
+        tx.rollback().ok();
+
+        // Too long name (65 chars)
+        let tx = store.begin_transaction().unwrap();
+        let long_name = "a".repeat(65);
+        let err = tx.savepoint(&long_name).unwrap_err();
+        assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::TooLong { .. })), "long name should fail: {err}");
+        tx.rollback().ok();
+
+        // Invalid characters (SQL injection attempt)
+        let tx = store.begin_transaction().unwrap();
+        let err = tx.savepoint("\"; DROP TABLE _aegis_tuples; --").unwrap_err();
+        assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))), "injection attempt should fail: {err}");
+        tx.rollback().ok();
+
+        // Same validation applies to rollback_to_savepoint and release_savepoint
+        let tx = store.begin_transaction().unwrap();
+        tx.savepoint("valid").unwrap();
+        let err = tx.rollback_to_savepoint("invalid!").unwrap_err();
+        assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))), "rollback_to_savepoint should validate name: {err}");
+        let err = tx.release_savepoint("no space").unwrap_err();
+        assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))), "release_savepoint should validate name: {err}");
+        tx.rollback().ok();
     }
 }

@@ -18,8 +18,11 @@ impl SchemaWatcher {
     /// Create a new schema watcher for a given file path.
     pub fn new(schema_path: &str) -> Self {
         let now = SystemTime::UNIX_EPOCH;
+        let canonical = std::fs::canonicalize(schema_path)
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| schema_path.to_string());
         Self {
-            schema_path: schema_path.to_string(),
+            schema_path: canonical,
             last_modified: Mutex::new(now),
             last_checksum: Mutex::new(String::new()),
             changed: Arc::new(AtomicBool::new(false)),
@@ -46,8 +49,12 @@ impl SchemaWatcher {
         let checksum = compute_file_checksum(path);
 
         if !changed_by_watcher {
-            let last_modified = self.last_modified.lock().unwrap();
-            let last_checksum = self.last_checksum.lock().unwrap();
+            let last_modified = self.last_modified.lock().map_err(|e| {
+                crate::error::AegisError::Internal(format!("last_modified lock poisoned: {e}"))
+            })?;
+            let last_checksum = self.last_checksum.lock().map_err(|e| {
+                crate::error::AegisError::Internal(format!("last_checksum lock poisoned: {e}"))
+            })?;
             if modified <= *last_modified && checksum == *last_checksum {
                 return Ok(false);
             }
@@ -71,8 +78,12 @@ impl SchemaWatcher {
         engine.reload_schema(new_schema)?;
 
         {
-            let mut last_modified = self.last_modified.lock().unwrap();
-            let mut last_checksum = self.last_checksum.lock().unwrap();
+            let mut last_modified = self.last_modified.lock().map_err(|e| {
+                crate::error::AegisError::Internal(format!("last_modified lock poisoned: {e}"))
+            })?;
+            let mut last_checksum = self.last_checksum.lock().map_err(|e| {
+                crate::error::AegisError::Internal(format!("last_checksum lock poisoned: {e}"))
+            })?;
             *last_modified = modified;
             *last_checksum = checksum;
         }

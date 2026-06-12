@@ -195,11 +195,6 @@ pub fn check_compatibility(
     }
 }
 
-/// Read the current schema version from storage.
-pub fn read_schema_version(storage: &dyn StorageBackend) -> AegisResult<u32> {
-    storage.read_schema_version()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

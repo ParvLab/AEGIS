@@ -18,7 +18,8 @@ impl LintReport {
 
 /// Run lint checks on a schema, returning warnings and errors.
 /// When `strict` is true, warnings are promoted to errors.
-pub fn lint_schema(schema: &Schema, strict: bool) -> LintReport {
+#[allow(dead_code)]
+pub(crate) fn lint_schema(schema: &Schema, strict: bool) -> LintReport {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
 
@@ -53,7 +54,7 @@ pub fn lint_schema(schema: &Schema, strict: bool) -> LintReport {
             if let Some(ref cond) = perm_def.condition {
                 if let Err(e) = crate::engine::condition::parse_condition(cond) {
                     let msg = format!("permission '{perm_name}' on type '{type_name}' has invalid condition syntax: {e}");
-                    if strict { errors.push(msg); } else { errors.push(msg); }
+                    if strict { errors.push(msg); } else { warnings.push(msg); }
                 }
             }
         }
@@ -332,7 +333,7 @@ types:
             types,
         };
         let report = lint_schema(&schema, false);
-        assert!(report.errors.iter().any(|w| w.contains("condition")), "expected condition syntax error: {:?}", report.errors);
+        assert!(report.warnings.iter().any(|w| w.contains("condition")), "expected condition syntax warning: errors={:?} warnings={:?}", report.errors, report.warnings);
     }
 
     #[test]

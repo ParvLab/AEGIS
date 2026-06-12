@@ -1,7 +1,7 @@
 use crate::error::AegisResult;
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ConditionEvalContext {
     pub subject_meta: HashMap<String, String>,
     pub resource_meta: HashMap<String, String>,

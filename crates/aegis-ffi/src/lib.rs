@@ -1,6 +1,5 @@
 use std::ffi::{CStr, CString};
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
@@ -11,7 +10,6 @@ use aegis_core::types::*;
 /// Opaque handle to the engine.
 pub struct AegisEngine {
     inner: GraphEngine,
-    closed: AtomicBool,
 }
 
 // ── C-compatible result structs ──
@@ -45,6 +43,9 @@ pub extern "C" fn aegis_engine_create(
     schema_yaml: *const libc::c_char,
 ) -> *mut AegisEngine {
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<*mut AegisEngine, String> {
+        if db_path.is_null() || schema_yaml.is_null() {
+            return Err("null pointer argument".to_string());
+        }
         let path = unsafe { CStr::from_ptr(db_path) }
             .to_str()
             .map_err(|e| e.to_string())?;
@@ -69,7 +70,6 @@ pub extern "C" fn aegis_engine_create(
 
         Ok(Box::into_raw(Box::new(AegisEngine {
             inner: engine,
-            closed: AtomicBool::new(false),
         })))
     }));
 
@@ -336,11 +336,7 @@ fn engine_from_ptr(ptr: *mut AegisEngine) -> Result<&'static GraphEngine, *mut l
         Err(error_string("engine is null"))
     } else {
         let engine = unsafe { &*ptr };
-        if engine.closed.load(Ordering::Relaxed) {
-            Err(error_string("engine is closed"))
-        } else {
-            Ok(&engine.inner)
-        }
+        Ok(&engine.inner)
     }
 }
 
