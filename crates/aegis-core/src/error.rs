@@ -77,12 +77,6 @@ pub enum AegisError {
     #[error("internal error: {0}")]
     Internal(String),
 
-    #[error("not implemented: {0}")]
-    NotImplemented(String),
-
-    #[error("operation timed out after {0}ms")]
-    Timeout(u64),
-
     #[error("engine is closed and no longer accepting requests")]
     EngineClosed,
 }
@@ -196,9 +190,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn timeout_error() {
-        let err = AegisError::Timeout(5000);
-        assert_eq!(err.to_string(), "operation timed out after 5000ms");
-    }
 }

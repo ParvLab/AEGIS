@@ -5,6 +5,26 @@
 > **Total estimate:** ~40 weeks with 2-3 engineers
 > **Phases:** 0 (Foundation) → 1 (Engine) → 2 (SDK) → 3 (Distributed)
 
+## Current Status (June 2026)
+
+**Sprints 0–6 Complete — 221 tests pass (219 unit + 2 integration), 0 failures**
+
+| Sprint | Focus | Status | Key Deliverables |
+|--------|-------|--------|-----------------|
+| 0 | Security Hardening | ✅ | 18 vulnerabilities fixed |
+| 1 | Engine Features | ✅ | ABAC, OTel, hot-reload, recover, lint, FullyConsistent, logger callback |
+| 2 | Storage Backends | ✅ | MySQL, PG/RocksDB event compaction, required trait methods |
+| 3 | NAPI/TS SDK | ✅ | 14 exports, JsWatchSubscription, JsTransaction |
+| 4 | CLI & REPL | ✅ | 19 commands, REPL with tab completion + colors, --dry-run |
+| 5 | Test Coverage | ✅ | 24 new tests across 12 categories |
+| **6** | **Polish & Cleanup** | **✅** | **Dead code removal, deps cleanup, LRU cache, rate limiter GC, health fields, CI hardening, supply-chain docs** |
+| 7 | Go & Python SDKs | ⬜ | Post-GA |
+| 8 | Distributed Features | ⬜ | Post-GA |
+
+**Architecture:** Purely embedded — zero servers, ports, HTTP/gRPC listeners. SQLite + RocksDB as embedded storage backends (PG/MySQL available programmatically, not in CLI).
+
+**Key decisions:** `std::thread::scope` for parallelism (not tokio), synchronous MPSC for watch events (zero threads), `AtomicBool` for parallel_eval toggle, `OnceLock<SdkMeterProvider>` for OTel.
+
 ---
 
 ## Table of Contents
@@ -42,6 +62,7 @@
                     │  │   ├─ Recursive Traversal         │  │
                     │  │   ├─ Cycle Detection             │  │
                     │  │   ├─ Parallel Sibling Eval       │  │
+ │  │   │  (std::thread::scope)       │  │
                     │  │   └─ Policy Resolution           │  │
                     │  └───────────┬─────────────────────┘  │
                     │              │                         │
@@ -66,10 +87,12 @@
         │          ┌───────────────▼───────────────┐          │
         │          │    Storage Adapter Layer       │          │
         │          │                                │          │
-   ┌────▼────┐ ┌──▼───┐ ┌───────▼──────┐ ┌───────▼──────┐   │
-   │ SQLite  │ │ PG   │ │ RocksDB      │ │ IndexedDB    │   │
-   │ (WAL)   │ │      │ │ (LSM-tree)   │ │ (WASM)       │   │
-   └─────────┘ └──────┘ └──────────────┘ └──────────────┘   │
+    ┌────▼────┐ ┌───────▼──────┐ ┌───────▼──────┐          │
+    │ SQLite  │ │ RocksDB      │ │ PG/MySQL     │          │
+    │ (WAL)   │ │ (LSM-tree)   │ │ (programmatic │          │
+    └─────────┘ └──────────────┘ │  only, not    │          │
+                                │  in CLI)      │          │
+                                └───────────────┘          │
         │                                                    │
    ┌────▼────────────────────────────────────────────────┐   │
    │    CRDT Sync Layer (optional, V3+)                   │   │
@@ -154,7 +177,7 @@ Phase 3 complete
 
 **Files created:** 22 source files across 2 crates
 
-**Tests:** 89 total (81 core + 8 test-utils) — all passing
+**Tests:** 221 total (219 core + 2 integration) — all passing
 
 ---
 
@@ -508,7 +531,7 @@ Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 | SDK Cross-Language | 9 | SDK-001–009 |
 | Performance Benchmarks | 11 | BENCH-001–011 |
 
-### Total: ~180 test cases
+### Total: 221 implemented (219 unit + 2 integration), 0 failures — [tracked in `.opencode/plans/implementation-plan.md`]
 
 ---
 

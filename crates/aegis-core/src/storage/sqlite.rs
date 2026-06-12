@@ -3,7 +3,7 @@ use crate::storage::traits::{
     BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
 };
 use crate::types::{
-    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, Relation,
+    AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, Relation,
     RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
 };
 use chrono::{DateTime, Utc};
@@ -1147,6 +1147,29 @@ impl StorageBackend for SqliteStorage {
             details,
             backend_type: BackendType::Sqlite,
         })
+    }
+
+    fn storage_version(&self) -> Option<String> {
+        let conn = self.conn().ok()?;
+        conn.query_row("SELECT sqlite_version()", [], |row| row.get(0))
+            .ok()
+    }
+
+    fn connection_stats(&self) -> ConnectionStats {
+        let state = self.pool.state();
+        crate::types::ConnectionStats {
+            read_active: state.connections,
+            read_idle: state.idle_connections,
+            write_busy: false,
+        }
+    }
+
+    fn wal_size_mb(&self) -> Option<f64> {
+        if self.config.path == ":memory:" || self.config.path.is_empty() {
+            return None;
+        }
+        let wal_path = format!("{}-wal", self.config.path);
+        std::fs::metadata(&wal_path).ok().map(|m| m.len() as f64 / (1024.0 * 1024.0))
     }
 
     fn delete_events_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {

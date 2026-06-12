@@ -16,7 +16,6 @@ rusqlite.workspace = true
 r2d2.workspace = true
 r2d2_sqlite.workspace = true
 serde_json.workspace = true
-notify = { version = "8", optional = true }
 sha2 = "0.10"
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"], optional = true }
 deadpool-postgres = { version = "0.14", features = ["serde"], optional = true }
@@ -27,7 +26,7 @@ webpki-roots = { version = "1", optional = true }
 rocksdb = { workspace = true, optional = true }
 mysql_async = { version = "0.37", features = ["chrono"], optional = true }
 tracing = { workspace = true }
-tracing-subscriber = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
 subtle = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
@@ -35,7 +34,6 @@ opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 libc = { workspace = true }
-criterion = { version = "0.5", optional = true }
 
 [dev-dependencies]
 criterion = "0.5"
@@ -46,10 +44,10 @@ harness = false
 path = "benches/check.rs"
 
 [features]
-hot-reload = ["notify"]
+hot-reload = []
 postgres = ["tokio-postgres", "deadpool-postgres", "tokio", "tokio-postgres-rustls", "rustls", "webpki-roots"]
 mysql = ["dep:mysql_async", "tokio"]
 rocksdb = ["dep:rocksdb"]
-telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tracing-subscriber"]
 crdt = []
 crdt-http = ["crdt", "dep:reqwest"]

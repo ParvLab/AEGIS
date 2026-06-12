@@ -1,8 +1,8 @@
 use chrono::{DateTime, Utc};
 use crate::error::AegisResult;
 use crate::types::{
-    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationParams, Relation, RelationshipTuple,
-    ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
+    AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationParams, Relation,
+    RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
 };
 
 /// Pluggable storage backend for relationship tuples.
@@ -119,6 +119,25 @@ pub trait StorageBackend: Send + Sync {
     /// This reconstructs the tuple store from scratch using the event log,
     /// returning the latest revision seen.
     fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision>;
+
+    /// Return a version string for the storage backend (e.g. "3.45.1").
+    fn storage_version(&self) -> Option<String> {
+        None
+    }
+
+    /// Return current connection pool statistics.
+    fn connection_stats(&self) -> ConnectionStats {
+        ConnectionStats {
+            read_active: 0,
+            read_idle: 0,
+            write_busy: false,
+        }
+    }
+
+    /// Return WAL size in megabytes, if applicable.
+    fn wal_size_mb(&self) -> Option<f64> {
+        None
+    }
 
     /// Close the storage backend, flushing all pending operations.
     fn close(&self) -> AegisResult<()>;

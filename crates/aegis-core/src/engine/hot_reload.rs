@@ -1,7 +1,6 @@
 use crate::engine::GraphEngine;
 use crate::error::AegisResult;
 use crate::types::Schema;
-use notify::{Config, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,45 +12,18 @@ pub struct SchemaWatcher {
     last_modified: Mutex<SystemTime>,
     last_checksum: Mutex<String>,
     changed: Arc<AtomicBool>,
-    _file_watcher: Option<RecommendedWatcher>,
 }
 
 impl SchemaWatcher {
     /// Create a new schema watcher for a given file path.
     pub fn new(schema_path: &str) -> Self {
         let now = SystemTime::UNIX_EPOCH;
-        let changed = Arc::new(AtomicBool::new(false));
-        let file_watcher = Self::create_file_watcher(Path::new(schema_path), Arc::clone(&changed));
         Self {
             schema_path: schema_path.to_string(),
             last_modified: Mutex::new(now),
             last_checksum: Mutex::new(String::new()),
-            changed,
-            _file_watcher: file_watcher,
+            changed: Arc::new(AtomicBool::new(false)),
         }
-    }
-
-    fn create_file_watcher(schema_path: &Path, changed: Arc<AtomicBool>) -> Option<RecommendedWatcher> {
-        let schema_dir = schema_path.parent()?;
-        let schema_file_name = schema_path.file_name()?.to_string_lossy().to_string();
-        let changed_inner = changed.clone();
-        let mut watcher = RecommendedWatcher::new(
-            move |res: notify::Result<Event>| {
-                if let Ok(event) = res {
-                    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
-                        if event.paths.iter().any(|p| {
-                            p.file_name().and_then(|n| n.to_str()) == Some(&schema_file_name)
-                        }) {
-                            changed_inner.store(true, Ordering::Relaxed);
-                        }
-                    }
-                }
-            },
-            Config::default(),
-        )
-        .ok()?;
-        watcher.watch(schema_dir, RecursiveMode::NonRecursive).ok()?;
-        Some(watcher)
     }
 
     /// Check if the schema file has changed since the last reload.
@@ -112,11 +84,11 @@ impl SchemaWatcher {
 }
 
 fn compute_file_checksum(path: &Path) -> String {
-    use sha2::Digest;
     if let Ok(data) = std::fs::read(path) {
-        let mut hasher = sha2::Sha256::new();
-        hasher.update(&data);
-        format!("{:x}", hasher.finalize())
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        data.hash(&mut hasher);
+        format!("{:x}", hasher.finish())
     } else {
         String::new()
     }

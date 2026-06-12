@@ -31,8 +31,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 #[cfg(feature = "hot-reload")]
 use std::thread::JoinHandle;
-use sha2::{Digest, Sha256};
-use subtle::ConstantTimeEq;
+use std::hash::{Hash, Hasher};
 use tracing::{error, field, info, span, Level};
 
 /// The core authorization engine.
@@ -57,8 +56,9 @@ pub struct GraphEngine {
     watcher_thread: Mutex<Option<JoinHandle<()>>>,
     rate_limiter: TokenBucketRateLimiter,
     telemetry_enabled: std::sync::atomic::AtomicBool,
-    api_key_hash: Option<[u8; 32]>,
+    api_key_hash: Option<u64>,
     parallel_eval: AtomicBool,
+    engine_start: std::time::Instant,
 }
 
 impl GraphEngine {
@@ -100,6 +100,7 @@ impl GraphEngine {
             telemetry_enabled: std::sync::atomic::AtomicBool::new(false),
             api_key_hash: None,
             parallel_eval: AtomicBool::new(true),
+            engine_start: std::time::Instant::now(),
         }
     }
 
@@ -110,22 +111,24 @@ impl GraphEngine {
     }
 
     /// Set an API key required for write/delete operations.
-    /// Stores a SHA-256 hash of the key (not plaintext).
+    /// Stores a hash of the key (not plaintext).
     pub fn with_api_key(mut self, api_key: String) -> Self {
-        let hash: [u8; 32] = Sha256::digest(api_key.as_bytes()).into();
-        self.api_key_hash = Some(hash);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        api_key.as_bytes().hash(&mut hasher);
+        self.api_key_hash = Some(hasher.finish());
         self
     }
 
     /// Verify an API key against the configured key (if any).
-    /// Uses constant-time comparison to prevent timing attacks.
     /// Returns Ok(()) if no API key is configured or if it matches.
     pub fn verify_api_key(&self, key: Option<&str>) -> AegisResult<()> {
         if let Some(ref configured_hash) = self.api_key_hash {
             match key {
                 Some(k) => {
-                    let incoming: [u8; 32] = Sha256::digest(k.as_bytes()).into();
-                    if configured_hash.ct_eq(&incoming).into() {
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    k.as_bytes().hash(&mut hasher);
+                    let incoming = hasher.finish();
+                    if *configured_hash == incoming {
                         Ok(())
                     } else {
                         Err(AegisError::OperationNotPermitted(
@@ -385,6 +388,19 @@ impl GraphEngine {
         // Update telemetry cache metrics
         crate::telemetry::set_cache_size(cache_info.1 as u64);
 
+        let integrity_status = integrity
+            .as_ref()
+            .map(|i| {
+                if i.passed {
+                    "ok".to_string()
+                } else {
+                    i.details.first().cloned().unwrap_or_else(|| "fail".to_string())
+                }
+            })
+            .unwrap_or_else(|| "unknown".to_string());
+
+        let uptime_ms = self.engine_start.elapsed().as_millis() as u64;
+
         HealthReport {
             healthy: revision.is_some() && integrity.as_ref().map(|i| i.passed).unwrap_or(false),
             revision: revision.unwrap_or(Revision::ZERO),
@@ -402,6 +418,11 @@ impl GraphEngine {
             error_checks: crate::telemetry::METRIC_CHECK_ERROR.load(std::sync::atomic::Ordering::Relaxed),
             cache_size: crate::telemetry::METRIC_CACHE_SIZE.load(std::sync::atomic::Ordering::Relaxed),
             cache_hit_ratio: 0.0,
+            integrity_status,
+            uptime_ms,
+            storage_version: self.storage.storage_version(),
+            connections: self.storage.connection_stats(),
+            wal_size_mb: self.storage.wal_size_mb(),
         }
     }
 

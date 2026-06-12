@@ -1,5 +1,5 @@
 use crate::types::Revision;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
 
 /// Default time-to-live for cached decisions.
@@ -21,6 +21,7 @@ struct CacheEntry {
 /// If TTL expired, evicts and returns None.
 pub struct DecisionCache {
     entries: HashMap<(String, String, String), CacheEntry>,
+    access_order: VecDeque<(String, String, String)>,
     capacity: usize,
     ttl: Duration,
     hits: u64,
@@ -31,6 +32,7 @@ impl DecisionCache {
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: HashMap::with_capacity(capacity),
+            access_order: VecDeque::with_capacity(capacity),
             capacity,
             ttl: DEFAULT_TTL,
             hits: 0,
@@ -59,24 +61,27 @@ impl DecisionCache {
             resource.to_string(),
         );
 
-        match self.entries.get(&key) {
-            Some(entry)
-                if entry.revision >= current_revision
-                    && entry.created_at.elapsed() < self.ttl =>
-            {
-                self.hits += 1;
-                Some(entry.allowed)
+        let is_valid = self.entries.get(&key).map_or(false, |entry| {
+            entry.revision >= current_revision && entry.created_at.elapsed() < self.ttl
+        });
+
+        if is_valid {
+            self.hits += 1;
+            // Move to MRU position
+            if let Some(pos) = self.access_order.iter().position(|k| k == &key) {
+                self.access_order.remove(pos);
+                self.access_order.push_back(key.clone());
             }
-            Some(_) => {
-                // Stale or expired entry - remove it
-                self.entries.remove(&key);
-                self.misses += 1;
-                None
-            }
-            None => {
-                self.misses += 1;
-                None
-            }
+            self.entries.get(&key).map(|e| e.allowed)
+        } else if self.entries.contains_key(&key) {
+            // Stale or expired entry - remove it
+            self.entries.remove(&key);
+            self.access_order.retain(|k| k != &key);
+            self.misses += 1;
+            None
+        } else {
+            self.misses += 1;
+            None
         }
     }
 
@@ -89,19 +94,23 @@ impl DecisionCache {
         allowed: bool,
         revision: Revision,
     ) {
-        // Evict oldest entry if at capacity
-        if self.entries.len() >= self.capacity {
-            if let Some(key) = self.entries.keys().next().cloned() {
-                self.entries.remove(&key);
-            }
-        }
-
         let key = (
             subject.to_string(),
             permission.to_string(),
             resource.to_string(),
         );
 
+        // Remove existing entry from access order so it gets re-inserted at MRU
+        self.access_order.retain(|k| k != &key);
+
+        // Evict LRU entry if at capacity
+        if self.entries.len() >= self.capacity {
+            if let Some(lru_key) = self.access_order.pop_front() {
+                self.entries.remove(&lru_key);
+            }
+        }
+
+        self.access_order.push_back(key.clone());
         self.entries.insert(
             key,
             CacheEntry {
@@ -115,11 +124,14 @@ impl DecisionCache {
     /// Invalidate all entries with revisions older than a threshold.
     pub fn invalidate_before(&mut self, revision: Revision) {
         self.entries.retain(|_, entry| entry.revision >= revision);
+        // Rebuild access_order to match remaining entries
+        self.access_order.retain(|k| self.entries.contains_key(k));
     }
 
     /// Clear the entire cache.
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.access_order.clear();
         self.hits = 0;
         self.misses = 0;
     }
@@ -149,6 +161,7 @@ impl DecisionCache {
 /// Intermediate traversal cache: caches `(subject, relation) -> Vec<ResourceId>` lookups.
 pub struct TraversalCache {
     entries: HashMap<(String, String), (Vec<String>, Revision)>,
+    access_order: VecDeque<(String, String)>,
     capacity: usize,
 }
 
@@ -156,6 +169,7 @@ impl TraversalCache {
     pub fn new(capacity: usize) -> Self {
         Self {
             entries: HashMap::with_capacity(capacity),
+            access_order: VecDeque::with_capacity(capacity),
             capacity,
         }
     }
@@ -168,9 +182,20 @@ impl TraversalCache {
         current_revision: Revision,
     ) -> Option<Vec<String>> {
         let key = (subject.to_string(), relation.to_string());
-        match self.entries.get(&key) {
-            Some((resources, rev)) if *rev >= current_revision => Some(resources.clone()),
-            _ => None,
+        let is_valid = self.entries.get(&key).map_or(false, |(_, rev)| *rev >= current_revision);
+        if is_valid {
+            // Move to MRU position
+            if let Some(pos) = self.access_order.iter().position(|k| k == &key) {
+                self.access_order.remove(pos);
+                self.access_order.push_back(key.clone());
+            }
+            self.entries.get(&key).map(|(resources, _)| resources.clone())
+        } else {
+            if self.entries.contains_key(&key) {
+                self.entries.remove(&key);
+                self.access_order.retain(|k| k != &key);
+            }
+            None
         }
     }
 
@@ -182,23 +207,30 @@ impl TraversalCache {
         resources: Vec<String>,
         revision: Revision,
     ) {
+        let key = (subject.to_string(), relation.to_string());
+
+        // Remove existing entry from access order
+        self.access_order.retain(|k| k != &key);
+
+        // Evict LRU entry if at capacity
         if self.entries.len() >= self.capacity {
-            if let Some(key) = self.entries.keys().next().cloned() {
-                self.entries.remove(&key);
+            if let Some(lru_key) = self.access_order.pop_front() {
+                self.entries.remove(&lru_key);
             }
         }
-        self.entries.insert(
-            (subject.to_string(), relation.to_string()),
-            (resources, revision),
-        );
+
+        self.access_order.push_back(key.clone());
+        self.entries.insert(key, (resources, revision));
     }
 
     pub fn invalidate_before(&mut self, revision: Revision) {
         self.entries.retain(|_, (_, rev)| *rev >= revision);
+        self.access_order.retain(|k| self.entries.contains_key(k));
     }
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.access_order.clear();
     }
 }
 
@@ -275,5 +307,30 @@ mod tests {
         cache.insert("user:1", "owner", vec!["repo:a".to_string()], Revision::new(5));
 
         assert_eq!(cache.get("user:1", "owner", Revision::new(10)), None);
+    }
+
+    #[test]
+    fn test_lru_eviction() {
+        let mut cache = DecisionCache::new(3);
+
+        // Fill cache to capacity
+        cache.insert("user:1", "read", "repo:a", true, Revision::new(1));
+        cache.insert("user:2", "read", "repo:b", true, Revision::new(2));
+        cache.insert("user:3", "read", "repo:c", true, Revision::new(3));
+
+        // Access user:1 and user:2 to make them MRU
+        assert_eq!(cache.get("user:1", "read", "repo:a", Revision::new(1)), Some(true));
+        assert_eq!(cache.get("user:2", "read", "repo:b", Revision::new(2)), Some(true));
+
+        // Insert 4th entry — should evict LRU entry (user:3)
+        cache.insert("user:4", "read", "repo:d", true, Revision::new(4));
+
+        // user:3 should be evicted
+        assert_eq!(cache.get("user:3", "read", "repo:c", Revision::new(3)), None);
+        // user:1 and user:2 should still be present
+        assert_eq!(cache.get("user:1", "read", "repo:a", Revision::new(1)), Some(true));
+        assert_eq!(cache.get("user:2", "read", "repo:b", Revision::new(2)), Some(true));
+        // user:4 should be present
+        assert_eq!(cache.get("user:4", "read", "repo:d", Revision::new(4)), Some(true));
     }
 }

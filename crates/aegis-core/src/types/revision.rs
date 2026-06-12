@@ -108,6 +108,14 @@ pub struct ExplainResult {
     pub duration_ms: u64,
 }
 
+/// Connection pool statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionStats {
+    pub read_active: u32,
+    pub read_idle: u32,
+    pub write_busy: bool,
+}
+
 /// Health status of the engine and its components.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthReport {
@@ -128,6 +136,12 @@ pub struct HealthReport {
     pub error_checks: u64,
     pub cache_size: u64,
     pub cache_hit_ratio: f64,
+    // Sprint 6.4: Additional health fields
+    pub integrity_status: String,
+    pub uptime_ms: u64,
+    pub storage_version: Option<String>,
+    pub connections: ConnectionStats,
+    pub wal_size_mb: Option<f64>,
 }
 
 /// Configuration for fail-closed vs fail-open behavior.

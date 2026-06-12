@@ -19,6 +19,8 @@ pub struct RateLimitConfig {
     pub max_traversal_depth: usize,
     /// Maximum number of tuples a traversal can visit before aborting.
     pub max_traversal_visits: usize,
+    /// Maximum number of tracked keys before LRU eviction.
+    pub max_keys: usize,
 }
 
 impl Default for RateLimitConfig {
@@ -30,6 +32,7 @@ impl Default for RateLimitConfig {
             write_burst: 200,
             max_traversal_depth: 10,
             max_traversal_visits: 10000,
+            max_keys: 10_000,
         }
     }
 }
@@ -45,6 +48,7 @@ pub enum RateLimitOp {
 struct BucketState {
     tokens: f64,
     last_refill: Instant,
+    last_accessed: Instant,
 }
 
 /// Token bucket rate limiter.
@@ -65,6 +69,19 @@ impl TokenBucketRateLimiter {
     /// Returns `RateLimitExceeded` error if the rate limit is exceeded.
     pub fn check(&self, key: &str, op: RateLimitOp) -> AegisResult<()> {
         let mut buckets = self.buckets.lock().unwrap();
+
+        // Evict the least-recently-accessed entry if we need to insert a new key
+        // and the map is at capacity.
+        if !buckets.contains_key(key) && buckets.len() >= self.config.max_keys {
+            if let Some(oldest_key) = buckets
+                .iter()
+                .min_by_key(|(_, state)| state.last_accessed)
+                .map(|(k, _)| k.clone())
+            {
+                buckets.remove(&oldest_key);
+            }
+        }
+
         let state = buckets.entry(key.to_string()).or_insert_with(|| {
             let initial = match op {
                 RateLimitOp::Check => self.config.check_burst as f64,
@@ -73,6 +90,7 @@ impl TokenBucketRateLimiter {
             BucketState {
                 tokens: initial,
                 last_refill: Instant::now(),
+                last_accessed: Instant::now(),
             }
         });
 
@@ -85,6 +103,7 @@ impl TokenBucketRateLimiter {
         let elapsed = now.duration_since(state.last_refill).as_secs_f64();
         state.tokens = (state.tokens + elapsed * rate).min(burst);
         state.last_refill = now;
+        state.last_accessed = now;
 
         if state.tokens < 1.0 {
             tracing::warn!(
@@ -117,6 +136,13 @@ impl TokenBucketRateLimiter {
 
     pub fn config(&self) -> &RateLimitConfig {
         &self.config
+    }
+
+    /// Remove buckets that haven't been accessed since the given duration.
+    pub fn gc(&self, max_age: std::time::Duration) {
+        let mut buckets = self.buckets.lock().unwrap();
+        let cutoff = Instant::now() - max_age;
+        buckets.retain(|_, state| state.last_accessed >= cutoff);
     }
 
     /// Clear all rate limiter state (e.g., on schema reload).
@@ -234,5 +260,54 @@ mod tests {
         assert!(limiter.check("key:1", RateLimitOp::Write).is_ok());
         assert!(limiter.check("key:1", RateLimitOp::Write).is_ok());
         assert!(limiter.check("key:1", RateLimitOp::Write).is_err());
+    }
+
+    #[test]
+    fn test_rate_limiter_gc_removes_stale() {
+        let config = RateLimitConfig::default();
+        let limiter = TokenBucketRateLimiter::new(config);
+
+        // Insert two keys
+        limiter.check("key:a", RateLimitOp::Check).unwrap();
+        limiter.check("key:b", RateLimitOp::Check).unwrap();
+
+        // Sleep briefly so key:a becomes older
+        std::thread::sleep(std::time::Duration::from_millis(10));
+
+        // Touch key:b again
+        limiter.check("key:b", RateLimitOp::Check).unwrap();
+
+        // GC with max_age = 5ms — key:a should be evicted but key:b should remain
+        limiter.gc(std::time::Duration::from_millis(5));
+
+        // Verify key:b still works
+        assert!(limiter.check("key:b", RateLimitOp::Check).is_ok());
+        // key:a was removed and can be created fresh
+        assert!(limiter.check("key:a", RateLimitOp::Check).is_ok());
+    }
+
+    #[test]
+    fn test_rate_limiter_max_keys_evicts_oldest() {
+        let config = RateLimitConfig {
+            max_keys: 3,
+            ..Default::default()
+        };
+        let limiter = TokenBucketRateLimiter::new(config);
+
+        // Insert 3 keys — all fit
+        limiter.check("key:1", RateLimitOp::Check).unwrap();
+        limiter.check("key:2", RateLimitOp::Check).unwrap();
+        limiter.check("key:3", RateLimitOp::Check).unwrap();
+
+        // Access key:1 again so it's most recently used
+        limiter.check("key:1", RateLimitOp::Check).unwrap();
+
+        // Insert a 4th key — should evict the least recently accessed (key:2)
+        limiter.check("key:4", RateLimitOp::Check).unwrap();
+
+        // key:2 should have been evicted; key:1 and key:3 and key:4 should remain
+        assert!(limiter.check("key:1", RateLimitOp::Check).is_ok());
+        assert!(limiter.check("key:3", RateLimitOp::Check).is_ok());
+        assert!(limiter.check("key:4", RateLimitOp::Check).is_ok());
     }
 }

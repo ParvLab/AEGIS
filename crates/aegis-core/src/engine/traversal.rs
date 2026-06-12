@@ -204,41 +204,6 @@ fn check_direct(
     Ok(tuples.iter().any(|t| t.subject == *subject))
 }
 
-/// Collect all objects that a subject reaches through a given relation.
-/// Returns all distinct objects found via BFS traversal.
-pub fn collect_reachable(
-    storage: &dyn StorageBackend,
-    subject: &SubjectId,
-    relation: &Relation,
-    consistency: Option<ConsistencyMode>,
-) -> AegisResult<Vec<ResourceId>> {
-    let mut visited: HashSet<(String, String)> = HashSet::new();
-    let mut queue: VecDeque<SubjectId> = VecDeque::new();
-    let mut results: Vec<ResourceId> = Vec::new();
-
-    queue.push_back(subject.clone());
-    let consistency_ref = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
-
-    while let Some(current) = queue.pop_front() {
-        let tuples = storage.list_by_subject(&current, Some(relation), consistency_ref)?;
-
-        for tuple in &tuples {
-            if !results.contains(&tuple.object) {
-                results.push(tuple.object.clone());
-            }
-
-            if let Ok(next) = SubjectId::new(tuple.object.as_str()) {
-                let key = (next.to_string(), relation.to_string());
-                if visited.insert(key) {
-                    queue.push_back(next);
-                }
-            }
-        }
-    }
-
-    Ok(results)
-}
-
 #[cfg(test)]
 mod tests {
     use crate::testing::TestAegis;

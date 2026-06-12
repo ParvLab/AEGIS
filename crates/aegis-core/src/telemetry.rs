@@ -4,6 +4,7 @@
 //! behind the `telemetry` feature flag.
 
 use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "telemetry")]
 use tracing_subscriber::EnvFilter;
 
 #[cfg(feature = "telemetry")]
@@ -47,13 +48,16 @@ impl Drop for TelemetryGuard {
 /// Uses `RUST_LOG` environment variable to control verbosity (default: `info`).
 /// Call this once at application startup.
 pub fn init_logger() -> TelemetryGuard {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .with_target(true)
-        .with_thread_ids(true)
-        .init();
+    #[cfg(feature = "telemetry")]
+    {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+            )
+            .with_target(true)
+            .with_thread_ids(true)
+            .init();
+    }
 
     TelemetryGuard {
         otel_enabled: false,
@@ -104,15 +108,8 @@ pub fn init_otel() -> Result<TelemetryGuard, Box<dyn std::error::Error>> {
 
 /// Span names used throughout the engine.
 pub mod spans {
-    pub const CHECK: &str = "aegis.check";
-    pub const EXPLAIN: &str = "aegis.explain";
-    pub const WRITE: &str = "aegis.write";
-    pub const DELETE: &str = "aegis.delete";
     pub const QUERY: &str = "aegis.query";
-    pub const WATCH_SEND: &str = "aegis.watch_send";
-    pub const HOOK_TRIGGER: &str = "aegis.hook_trigger";
     pub const CACHE_LOOKUP: &str = "aegis.cache_lookup";
-    pub const TRAVERSAL: &str = "aegis.traversal";
 }
 
 // ── Metrics counters ──────────────────────────────────────────────────────

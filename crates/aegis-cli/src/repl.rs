@@ -263,7 +263,6 @@ fn poll_watch(state: &ReplState) {
                     let icon = match event.event_type {
                         WatchEventType::TupleAdded => "+",
                         WatchEventType::TupleRemoved => "-",
-                        WatchEventType::Heartbeat => "*",
                     };
                     if state.json_mode {
                         println!(r#"{{"event_type":"{:?}","subject":"{}","relation":"{}","object":"{}","revision":{}}}"#,

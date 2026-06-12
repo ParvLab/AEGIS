@@ -179,16 +179,6 @@ impl CrdtOperation {
     }
 }
 
-/// Sync state for a single peer.
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-struct PeerState {
-    node_id: NodeId,
-    /// Last known version vector from this peer.
-    remote_vector: VersionVector,
-    address: String,
-}
-
 /// Pluggable transport for sending/receiving CRDT operations.
 pub trait SyncTransport: Send + Sync {
     /// Send a batch of operations to a peer.
@@ -308,7 +298,7 @@ pub struct CrdtReplicator {
     node_id: NodeId,
     vector: Arc<RwLock<VersionVector>>,
     pending: Arc<Mutex<Vec<CrdtOperation>>>,
-    peers: Arc<RwLock<HashMap<NodeId, PeerState>>>,
+    peers: Arc<RwLock<HashMap<NodeId, String>>>,
     transport: Box<dyn SyncTransport>,
     _applied: Arc<Mutex<HashSet<(NodeId, u64)>>>,
 }
@@ -339,14 +329,7 @@ impl CrdtReplicator {
 
     /// Register a peer for synchronization.
     pub fn add_peer(&self, node_id: NodeId, address: String) {
-        self.peers.write().unwrap().insert(
-            node_id,
-            PeerState {
-                node_id,
-                remote_vector: VersionVector::new(),
-                address,
-            },
-        );
+        self.peers.write().unwrap().insert(node_id, address);
     }
 
     /// Remove a peer.
@@ -359,7 +342,7 @@ impl CrdtReplicator {
             .read()
             .unwrap()
             .values()
-            .map(|p| p.address.clone())
+            .cloned()
             .collect()
     }
 
@@ -390,7 +373,7 @@ impl CrdtReplicator {
         let bundle = DeltaBundle::new(self.node_id, self.vector(), pending);
 
         let peers = self.peers.read().unwrap();
-        let addresses: Vec<String> = peers.values().map(|p| p.address.clone()).collect();
+        let addresses: Vec<String> = peers.values().cloned().collect();
         drop(peers);
 
         let mut sent = 0;
@@ -474,7 +457,7 @@ impl CrdtReplicator {
     ) -> AegisResult<usize> {
         let known = self.vector();
         let peers = self.peers.read().unwrap();
-        let addresses: Vec<String> = peers.values().map(|p| p.address.clone()).collect();
+        let addresses: Vec<String> = peers.values().cloned().collect();
         drop(peers);
 
         let mut total = 0;

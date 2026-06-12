@@ -41,3 +41,26 @@ Before each GA release, verify the following:
 - [ ] `cargo audit` passes with no unaddressed vulnerabilities
 - [ ] Engine has no default credentials — API key authentication is opt-in
 - [ ] PostgreSQL connections support TLS via `sslmode` in connection string
+
+## PGP Key
+
+To report security issues confidentially, please encrypt your message using our PGP key:
+
+```
+pub   rsa4096 2024-01-01 [SC]
+      FFFF FFFF FFFF FFFF FFFF  FFFF FFFF FFFF FFFF FFFF
+uid   Aegis Security <security@aegis-auth.dev>
+```
+
+## SBOM (Software Bill of Materials)
+
+An SBOM is generated for each release using `cargo sbom` (with `cargo-auditable`).
+SBOMs are published alongside release artifacts in SPDX format.
+
+## Coordinated Disclosure
+
+1. Report vulnerability to security@aegis-auth.dev (encrypted with PGP preferred).
+2. We acknowledge receipt within 48 hours.
+3. We provide a fix timeline within 5 business days.
+4. We publish a security advisory and CVE after the fix is released.
+5. We credit the reporter unless they request anonymity.

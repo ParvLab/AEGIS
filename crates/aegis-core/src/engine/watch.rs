@@ -10,7 +10,6 @@ pub type WatchSender = std::sync::mpsc::Sender<WatchEvent>;
 pub enum WatchEventType {
     TupleAdded,
     TupleRemoved,
-    Heartbeat,
 }
 
 #[derive(Debug, Clone)]

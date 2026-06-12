@@ -104,6 +104,19 @@ pub struct HealthReportNAP {
     pub error_checks: f64,
     pub cache_size: f64,
     pub cache_hit_ratio: f64,
+    // Sprint 6.4 fields
+    pub integrity_status: String,
+    pub uptime_ms: f64,
+    pub storage_version: Option<String>,
+    pub connections: ConnectionStatsNAP,
+    pub wal_size_mb: Option<f64>,
+}
+
+#[napi(object)]
+pub struct ConnectionStatsNAP {
+    pub read_active: i32,
+    pub read_idle: i32,
+    pub write_busy: bool,
 }
 
 #[napi(object)]
@@ -217,6 +230,15 @@ fn health_report_to_nap(report: &aegis_core::types::HealthReport) -> HealthRepor
         error_checks: report.error_checks as f64,
         cache_size: report.cache_size as f64,
         cache_hit_ratio: report.cache_hit_ratio,
+        integrity_status: report.integrity_status.clone(),
+        uptime_ms: report.uptime_ms as f64,
+        storage_version: report.storage_version.clone(),
+        connections: ConnectionStatsNAP {
+            read_active: report.connections.read_active as i32,
+            read_idle: report.connections.read_idle as i32,
+            write_busy: report.connections.write_busy,
+        },
+        wal_size_mb: report.wal_size_mb,
     }
 }
 
