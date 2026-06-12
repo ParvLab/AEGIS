@@ -9,4 +9,4 @@ description = "Test utilities for the Aegis authorization runtime"
 [dependencies]
 aegis-core = { path = "../aegis-core" }
 serde.workspace = true
-serde_yaml.workspace = true
+serde_yml.workspace = true

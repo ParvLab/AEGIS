@@ -251,7 +251,7 @@ fn cmd_list(engine: &GraphEngine, args: &[&str]) -> Result<()> {
     }
     let object = ResourceId::new(args[0])?;
     let relation = args.get(1).map(|r| Relation::new(*r)).transpose()?;
-    let tuples = engine.storage().list_by_object(&object, relation.as_ref())?;
+    let tuples = engine.storage().list_by_object(&object, relation.as_ref(), &ConsistencyMode::MinimizeLatency)?;
     println!("{}", serde_json::to_string(&tuples)?);
     Ok(())
 }

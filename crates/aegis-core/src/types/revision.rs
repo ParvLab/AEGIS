@@ -121,6 +121,13 @@ pub struct HealthReport {
     pub cache_entries: usize,
     pub storage_integrity: bool,
     pub error: Option<String>,
+    // Metrics
+    pub total_checks: u64,
+    pub allowed_checks: u64,
+    pub denied_checks: u64,
+    pub error_checks: u64,
+    pub cache_size: u64,
+    pub cache_hit_ratio: f64,
 }
 
 /// Configuration for fail-closed vs fail-open behavior.

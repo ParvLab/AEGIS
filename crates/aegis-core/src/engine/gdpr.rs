@@ -6,7 +6,7 @@
 use crate::engine::GraphEngine;
 use crate::error::AegisResult;
 use crate::types::{
-    AuditEntry, RelationshipTuple, Revision, SubjectId,
+    AuditEntry, ConsistencyMode, PaginationParams, RelationshipTuple, Revision, SubjectId,
 };
 use chrono::{DateTime, Days, Utc};
 
@@ -74,19 +74,30 @@ impl<'a> GdprManager<'a> {
     /// Returns active tuples and audit entries for the given subject.
     pub fn export_subject_data(&self, subject: &SubjectId) -> AegisResult<SubjectDataExport> {
         let revision = self.engine.storage().current_revision()?;
-        let active_tuples = self.engine.storage().list_by_subject(subject, None)?;
+        let active_tuples = self.engine.storage().list_by_subject(subject, None, &ConsistencyMode::MinimizeLatency)?;
 
-        // Query all audit entries, then filter by subject in Rust
-        let audit_entries = self
-            .engine
-            .storage()
-            .query_audit(None, None, None, &crate::types::PaginationParams {
-                limit: u64::MAX,
-                cursor: None,
-            })?
-            .into_iter()
-            .filter(|e| e.subject == subject.as_str())
-            .collect();
+        // Query audit entries in pages to avoid OOM, filter by subject
+        const PAGE_SIZE: u64 = 1000;
+        let mut audit_entries = Vec::new();
+        let mut cursor: Option<crate::types::PaginationCursor> = None;
+        loop {
+            let page = self
+                .engine
+                .storage()
+                .query_audit(None, None, None, &PaginationParams {
+                    limit: PAGE_SIZE,
+                    cursor,
+                })?;
+            let count_before = audit_entries.len();
+            audit_entries.extend(page.into_iter().filter(|e| e.subject == subject.as_str()));
+            if audit_entries.len() - count_before < PAGE_SIZE as usize {
+                break;
+            }
+            cursor = Some(crate::types::PaginationCursor {
+                offset: audit_entries.len() as u64,
+                revision: Revision::ZERO,
+            });
+        }
 
         Ok(SubjectDataExport {
             subject: subject.as_str().to_string(),
@@ -250,7 +261,7 @@ mod tests {
 
         let tuples = engine
             .storage()
-            .list_by_subject(&subject, None)
+            .list_by_subject(&subject, None, &ConsistencyMode::MinimizeLatency)
             .unwrap();
         assert_eq!(tuples.len(), 0);
     }
@@ -307,7 +318,7 @@ mod tests {
         assert_eq!(export_alice.active_tuples.len(), 0);
 
         // Bob now has the tuple
-        let bob_tuples = engine.storage().list_by_subject(&bob, None).unwrap();
+        let bob_tuples = engine.storage().list_by_subject(&bob, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(bob_tuples.len(), 1);
         assert_eq!(bob_tuples[0].object.as_str(), "repo:fluxbus");
         assert_eq!(bob_tuples[0].relation.as_str(), "owner");
@@ -410,7 +421,7 @@ mod tests {
             .unwrap();
         assert!(result.revision.as_u64() > 0);
 
-        let tuples = engine.storage().list_by_subject(&subject, None).unwrap();
+        let tuples = engine.storage().list_by_subject(&subject, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(tuples.len(), 0);
     }
 

@@ -11,7 +11,7 @@ aegis-core = { path = "../aegis-core" }
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-serde_yaml = "0.9"
+serde_yml.workspace = true
 anyhow = "1"
 rustyline = "14"
 dirs = "5"

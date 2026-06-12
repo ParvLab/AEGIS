@@ -8,7 +8,7 @@ description = "Aegis embedded authorization runtime core library"
 
 [dependencies]
 serde.workspace = true
-serde_yaml.workspace = true
+serde_yml.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 chrono.workspace = true
@@ -17,7 +17,7 @@ r2d2.workspace = true
 r2d2_sqlite.workspace = true
 serde_json.workspace = true
 notify = { version = "8", optional = true }
-sha2 = { version = "0.10", optional = true }
+sha2 = "0.10"
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"], optional = true }
 deadpool-postgres = { version = "0.14", features = ["serde"], optional = true }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"], optional = true }
@@ -25,8 +25,10 @@ tokio-postgres-rustls = { version = "0.12", optional = true }
 rustls = { version = "0.23", optional = true }
 webpki-roots = { version = "1", optional = true }
 rocksdb = { workspace = true, optional = true }
+mysql_async = { version = "0.37", features = ["chrono"], optional = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+subtle = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
@@ -44,8 +46,9 @@ harness = false
 path = "benches/check.rs"
 
 [features]
-hot-reload = ["notify", "sha2"]
+hot-reload = ["notify"]
 postgres = ["tokio-postgres", "deadpool-postgres", "tokio", "tokio-postgres-rustls", "rustls", "webpki-roots"]
+mysql = ["dep:mysql_async", "tokio"]
 rocksdb = ["dep:rocksdb"]
 telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
 crdt = []

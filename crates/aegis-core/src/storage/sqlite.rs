@@ -379,7 +379,9 @@ impl StorageBackend for SqliteStorage {
             let metadata_json = tuple
                 .metadata
                 .as_ref()
-                .map(|m| serde_json::to_string(m).unwrap_or_default());
+                .map(serde_json::to_string)
+                .transpose()
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 
             conn.execute(
                 "UPDATE _aegis_tuples SET revision_removed = ?1
@@ -434,7 +436,9 @@ impl StorageBackend for SqliteStorage {
                 let metadata_json = tuple
                     .metadata
                     .as_ref()
-                    .map(|m| serde_json::to_string(m).unwrap_or_default());
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 
                 conn.execute(
                     "UPDATE _aegis_tuples SET revision_removed = ?1
@@ -539,8 +543,8 @@ impl StorageBackend for SqliteStorage {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             drop(stmt);
 
@@ -584,8 +588,8 @@ impl StorageBackend for SqliteStorage {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?
-                .filter_map(|r| r.ok())
-                .collect();
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             drop(stmt);
 
@@ -677,13 +681,22 @@ impl StorageBackend for SqliteStorage {
         &self,
         object: &ResourceId,
         relation: Option<&Relation>,
+        consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let conn = self.conn()?;
+        let revision_filter = match consistency {
+            ConsistencyMode::AtRevision(rev) => {
+                let r = rev.as_u64() as i64;
+                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+            }
+            _ => "revision_removed IS NULL".to_string(),
+        };
         let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(rel) = relation {
             (
-                "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
-                 WHERE object = ?1 AND relation = ?2 AND revision_removed IS NULL"
-                    .to_string(),
+                format!(
+                    "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                     WHERE object = ?1 AND relation = ?2 AND {revision_filter}"
+                ),
                 vec![
                     Box::new(object.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(rel.as_str().to_string()),
@@ -691,9 +704,10 @@ impl StorageBackend for SqliteStorage {
             )
         } else {
             (
-                "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
-                 WHERE object = ?1 AND revision_removed IS NULL"
-                    .to_string(),
+                format!(
+                    "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                     WHERE object = ?1 AND {revision_filter}"
+                ),
                 vec![Box::new(object.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>],
             )
         };
@@ -744,13 +758,22 @@ impl StorageBackend for SqliteStorage {
         &self,
         subject: &SubjectId,
         relation: Option<&Relation>,
+        consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let conn = self.conn()?;
+        let revision_filter = match consistency {
+            ConsistencyMode::AtRevision(rev) => {
+                let r = rev.as_u64() as i64;
+                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+            }
+            _ => "revision_removed IS NULL".to_string(),
+        };
         let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(rel) = relation {
             (
-                "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
-                 WHERE subject = ?1 AND relation = ?2 AND revision_removed IS NULL"
-                    .to_string(),
+                format!(
+                    "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                     WHERE subject = ?1 AND relation = ?2 AND {revision_filter}"
+                ),
                 vec![
                     Box::new(subject.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(rel.as_str().to_string()),
@@ -758,9 +781,10 @@ impl StorageBackend for SqliteStorage {
             )
         } else {
             (
-                "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
-                 WHERE subject = ?1 AND revision_removed IS NULL"
-                    .to_string(),
+                format!(
+                    "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                     WHERE subject = ?1 AND {revision_filter}"
+                ),
                 vec![Box::new(subject.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>],
             )
         };
@@ -1168,6 +1192,10 @@ impl StorageBackend for SqliteStorage {
         }
         Ok(())
     }
+
+    fn recover_from_events(&self) -> AegisResult<Revision> {
+        self.recover_from_events_impl()
+    }
 }
 
 // ── Event Log Recovery ─────────────────────────────────────────
@@ -1176,7 +1204,7 @@ impl SqliteStorage {
     /// Recover the tuple graph from the event log.
     /// Replays all events in revision order to reconstruct the current state.
     /// After recovery, verifies that the final revision matches.
-    pub fn recover_from_events(&self) -> AegisResult<Revision> {
+    fn recover_from_events_impl(&self) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             conn.execute("DELETE FROM _aegis_tuples WHERE revision_removed IS NOT NULL OR 1=1", [])
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1423,7 +1451,9 @@ impl StorageTransaction for SqliteTransaction {
         let metadata_json = tuple
             .metadata
             .as_ref()
-            .map(|m| serde_json::to_string(m).unwrap_or_default());
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 
         conn.execute(
             "UPDATE _aegis_tuples SET revision_removed = ?1
@@ -1671,7 +1701,7 @@ mod tests {
 
         assert_eq!(
             store
-                .list_by_subject(&SubjectId::new("user:1").unwrap(), None)
+                .list_by_subject(&SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
                 .unwrap()
                 .len(),
             2
@@ -1683,7 +1713,7 @@ mod tests {
 
         assert_eq!(
             store
-                .list_by_subject(&SubjectId::new("user:1").unwrap(), None)
+                .list_by_subject(&SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
                 .unwrap()
                 .len(),
             0
@@ -1700,7 +1730,7 @@ mod tests {
 
         assert_eq!(
             store
-                .list_by_object(&ResourceId::new("repo:a").unwrap(), None)
+                .list_by_object(&ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
                 .unwrap()
                 .len(),
             2
@@ -1712,7 +1742,7 @@ mod tests {
 
         assert_eq!(
             store
-                .list_by_object(&ResourceId::new("repo:a").unwrap(), None)
+                .list_by_object(&ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
                 .unwrap()
                 .len(),
             0
@@ -1730,7 +1760,7 @@ mod tests {
         store.write_tuple(&tuple("user:2", "viewer", "repo:a")).unwrap();
 
         let results = store
-            .list_by_object(&ResourceId::new("repo:a").unwrap(), None)
+            .list_by_object(&ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
             .unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -1747,6 +1777,7 @@ mod tests {
             .list_by_object(
                 &ResourceId::new("repo:a").unwrap(),
                 Some(&Relation::new("editor").unwrap()),
+                &ConsistencyMode::MinimizeLatency,
             )
             .unwrap();
         assert_eq!(results.len(), 1);
@@ -1762,7 +1793,7 @@ mod tests {
         store.write_tuple(&tuple("user:1", "viewer", "repo:b")).unwrap();
 
         let results = store
-            .list_by_subject(&SubjectId::new("user:1").unwrap(), None)
+            .list_by_subject(&SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
             .unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -2159,7 +2190,7 @@ mod tests {
         let store = storage();
         assert!(
             store
-                .list_by_object(&ResourceId::new("nonexistent").unwrap(), None)
+                .list_by_object(&ResourceId::new("nonexistent").unwrap(), None, &ConsistencyMode::MinimizeLatency)
                 .unwrap()
                 .is_empty()
         );

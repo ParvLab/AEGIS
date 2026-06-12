@@ -1,6 +1,31 @@
 use crate::types::{RelationshipTuple, TupleKey};
 use std::sync::Mutex;
 
+/// Log severity level passed to the logger callback.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LogLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Error => write!(f, "error"),
+            Self::Warn => write!(f, "warn"),
+            Self::Info => write!(f, "info"),
+            Self::Debug => write!(f, "debug"),
+            Self::Trace => write!(f, "trace"),
+        }
+    }
+}
+
+/// A user-supplied callback for structured log messages.
+pub type LoggerFn = Box<dyn Fn(LogLevel, &str, &str) + Send + Sync>;
+
 /// Events that can be triggered by engine operations.
 #[derive(Debug, Clone)]
 pub enum HookEvent {

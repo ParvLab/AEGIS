@@ -5,7 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 /// Parse a YAML string into a validated Schema.
 pub fn parse_schema(yaml: &str) -> AegisResult<Schema> {
-    let raw: RawSchema = serde_yaml::from_str(yaml)
+    let raw: RawSchema = serde_yml::from_str(yaml)
         .map_err(|e| AegisError::SchemaValidation(format!("invalid YAML: {e}")))?;
 
     let mut types = HashMap::new();
@@ -150,7 +150,15 @@ pub fn lint_schema(schema: &Schema) -> LintResult {
         // Check for permission references to undefined relations
         for (perm_name, perm_def) in &type_def.permissions {
             for rel_ref in &perm_def.union_of {
-                if !type_def.relations.contains_key(rel_ref) {
+                if rel_ref == "*" {
+                    diagnostics.push(LintDiagnostic {
+                        severity: LintSeverity::Warning,
+                        message: format!(
+                            "permission '{perm_name}' on type '{type_name}' uses wildcard '*' — overly broad, use with explicit justification"
+                        ),
+                        location: Some(format!("types.{type_name}.permissions.{perm_name}")),
+                    });
+                } else if !type_def.relations.contains_key(rel_ref) {
                     diagnostics.push(LintDiagnostic {
                         severity: LintSeverity::Error,
                         message: format!(
@@ -161,6 +169,49 @@ pub fn lint_schema(schema: &Schema) -> LintResult {
                 }
             }
         }
+
+        // Check condition syntax on permissions
+        for (perm_name, perm_def) in &type_def.permissions {
+            if let Some(ref cond) = perm_def.condition {
+                if let Err(e) = crate::engine::condition::parse_condition(cond) {
+                    diagnostics.push(LintDiagnostic {
+                        severity: LintSeverity::Error,
+                        message: format!(
+                            "permission '{perm_name}' on type '{type_name}' has invalid condition syntax: {e}"
+                        ),
+                        location: Some(format!("types.{type_name}.permissions.{perm_name}.condition")),
+                    });
+                }
+            }
+        }
+    }
+
+    // Check for unused types
+    for type_name in schema.types.keys() {
+        if let Some(type_def) = schema.types.get(type_name) {
+            let has_content = !type_def.relations.is_empty() || !type_def.permissions.is_empty();
+            if !has_content {
+                diagnostics.push(LintDiagnostic {
+                    severity: LintSeverity::Warning,
+                    message: format!("type '{type_name}' is defined but has no relations or permissions"),
+                    location: Some(format!("types.{type_name}")),
+                });
+            } else if schema.types.len() > 1 {
+                let is_referenced = schema.types.iter().filter(|(k, _)| *k != type_name).any(|(_, t)| {
+                    t.relations.values().any(|r| r.inherit_from.iter().any(|s| s == type_name))
+                        || t.permissions.values().any(|p| p.union_of.iter().any(|s| s == type_name))
+                });
+                if !is_referenced {
+                    diagnostics.push(LintDiagnostic {
+                        severity: LintSeverity::Warning,
+                        message: format!(
+                            "type '{type_name}' is defined but never referenced by any other type's relations or permissions"
+                        ),
+                        location: Some(format!("types.{type_name}")),
+                    });
+                }
+            }
+            }
     }
 
     LintResult::with_diagnostics(diagnostics)
@@ -342,7 +393,14 @@ types:
             .iter()
             .filter(|d| d.message.contains("never referenced"))
             .collect();
-        assert_eq!(orphan_warnings.len(), 1);
+        assert_eq!(orphan_warnings.len(), 1, "expected 1 orphan warning, got {}: {:?}", orphan_warnings.len(), orphan_warnings);
+        // With only one type and it has relations/permissions, no unused type warning
+        let unused_types: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("never referenced"))
+            .collect();
+        assert_eq!(unused_types.len(), 1, "expected 1 orphan relation warning, got {}: {:?}", unused_types.len(), unused_types);
     }
 
     #[test]

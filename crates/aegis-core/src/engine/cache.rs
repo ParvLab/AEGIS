@@ -140,6 +140,10 @@ impl DecisionCache {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
 }
 
 /// Intermediate traversal cache: caches `(subject, relation) -> Vec<ResourceId>` lookups.

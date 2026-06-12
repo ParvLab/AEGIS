@@ -84,7 +84,7 @@ mod integration_tests {
         assert!(!denied.allowed);
 
         // List
-        let list = aegis.list_by_object(&ResourceId::new("workspace:acme").unwrap(), None);
+        let list = aegis.list_by_object(&ResourceId::new("workspace:acme").unwrap(), None, None);
         assert_eq!(list.len(), 1);
 
         // Delete
@@ -142,7 +142,7 @@ mod integration_tests {
         assert!(!cross.allowed);
 
         // Each tenant has its own tuples
-        let alpha_tuples = aegis.list_by_subject(&SubjectId::new("user:alpha1").unwrap(), None);
+        let alpha_tuples = aegis.list_by_subject(&SubjectId::new("user:alpha1").unwrap(), None, None);
         assert_eq!(alpha_tuples.len(), 1);
         assert_eq!(alpha_tuples[0].object.as_str(), "tenant:alpha");
     }

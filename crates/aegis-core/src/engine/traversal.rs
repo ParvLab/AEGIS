@@ -1,7 +1,7 @@
 use crate::engine::cache::TraversalCache;
 use crate::error::{AegisError, AegisResult};
 use crate::storage::StorageBackend;
-use crate::types::{Relation, ResourceId, Revision, SubjectId};
+use crate::types::{ConsistencyMode, Relation, ResourceId, Revision, SubjectId};
 use std::collections::{HashSet, VecDeque};
 
 /// A single step in a traversal trace.
@@ -45,8 +45,9 @@ pub fn bfs_traversal(
     relation: &Relation,
     target: &ResourceId,
     revision: Option<Revision>,
+    consistency: Option<ConsistencyMode>,
 ) -> AegisResult<TraversalResult> {
-    bfs_traversal_with_limits(storage, subject, relation, target, revision, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None)
+    bfs_traversal_with_limits(storage, subject, relation, target, revision, consistency, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None)
 }
 
 /// BFS traversal with configurable depth and visit limits.
@@ -56,15 +57,18 @@ pub fn bfs_traversal_with_limits(
     relation: &Relation,
     target: &ResourceId,
     revision: Option<Revision>,
+    consistency: Option<ConsistencyMode>,
     max_depth: usize,
     max_visits: usize,
     mut cache: Option<&mut TraversalCache>,
 ) -> AegisResult<TraversalResult> {
+    let consistency_ref = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
+
     let mut visited: HashSet<(String, String)> = HashSet::new();
     let mut queue: VecDeque<(SubjectId, Vec<TraceStep>)> = VecDeque::new();
     let mut visit_count = 0usize;
 
-    let found_direct = check_direct(storage, subject, relation, target)?;
+    let found_direct = check_direct(storage, subject, relation, target, consistency_ref)?;
     if found_direct {
         return Ok(TraversalResult {
             found: true,
@@ -98,7 +102,7 @@ pub fn bfs_traversal_with_limits(
                     }
                     result
                 } else {
-                    let tuples = match storage.list_by_subject(&current_subject, Some(relation)) {
+                    let tuples = match storage.list_by_subject(&current_subject, Some(relation), consistency_ref) {
                         Ok(t) => t,
                         Err(e) => {
                             if matches!(e, AegisError::StorageNotInitialized) {
@@ -115,7 +119,7 @@ pub fn bfs_traversal_with_limits(
                     tuples
                 }
             } else {
-                match storage.list_by_subject(&current_subject, Some(relation)) {
+                match storage.list_by_subject(&current_subject, Some(relation), consistency_ref) {
                     Ok(t) => t,
                     Err(e) => {
                         if matches!(e, AegisError::StorageNotInitialized) {
@@ -194,8 +198,9 @@ fn check_direct(
     subject: &SubjectId,
     relation: &Relation,
     target: &ResourceId,
+    consistency: &ConsistencyMode,
 ) -> AegisResult<bool> {
-    let tuples = storage.list_by_object(target, Some(relation))?;
+    let tuples = storage.list_by_object(target, Some(relation), consistency)?;
     Ok(tuples.iter().any(|t| t.subject == *subject))
 }
 
@@ -205,15 +210,17 @@ pub fn collect_reachable(
     storage: &dyn StorageBackend,
     subject: &SubjectId,
     relation: &Relation,
+    consistency: Option<ConsistencyMode>,
 ) -> AegisResult<Vec<ResourceId>> {
     let mut visited: HashSet<(String, String)> = HashSet::new();
     let mut queue: VecDeque<SubjectId> = VecDeque::new();
     let mut results: Vec<ResourceId> = Vec::new();
 
     queue.push_back(subject.clone());
+    let consistency_ref = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
 
     while let Some(current) = queue.pop_front() {
-        let tuples = storage.list_by_subject(&current, Some(relation))?;
+        let tuples = storage.list_by_subject(&current, Some(relation), consistency_ref)?;
 
         for tuple in &tuples {
             if !results.contains(&tuple.object) {
@@ -248,7 +255,7 @@ mod tests {
             ))
             .unwrap();
 
-        let tuples = aegis.list_by_object(&ResourceId::new("repo:fluxbus").unwrap(), None);
+        let tuples = aegis.list_by_object(&ResourceId::new("repo:fluxbus").unwrap(), None, None);
         assert_eq!(tuples.len(), 1);
     }
 }

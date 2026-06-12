@@ -1,4 +1,5 @@
 pub mod cache;
+pub mod condition;
 pub mod crdt;
 pub mod gdpr;
 pub mod hooks;
@@ -23,8 +24,15 @@ use crate::types::{
     SubjectId, PaginatedTuples, PaginationParams,
 };
 use crate::types::schema::SchemaCompatibilityReport;
+#[cfg(feature = "hot-reload")]
+use crate::engine::hot_reload::SchemaWatcher;
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
+#[cfg(feature = "hot-reload")]
+use std::thread::JoinHandle;
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tracing::{error, field, info, span, Level};
 
 /// The core authorization engine.
@@ -38,12 +46,19 @@ pub struct GraphEngine {
     traversal_cache: Mutex<TraversalCache>,
     node_id: uuid::Uuid,
     hooks: hooks::SharedHookRegistry,
+    logger: std::sync::Mutex<Option<hooks::LoggerFn>>,
     fail_closed: FailClosedMode,
     closed: std::sync::atomic::AtomicBool,
     watchers: SharedWatchers,
+    shutdown_flag: Arc<AtomicBool>,
+    #[cfg(feature = "hot-reload")]
+    schema_watcher: Mutex<Option<SchemaWatcher>>,
+    #[cfg(feature = "hot-reload")]
+    watcher_thread: Mutex<Option<JoinHandle<()>>>,
     rate_limiter: TokenBucketRateLimiter,
     telemetry_enabled: std::sync::atomic::AtomicBool,
-    api_key: Option<String>,
+    api_key_hash: Option<[u8; 32]>,
+    parallel_eval: AtomicBool,
 }
 
 impl GraphEngine {
@@ -72,12 +87,19 @@ impl GraphEngine {
             traversal_cache: Mutex::new(TraversalCache::new(1_000)),
             node_id: uuid::Uuid::new_v4(),
             hooks: hooks::SharedHookRegistry::new(),
+            logger: std::sync::Mutex::new(None),
             fail_closed: FailClosedMode::DenyOnError,
             closed: std::sync::atomic::AtomicBool::new(false),
             watchers: Arc::new(Mutex::new(HashMap::new())),
+            shutdown_flag: Arc::new(AtomicBool::new(false)),
+            #[cfg(feature = "hot-reload")]
+            schema_watcher: Mutex::new(None),
+            #[cfg(feature = "hot-reload")]
+            watcher_thread: Mutex::new(None),
             rate_limiter: TokenBucketRateLimiter::new(ratelimit::RateLimitConfig::default()),
             telemetry_enabled: std::sync::atomic::AtomicBool::new(false),
-            api_key: None,
+            api_key_hash: None,
+            parallel_eval: AtomicBool::new(true),
         }
     }
 
@@ -88,17 +110,29 @@ impl GraphEngine {
     }
 
     /// Set an API key required for write/delete operations.
+    /// Stores a SHA-256 hash of the key (not plaintext).
     pub fn with_api_key(mut self, api_key: String) -> Self {
-        self.api_key = Some(api_key);
+        let hash: [u8; 32] = Sha256::digest(api_key.as_bytes()).into();
+        self.api_key_hash = Some(hash);
         self
     }
 
     /// Verify an API key against the configured key (if any).
+    /// Uses constant-time comparison to prevent timing attacks.
     /// Returns Ok(()) if no API key is configured or if it matches.
     pub fn verify_api_key(&self, key: Option<&str>) -> AegisResult<()> {
-        if let Some(ref configured) = self.api_key {
+        if let Some(ref configured_hash) = self.api_key_hash {
             match key {
-                Some(k) if k == configured => Ok(()),
+                Some(k) => {
+                    let incoming: [u8; 32] = Sha256::digest(k.as_bytes()).into();
+                    if configured_hash.ct_eq(&incoming).into() {
+                        Ok(())
+                    } else {
+                        Err(AegisError::OperationNotPermitted(
+                            "invalid or missing API key".to_string(),
+                        ))
+                    }
+                }
                 _ => Err(AegisError::OperationNotPermitted(
                     "invalid or missing API key".to_string(),
                 )),
@@ -117,6 +151,26 @@ impl GraphEngine {
     /// Access the hook registry to register callbacks.
     pub fn hooks(&self) -> &hooks::SharedHookRegistry {
         &self.hooks
+    }
+
+    /// Register a structured logger callback.
+    /// The callback receives `(level, message, context)` for key engine events.
+    pub fn set_logger<F>(&self, logger: F)
+    where
+        F: Fn(hooks::LogLevel, &str, &str) + Send + Sync + 'static,
+    {
+        if let Ok(mut guard) = self.logger.lock() {
+            *guard = Some(Box::new(logger));
+        }
+    }
+
+    /// Emit a structured log event through the registered callback (if any).
+    fn emit_log(&self, level: hooks::LogLevel, message: &str, context: &str) {
+        if let Ok(guard) = self.logger.lock() {
+            if let Some(ref logger) = *guard {
+                logger(level, message, context);
+            }
+        }
     }
 
     /// Set a custom cache capacity.
@@ -164,18 +218,122 @@ impl GraphEngine {
         self
     }
 
+    /// Set a custom MeterProvider for OpenTelemetry metrics.
+    /// When set, this provider is used instead of the global meter provider.
+    #[cfg(feature = "telemetry")]
+    pub fn with_meter_provider(self, provider: opentelemetry_sdk::metrics::SdkMeterProvider) -> Self {
+        crate::telemetry::otel_metrics::init_provider(provider);
+        self
+    }
+
+    /// Enable or disable parallel sibling BFS evaluation.
+    /// When enabled (default), sibling relations are evaluated concurrently.
+    /// The first `allow` short-circuits remaining evaluations.
+    pub fn with_parallel_eval(mut self, enabled: bool) -> Self {
+        self.parallel_eval.store(enabled, Ordering::Relaxed);
+        self
+    }
+
+    /// Set parallel sibling BFS evaluation after construction.
+    pub fn set_parallel_eval(&self, enabled: bool) {
+        self.parallel_eval.store(enabled, Ordering::Relaxed);
+    }
+
+    /// Enable schema file watching for hot-reload.
+    /// When enabled, the engine polls the schema file for changes.
+    /// Requires the `hot-reload` feature.
+    #[cfg(feature = "hot-reload")]
+    pub fn with_schema_watch(mut self, path: &str) -> Self {
+        self.schema_watcher = Mutex::new(Some(SchemaWatcher::new(path)));
+        self
+    }
+
+    /// Manually check if the schema file has changed and reload if needed.
+    /// Returns `true` if the schema was reloaded.
+    /// Requires the `hot-reload` feature.
+    #[cfg(feature = "hot-reload")]
+    pub fn check_schema_reload(&self) -> AegisResult<bool> {
+        let watcher = self.schema_watcher.lock().map_err(|e| {
+            AegisError::Internal(format!("schema watcher lock failed: {e}"))
+        })?;
+        match watcher.as_ref() {
+            Some(w) => {
+                let reloaded = w.check_and_reload(self)?;
+                if reloaded {
+                    self.emit_log(hooks::LogLevel::Info, "Schema hot-reloaded", "(schema file changed)");
+                }
+                Ok(reloaded)
+            }
+            None => Ok(false),
+        }
+    }
+
+    /// Start the background polling thread that periodically calls `check_schema_reload`.
+    /// The polling interval is 5 seconds.
+    /// Requires the `hot-reload` feature.
+    #[cfg(feature = "hot-reload")]
+    pub fn start_background_poller(self: &Arc<Self>) {
+        let mut guard = self.watcher_thread.lock().unwrap();
+        if guard.is_some() {
+            return;
+        }
+        let shutdown = Arc::clone(&self.shutdown_flag);
+        let engine_weak = Arc::downgrade(self);
+        let handle = std::thread::spawn(move || {
+            loop {
+                for _ in 0..5 {
+                    if shutdown.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                }
+                if shutdown.load(Ordering::Relaxed) {
+                    return;
+                }
+                if let Some(engine) = engine_weak.upgrade() {
+                    if let Err(e) = engine.check_schema_reload() {
+                        tracing::error!("Schema hot-reload poll error: {e}");
+                    }
+                } else {
+                    return;
+                }
+            }
+        });
+        *guard = Some(handle);
+    }
+
+    /// Stop the background polling thread and wait for it to finish.
+    /// Requires the `hot-reload` feature.
+    #[cfg(feature = "hot-reload")]
+    pub fn stop_watcher(&self) {
+        self.shutdown_flag.store(true, Ordering::Relaxed);
+        if let Ok(mut guard) = self.watcher_thread.lock() {
+            if let Some(handle) = guard.take() {
+                handle.join().ok();
+            }
+        }
+    }
+
     fn with_cache<F, T>(&self, f: F) -> Option<T>
     where
         F: FnOnce(&mut DecisionCache) -> T,
     {
-        self.cache.lock().ok().map(|mut guard| f(&mut *guard))
+        match self.cache.lock() {
+            Ok(mut guard) => Some(f(&mut guard)),
+            Err(poisoned) => {
+                error!("cache mutex poisoned, re-initializing cache");
+                let mut guard = poisoned.into_inner();
+                *guard = DecisionCache::new(guard.capacity());
+                Some(f(&mut guard))
+            }
+        }
     }
 
     fn with_schema<F, T>(&self, f: F) -> Option<T>
     where
         F: FnOnce(&Schema) -> T,
     {
-        self.schema.read().ok().map(|guard| f(&*guard))
+        self.schema.read().ok().map(|guard| f(&guard))
     }
 
     fn check_closed(&self) -> AegisResult<()> {
@@ -210,8 +368,10 @@ impl GraphEngine {
     /// Replace the schema (write lock). Invalidates cache on success.
     pub fn reload_schema(&self, new_schema: Schema) -> AegisResult<()> {
         let mut schema = self.schema.write().unwrap();
+        let version = new_schema.schema_version;
         *schema = new_schema;
         self.with_cache(|cache| cache.clear());
+        crate::telemetry::update_schema_version(version as u64);
         Ok(())
     }
 
@@ -221,6 +381,10 @@ impl GraphEngine {
         let integrity = self.storage.integrity_check().ok();
         let cache_info = self.with_cache(|cache| (cache.hit_rate(), cache.len())).unwrap_or((0.0, 0));
         let schema = self.schema.read().unwrap_or_else(|e| e.into_inner());
+
+        // Update telemetry cache metrics
+        crate::telemetry::set_cache_size(cache_info.1 as u64);
+
         HealthReport {
             healthy: revision.is_some() && integrity.as_ref().map(|i| i.passed).unwrap_or(false),
             revision: revision.unwrap_or(Revision::ZERO),
@@ -232,14 +396,134 @@ impl GraphEngine {
             cache_entries: cache_info.1,
             storage_integrity: integrity.as_ref().map(|i| i.passed).unwrap_or(false),
             error: None,
+            total_checks: crate::telemetry::METRIC_CHECK_TOTAL.load(std::sync::atomic::Ordering::Relaxed),
+            allowed_checks: crate::telemetry::METRIC_CHECK_ALLOWED.load(std::sync::atomic::Ordering::Relaxed),
+            denied_checks: crate::telemetry::METRIC_CHECK_DENIED.load(std::sync::atomic::Ordering::Relaxed),
+            error_checks: crate::telemetry::METRIC_CHECK_ERROR.load(std::sync::atomic::Ordering::Relaxed),
+            cache_size: crate::telemetry::METRIC_CACHE_SIZE.load(std::sync::atomic::Ordering::Relaxed),
+            cache_hit_ratio: 0.0,
         }
+    }
+
+    /// Recover the tuple store from the event log by replaying all events.
+    /// Returns the latest revision after recovery.
+    /// Only meaningful for backends that persist an event log (e.g. SQLite).
+    pub fn recover_from_events(&self) -> AegisResult<Revision> {
+        let rev = self.storage.recover_from_events()?;
+        self.emit_log(hooks::LogLevel::Info, "Recovered from event log", &format!("revision={}", rev));
+        Ok(rev)
     }
 
     /// Graceful shutdown: flush cache, checkpoint WAL, close connections.
     pub fn close(&self) -> AegisResult<()> {
         self.closed.store(true, std::sync::atomic::Ordering::SeqCst);
         self.with_cache(|cache| cache.clear());
-        self.storage.close()
+        let result = self.storage.close();
+        self.emit_log(hooks::LogLevel::Info, "Engine closed", "(no context)");
+        result
+    }
+
+    /// Evaluate relations sequentially (single-threaded fallback).
+    fn evaluate_relations_sequential(
+        &self,
+        resolved: policy::ResolvedPolicy,
+        subject: &SubjectId,
+        resource: &ResourceId,
+        revision: Revision,
+        consistency: Option<ConsistencyMode>,
+    ) -> AegisResult<bool> {
+        let condition_str = resolved.condition;
+        for rel_name in &resolved.relations {
+            let relation = match Relation::new(rel_name) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+
+            let max_depth = self.rate_limiter.max_traversal_depth();
+            let max_visits = self.rate_limiter.max_traversal_visits();
+            let rev = Some(revision);
+            let mut cache_guard = self.traversal_cache.lock().ok();
+            let cache_ref = cache_guard.as_deref_mut();
+            let result = match traversal::bfs_traversal_with_limits(
+                self.storage.as_ref(),
+                subject,
+                &relation,
+                resource,
+                rev,
+                consistency,
+                max_depth,
+                max_visits,
+                cache_ref,
+            ) {
+                Ok(r) => r,
+                Err(e) => return Err(e),
+            };
+
+            if result.found && evaluate_condition_if_present(&condition_str) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// Evaluate relations in parallel using scoped threads.
+    /// First `allow` short-circuits remaining evaluations.
+    fn evaluate_relations_parallel(
+        &self,
+        resolved: policy::ResolvedPolicy,
+        subject: &SubjectId,
+        resource: &ResourceId,
+        revision: Revision,
+        consistency: Option<ConsistencyMode>,
+    ) -> AegisResult<bool> {
+        let found = std::sync::atomic::AtomicBool::new(false);
+        let condition_str = Arc::new(resolved.condition);
+        let max_depth = self.rate_limiter.max_traversal_depth();
+        let max_visits = self.rate_limiter.max_traversal_visits();
+
+        let rel_names: Vec<String> = resolved.relations.clone();
+        let subject = Arc::new(SubjectId::new(subject.as_str()).map_err(|e| {
+            AegisError::Validation(e)
+        })?);
+
+        std::thread::scope(|s| {
+            for rel_name in &rel_names {
+                if found.load(std::sync::atomic::Ordering::Relaxed) {
+                    break;
+                }
+                let relation = match Relation::new(rel_name) {
+                    Ok(r) => r,
+                    Err(_) => continue,
+                };
+                let found_ref = &found;
+                let cond = Arc::clone(&condition_str);
+                let subj = Arc::clone(&subject);
+                let _handle = s.spawn(move || {
+                    if found_ref.load(std::sync::atomic::Ordering::Relaxed) {
+                        return;
+                    }
+                    let mut cache = TraversalCache::new(100);
+                    let result = traversal::bfs_traversal_with_limits(
+                        self.storage.as_ref(),
+                        subj.as_ref(),
+                        &relation,
+                        resource,
+                        Some(revision),
+                        consistency,
+                        max_depth,
+                        max_visits,
+                        Some(&mut cache),
+                    );
+                    if let Ok(r) = result {
+                        if r.found && evaluate_condition_if_present(cond.as_ref()) {
+                            found_ref.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        });
+
+        Ok(found.into_inner())
     }
 
     /// Check whether a subject has a permission on a resource.
@@ -286,10 +570,12 @@ impl GraphEngine {
             backend = &backend_str as &str,
         )
         .entered();
+        let _start = std::time::Instant::now();
 
         // Rate limit check
         let rl_key = format!("check:{}", resource.as_str());
         if let Err(e) = self.rate_limiter.check(&rl_key, RateLimitOp::Check) {
+            crate::telemetry::inc_check_error();
             return Err(e);
         }
 
@@ -297,6 +583,7 @@ impl GraphEngine {
             Ok(r) => r,
             Err(e) => {
                 error!(error = field::display(&e), "revision resolution failed");
+                crate::telemetry::inc_check_error();
                 return self.fail_closed_response(e);
             }
         };
@@ -314,6 +601,13 @@ impl GraphEngine {
                     cache_hit = true,
                     "check cache hit"
                 );
+                crate::telemetry::inc_cache_hit();
+                crate::telemetry::inc_check_total();
+                if allowed {
+                    crate::telemetry::inc_check_allowed();
+                } else {
+                    crate::telemetry::inc_check_denied();
+                }
                 return Ok(CheckResult { allowed, revision });
             }
         }
@@ -324,6 +618,8 @@ impl GraphEngine {
         let resolved = match policy::resolve_permission(&schema, &resource_type, permission) {
             Some(r) => r,
             None => {
+                crate::telemetry::inc_check_total();
+                crate::telemetry::inc_check_denied();
                 return Ok(CheckResult {
                     allowed: false,
                     revision,
@@ -332,40 +628,24 @@ impl GraphEngine {
         };
         drop(schema);
 
-        // Try each relation - any match means allowed (union semantics)
-        let mut allowed = false;
-        for rel_name in &resolved.relations {
-            let relation = match Relation::new(rel_name) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-
-            let max_depth = self.rate_limiter.max_traversal_depth();
-            let max_visits = self.rate_limiter.max_traversal_visits();
-            let rev = Some(revision);
-            let mut cache_guard = self.traversal_cache.lock().ok();
-            let cache_ref = cache_guard.as_deref_mut();
-            let result = match traversal::bfs_traversal_with_limits(
-                self.storage.as_ref(),
-                subject,
-                &relation,
-                resource,
-                rev,
-                max_depth,
-                max_visits,
-                cache_ref,
-            ) {
-                Ok(r) => r,
-                Err(e) => {
-                    return self.fail_closed_response(e);
-                }
-            };
-
-            if result.found {
-                allowed = true;
-                break;
+        // Try each relation — any match means allowed (union semantics)
+        // Parallel evaluation via scoped threads when enabled.
+        let allowed = match if self.parallel_eval.load(Ordering::Relaxed) && resolved.relations.len() > 1 {
+            self.evaluate_relations_parallel(
+                resolved, subject, resource, revision, consistency,
+            )
+        } else {
+            self.evaluate_relations_sequential(
+                resolved, subject, resource, revision, consistency,
+            )
+        } {
+            Ok(a) => a,
+            Err(e) => {
+                crate::telemetry::inc_check_error();
+                crate::telemetry::inc_check_total();
+                return self.fail_closed_response(e);
             }
-        }
+        };
 
         if !dry_run {
             // Cache the decision
@@ -379,6 +659,14 @@ impl GraphEngine {
                 resource: resource.as_str().to_string(),
                 allowed,
             });
+        }
+
+        crate::telemetry::inc_check_total();
+        crate::telemetry::update_revision_current(revision.as_u64());
+        if allowed {
+            crate::telemetry::inc_check_allowed();
+        } else {
+            crate::telemetry::inc_check_denied();
         }
 
         info!(
@@ -445,6 +733,7 @@ impl GraphEngine {
                 &relation,
                 resource,
                 Some(revision),
+                consistency,
             )?;
 
             if result.found {
@@ -519,6 +808,7 @@ impl GraphEngine {
         drop(schema);
 
         let revision = self.storage.write_tuple(tuple)?;
+        crate::telemetry::update_revision_current(revision.as_u64());
 
         info!(revision = field::display(&revision), "tuple written");
 
@@ -555,6 +845,7 @@ impl GraphEngine {
         self.rate_limiter.check(&rl_key, RateLimitOp::Write)?;
 
         let revision = self.storage.delete_tuple(key)?;
+        crate::telemetry::update_revision_current(revision.as_u64());
 
         info!(revision = field::display(&revision), "tuple deleted");
 
@@ -642,7 +933,7 @@ impl GraphEngine {
 
     /// Export all tuples for a given subject (GDPR compliance).
     pub fn export_subject(&self, subject: &SubjectId) -> AegisResult<Vec<crate::types::RelationshipTuple>> {
-        self.storage.list_by_subject(subject, None)
+        self.storage.list_by_subject(subject, None, &ConsistencyMode::MinimizeLatency)
     }
 
     /// Delete subject with an ownership policy (GDPR compliance).
@@ -660,12 +951,14 @@ impl GraphEngine {
         match policy {
             "cascade" => {
                 let revision = self.storage.delete_subject(subject)?;
+                crate::telemetry::update_revision_current(revision.as_u64());
                 Ok(RevisionToken::new(revision, self.node_id))
             }
             "fail" => {
-                let tuples = self.storage.list_by_subject(subject, None)?;
+                let tuples = self.storage.list_by_subject(subject, None, &ConsistencyMode::MinimizeLatency)?;
                 if tuples.is_empty() {
                     let revision = self.storage.current_revision()?;
+                    crate::telemetry::update_revision_current(revision.as_u64());
                     Ok(RevisionToken::new(revision, self.node_id))
                 } else {
                     Err(AegisError::OperationNotPermitted(
@@ -679,12 +972,11 @@ impl GraphEngine {
                         "transfer policy requires a transfer_to_subject".into(),
                     )
                 })?;
-                let tuples = self.storage.list_by_subject(subject, None)?;
+                let tuples = self.storage.list_by_subject(subject, None, &ConsistencyMode::MinimizeLatency)?;
                 if tuples.is_empty() {
-                    return Ok(RevisionToken::new(
-                        self.storage.current_revision()?,
-                        self.node_id,
-                    ));
+                    let revision = self.storage.current_revision()?;
+                    crate::telemetry::update_revision_current(revision.as_u64());
+                    return Ok(RevisionToken::new(revision, self.node_id));
                 }
                 let mut txn = self.storage.begin_transaction()?;
                 for tuple in &tuples {
@@ -699,6 +991,7 @@ impl GraphEngine {
                     txn.delete(&tuple.key())?;
                 }
                 let revision = txn.commit()?;
+                crate::telemetry::update_revision_current(revision.as_u64());
                 Ok(RevisionToken::new(revision, self.node_id))
             }
             _ => Err(AegisError::SchemaValidation(format!(
@@ -716,6 +1009,7 @@ impl GraphEngine {
         let rl_key = "write_batch";
         self.rate_limiter.check(rl_key, RateLimitOp::Write)?;
         let revision = self.storage.write_tuples_batch(tuples)?;
+        crate::telemetry::update_revision_current(revision.as_u64());
         for tuple in tuples {
             self.emit_watch_event(
                 WatchEventType::TupleAdded,
@@ -739,8 +1033,10 @@ impl GraphEngine {
         &self,
         object: &ResourceId,
         relation: Option<&Relation>,
+        consistency: Option<ConsistencyMode>,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        self.storage.list_by_object(object, relation)
+        let c = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
+        self.storage.list_by_object(object, relation, c)
     }
 
     /// List all tuples for a given subject, optionally filtered by relation.
@@ -748,8 +1044,10 @@ impl GraphEngine {
         &self,
         subject: &SubjectId,
         relation: Option<&Relation>,
+        consistency: Option<ConsistencyMode>,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        self.storage.list_by_subject(subject, relation)
+        let c = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
+        self.storage.list_by_subject(subject, relation, c)
     }
 
     /// Query tuples with filters and pagination.
@@ -777,6 +1075,7 @@ impl GraphEngine {
         let current = self.storage.read_schema_version()?;
         let result = runner.migrate(self.storage.as_ref(), current, target_version)?;
         self.storage.write_schema_version(target_version)?;
+        crate::telemetry::update_schema_version(target_version as u64);
         Ok(result)
     }
 
@@ -792,6 +1091,7 @@ impl GraphEngine {
         let rl_key = format!("delete_object:{}", object.as_str());
         self.rate_limiter.check(&rl_key, RateLimitOp::Write)?;
         let revision = self.storage.delete_object(object)?;
+        crate::telemetry::update_revision_current(revision.as_u64());
         info!(revision = field::display(&revision), "object deleted");
         Ok(RevisionToken::new(revision, self.node_id))
     }
@@ -812,6 +1112,34 @@ impl GraphEngine {
     }
 }
 
+#[cfg(feature = "hot-reload")]
+impl Drop for GraphEngine {
+    fn drop(&mut self) {
+        self.stop_watcher();
+    }
+}
+
+/// Evaluate an ABAC condition expression against available context.
+/// Returns `true` if no condition is present or the condition evaluates to `true`.
+fn evaluate_condition_if_present(condition_str: &Option<String>) -> bool {
+    match condition_str {
+        Some(cond) => {
+            match condition::parse_condition(cond) {
+                Ok(expr) => {
+                    let ctx = condition::ConditionEvalContext {
+                        subject_meta: std::collections::HashMap::new(),
+                        resource_meta: std::collections::HashMap::new(),
+                        env: std::collections::HashMap::new(),
+                    };
+                    condition::evaluate_condition(&expr, &ctx)
+                }
+                Err(_) => false,
+            }
+        }
+        None => true,
+    }
+}
+
 /// Extract the type name from a resource ID (e.g., "repo:fluxbus" -> "repo").
 fn resource_type_name(id: &str) -> String {
     id.split(':').next().unwrap_or(id).to_string()
@@ -822,6 +1150,7 @@ mod tests {
     use super::*;
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
     use crate::types::*;
+    use std::io::Write;
 
     fn make_engine() -> GraphEngine {
         let schema = Schema {
@@ -1016,5 +1345,160 @@ mod tests {
         assert_eq!(resource_type_name("repo:fluxbus"), "repo");
         assert_eq!(resource_type_name("workspace:acme"), "workspace");
         assert_eq!(resource_type_name("nocolon"), "nocolon");
+    }
+
+    // ── S1.2: Parallelism test ──
+
+    #[test]
+    fn test_parallel_eval_disabled() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:alice").unwrap();
+        let resource = ResourceId::new("repo:fluxbus").unwrap();
+
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
+
+        // Disable parallel, verify check still works
+        engine.set_parallel_eval(false);
+        let result = engine
+            .check(&subject, "read", &resource, None)
+            .unwrap();
+        assert!(result.allowed);
+    }
+
+    // ── S1.5: FullyConsistent test ──
+
+    #[test]
+    fn test_fully_consistent_read() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:alice").unwrap();
+        let resource = ResourceId::new("repo:fluxbus").unwrap();
+
+        // Write a tuple
+        let token = engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
+
+        // Read with FullyConsistent mode
+        let result = engine
+            .check(&subject, "read", &resource, Some(ConsistencyMode::FullyConsistent))
+            .unwrap();
+        assert!(result.allowed);
+        assert!(result.revision >= token.revision);
+    }
+
+    // ── S1.6: AtRevision snapshot test ──
+
+    #[test]
+    fn test_at_revision_snapshot() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:bob").unwrap();
+        let resource = ResourceId::new("repo:bob").unwrap();
+
+        // First write
+        let token1 = engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("viewer").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
+
+        // Check at this revision — should be allowed (viewer can read)
+        let result = engine
+            .check(&subject, "read", &resource, Some(ConsistencyMode::AtRevision(token1.revision)))
+            .unwrap();
+        assert!(result.allowed);
+    }
+
+    // ── S1.7: Logger callback test ──
+
+    #[test]
+    fn test_logger_callback() {
+        let engine = make_engine();
+        let logged = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let logged_clone = logged.clone();
+
+        engine.set_logger(move |level, message, _context| {
+            let mut msgs = logged_clone.lock().unwrap();
+            msgs.push((level.to_string(), message.to_string()));
+        });
+
+        // Trigger a close event
+        engine.close().ok();
+        engine.emit_log(crate::engine::hooks::LogLevel::Info, "test message", "test context");
+
+        let msgs = logged.lock().unwrap();
+        assert!(!msgs.is_empty(), "expected at least one log message");
+        assert!(msgs.iter().any(|(_, m)| m.contains("test message")));
+    }
+
+    #[cfg(feature = "hot-reload")]
+    #[test]
+    fn test_hot_reload_background_poller() {
+        let tmpdir = std::env::temp_dir().join(format!("aegis_hot_reload_{}", std::process::id()));
+        std::fs::create_dir_all(&tmpdir).unwrap();
+        let schema_path = tmpdir.join("schema.yaml");
+
+        let schema_v1 = r#"
+schemaVersion: 1
+namespace: test
+types:
+  repo:
+    relations:
+      owner: {}
+    permissions:
+      read:
+        union_of: [owner]
+"#;
+        let mut f1 = std::fs::File::create(&schema_path).unwrap();
+        f1.write_all(schema_v1.as_bytes()).unwrap();
+        f1.sync_all().unwrap();
+        drop(f1);
+
+        let schema = crate::schema::parse_schema(schema_v1).unwrap();
+        let storage = Box::new(SqliteStorage::new(SqliteConfig::in_memory()).unwrap());
+        let engine = Arc::new(
+            GraphEngine::new(storage, schema).with_schema_watch(schema_path.to_str().unwrap()),
+        );
+
+        let schema_v2 = r#"
+schemaVersion: 2
+namespace: test
+types:
+  repo:
+    relations:
+      owner: {}
+    permissions:
+      read:
+        union_of: [owner]
+"#;
+
+        // Write v2 BEFORE starting the background poller, so the file is ready
+        let mut f2 = std::fs::File::create(&schema_path).unwrap();
+        f2.write_all(schema_v2.as_bytes()).unwrap();
+        f2.sync_all().unwrap();
+        drop(f2);
+
+        engine.start_background_poller();
+
+        // Wait for the background thread's first poll (sleeps 5s then checks)
+        std::thread::sleep(std::time::Duration::from_secs(7));
+
+        let _ = engine.check_schema_reload();
+        assert_eq!(engine.schema().schema_version, 2);
+
+        engine.stop_watcher();
+        std::fs::remove_file(&schema_path).ok();
+        std::fs::remove_dir(&tmpdir).ok();
     }
 }

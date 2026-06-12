@@ -192,7 +192,9 @@ impl StorageBackend for PostgresStorage {
             let meta_val = tuple
                 .metadata
                 .as_ref()
-                .map(|m| serde_json::to_value(m).unwrap_or_default());
+                .map(|m| serde_json::to_value(m))
+                .transpose()
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 
             client
                 .execute(
@@ -234,7 +236,9 @@ impl StorageBackend for PostgresStorage {
                 let meta_val = tuple
                     .metadata
                     .as_ref()
-                    .map(|m| serde_json::to_value(m).unwrap_or_default());
+                    .map(|m| serde_json::to_value(m))
+                    .transpose()
+                    .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 
                 client
                     .execute(
@@ -443,30 +447,73 @@ impl StorageBackend for PostgresStorage {
     }
 
     fn list_by_object(
-        &self, object: &ResourceId, relation: Option<&Relation>,
+        &self, object: &ResourceId, relation: Option<&Relation>, consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let obj = object.as_str().to_string();
         let rel = relation.map(|r| r.as_str().to_string());
+        let rev_filter = match consistency {
+            ConsistencyMode::AtRevision(rev) => {
+                let r = rev.as_u64() as i64;
+                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+            }
+            _ => "revision_removed IS NULL".to_string(),
+        };
+        let is_serializable = *consistency == ConsistencyMode::FullyConsistent;
         self.runtime.block_on(async {
             let client = self.get_client().await?;
-            let rows = if let Some(ref r) = rel {
-                client
-                    .query(
-                        "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
-                         WHERE object = $1 AND relation = $2 AND revision_removed IS NULL",
+            let rows = if is_serializable {
+                let tx = client
+                    .build_transaction()
+                    .isolation_level(tokio_postgres::IsolationLevel::Serializable)
+                    .start()
+                    .await
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                let result = if let Some(ref r) = rel {
+                    tx.query(
+                        &format!(
+                            "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                             WHERE object = $1 AND relation = $2 AND {rev_filter}"
+                        ),
                         &[&obj, r],
                     )
                     .await
-            } else {
-                client
-                    .query(
-                        "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
-                         WHERE object = $1 AND revision_removed IS NULL",
+                } else {
+                    tx.query(
+                        &format!(
+                            "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                             WHERE object = $1 AND {rev_filter}"
+                        ),
                         &[&obj],
                     )
                     .await
-            }
-            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                }
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                tx.commit().await.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                result
+            } else {
+                if let Some(ref r) = rel {
+                    client
+                        .query(
+                            &format!(
+                                "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                                 WHERE object = $1 AND relation = $2 AND {rev_filter}"
+                            ),
+                            &[&obj, r],
+                        )
+                        .await
+                } else {
+                    client
+                        .query(
+                            &format!(
+                                "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                                 WHERE object = $1 AND {rev_filter}"
+                            ),
+                            &[&obj],
+                        )
+                        .await
+                }
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+            };
 
             let mut results = Vec::with_capacity(rows.len());
             for row in &rows {
@@ -495,30 +542,73 @@ impl StorageBackend for PostgresStorage {
     }
 
     fn list_by_subject(
-        &self, subject: &SubjectId, relation: Option<&Relation>,
+        &self, subject: &SubjectId, relation: Option<&Relation>, consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let subj = subject.as_str().to_string();
         let rel = relation.map(|r| r.as_str().to_string());
+        let rev_filter = match consistency {
+            ConsistencyMode::AtRevision(rev) => {
+                let r = rev.as_u64() as i64;
+                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+            }
+            _ => "revision_removed IS NULL".to_string(),
+        };
+        let is_serializable = *consistency == ConsistencyMode::FullyConsistent;
         self.runtime.block_on(async {
             let client = self.get_client().await?;
-            let rows = if let Some(ref r) = rel {
-                client
-                    .query(
-                        "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
-                         WHERE subject = $1 AND relation = $2 AND revision_removed IS NULL",
+            let rows = if is_serializable {
+                let tx = client
+                    .build_transaction()
+                    .isolation_level(tokio_postgres::IsolationLevel::Serializable)
+                    .start()
+                    .await
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                let result = if let Some(ref r) = rel {
+                    tx.query(
+                        &format!(
+                            "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                             WHERE subject = $1 AND relation = $2 AND {rev_filter}"
+                        ),
                         &[&subj, r],
                     )
                     .await
-            } else {
-                client
-                    .query(
-                        "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
-                         WHERE subject = $1 AND revision_removed IS NULL",
+                } else {
+                    tx.query(
+                        &format!(
+                            "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                             WHERE subject = $1 AND {rev_filter}"
+                        ),
                         &[&subj],
                     )
                     .await
-            }
-            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                }
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                tx.commit().await.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                result
+            } else {
+                if let Some(ref r) = rel {
+                    client
+                        .query(
+                            &format!(
+                                "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                                 WHERE subject = $1 AND relation = $2 AND {rev_filter}"
+                            ),
+                            &[&subj, r],
+                        )
+                        .await
+                } else {
+                    client
+                        .query(
+                            &format!(
+                                "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                                 WHERE subject = $1 AND {rev_filter}"
+                            ),
+                            &[&subj],
+                        )
+                        .await
+                }
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+            };
 
             let mut results = Vec::with_capacity(rows.len());
             for row in &rows {
@@ -589,18 +679,26 @@ impl StorageBackend for PostgresStorage {
     }
 
     fn query_tuples(
-        &self, filter: &TupleFilter, pagination: &PaginationParams, _consistency: &ConsistencyMode,
+        &self, filter: &TupleFilter, pagination: &PaginationParams, consistency: &ConsistencyMode,
     ) -> AegisResult<PaginatedTuples> {
         let subj_type = filter.subject_type.clone();
         let rel = filter.relation.as_ref().map(|r| r.as_str().to_string());
         let obj_type = filter.object_type.clone();
         let meta_key = filter.metadata_key.clone();
+        let rev_filter = match consistency {
+            ConsistencyMode::AtRevision(rev) => {
+                let r = rev.as_u64() as i64;
+                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+            }
+            _ => "revision_removed IS NULL".to_string(),
+        };
+        let is_serializable = *consistency == ConsistencyMode::FullyConsistent;
 
         self.runtime.block_on(async {
             let client = self.get_client().await?;
             let revision = Self::current_revision_async(&client).await?;
 
-            let mut conditions = vec!["revision_removed IS NULL".to_string()];
+            let mut conditions = vec![rev_filter];
             let mut params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>> = Vec::new();
             let mut idx = 1u32;
 
@@ -642,10 +740,25 @@ impl StorageBackend for PostgresStorage {
             let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
                 params.iter().map(|p| p.as_ref()).collect();
 
-            let rows = client
-                .query(&sql, &param_refs)
-                .await
-                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            let rows = if is_serializable {
+                let tx = client
+                    .build_transaction()
+                    .isolation_level(tokio_postgres::IsolationLevel::Serializable)
+                    .start()
+                    .await
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                let result = tx
+                    .query(&sql, &param_refs)
+                    .await
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                tx.commit().await.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                result
+            } else {
+                client
+                    .query(&sql, &param_refs)
+                    .await
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+            };
 
             let mut tuples = Vec::with_capacity(rows.len());
             for row in &rows {
@@ -749,7 +862,12 @@ impl StorageBackend for PostgresStorage {
                 sql.push_str(" WHERE ");
                 sql.push_str(&conditions.join(" AND "));
             }
-            sql.push_str(" ORDER BY revision ASC");
+            sql.push_str(&format!(
+                " ORDER BY revision ASC LIMIT ${idx} OFFSET ${}",
+                idx + 1
+            ));
+            params.push(Box::new(limit_val as i64));
+            params.push(Box::new(offset as i64));
 
             let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> =
                 params.iter().map(|p| p.as_ref()).collect();
@@ -761,8 +879,6 @@ impl StorageBackend for PostgresStorage {
 
             let results: Vec<AuditEntry> = rows
                 .into_iter()
-                .skip(offset as usize)
-                .take(limit_val as usize)
                 .map(|row| {
                     let rev: i64 = row.get("revision");
                     let action_str: String = row.get("action");
@@ -846,8 +962,166 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
+    fn delete_events_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let rows = client
+                .execute("DELETE FROM _aegis_events WHERE timestamp < $1", &[&cutoff])
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(rows as usize)
+        })
+    }
+
+    fn delete_soft_deleted_tuples_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let rows = client
+                .execute(
+                    "DELETE FROM _aegis_tuples
+                     WHERE revision_removed IS NOT NULL
+                       AND revision_removed <= (
+                         SELECT COALESCE(MAX(revision), 0) FROM _aegis_events WHERE timestamp < $1
+                       )",
+                    &[&cutoff],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(rows as usize)
+        })
+    }
+
+    fn recover_from_events(&self) -> AegisResult<Revision> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+
+            client
+                .execute("DELETE FROM _aegis_tuples", &[])
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let rows = client
+                .query(
+                    "SELECT revision, action, subject, relation, object, metadata
+                     FROM _aegis_events
+                     ORDER BY revision ASC, event_id ASC",
+                    &[],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let mut last_revision = Revision::ZERO;
+
+            for row in &rows {
+                let rev: i64 = row.get(0);
+                let action: String = row.get(1);
+                let subject: String = row.get(2);
+                let relation: String = row.get(3);
+                let object: String = row.get(4);
+                let meta_val: Option<serde_json::Value> = row.get(5);
+
+                let revision = Revision::new(rev as u64);
+
+                match action.as_str() {
+                    "add" => {
+                        client
+                            .execute(
+                                "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, revision_added)
+                                 VALUES ($1, $2, $3, NOW(), $4, $5)",
+                                &[&subject, &relation, &object, &meta_val, &rev],
+                            )
+                            .await
+                            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                    }
+                    "remove" => {
+                        client
+                            .execute(
+                                "UPDATE _aegis_tuples SET revision_removed = $1
+                                 WHERE subject = $2 AND relation = $3 AND object = $4 AND revision_removed IS NULL",
+                                &[&rev, &subject, &relation, &object],
+                            )
+                            .await
+                            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                    }
+                    _ => {}
+                }
+
+                last_revision = revision;
+            }
+
+            if last_revision != Revision::ZERO {
+                let current = Self::current_revision_async(&client).await?;
+                if current != last_revision {
+                    client
+                        .execute(
+                            "UPDATE _aegis_meta SET value = $1 WHERE key = 'revision'",
+                            &[&(last_revision.as_u64() as i64)],
+                        )
+                        .await
+                        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                }
+            }
+
+            Ok(last_revision)
+        })
+    }
+
+    fn compact_events(&self) -> AegisResult<usize> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let rows = client
+                .query(
+                    "SELECT event_id, action, subject, relation, object FROM _aegis_events ORDER BY revision ASC, event_id ASC",
+                    &[],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let mut adds: HashMap<(String, String, String), i64> = HashMap::new();
+            let mut to_delete: Vec<i64> = Vec::new();
+
+            for row in &rows {
+                let event_id: i64 = row.get(0);
+                let action: String = row.get(1);
+                let subject: String = row.get(2);
+                let relation: String = row.get(3);
+                let object: String = row.get(4);
+                let key = (subject, relation, object);
+
+                match action.as_str() {
+                    "add" => {
+                        adds.insert(key, event_id);
+                    }
+                    "remove" => {
+                        if let Some(add_id) = adds.remove(&key) {
+                            to_delete.push(add_id);
+                            to_delete.push(event_id);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+
+            if to_delete.is_empty() {
+                return Ok(0);
+            }
+
+            let total = to_delete.len();
+            for id in &to_delete {
+                client
+                    .execute("DELETE FROM _aegis_events WHERE event_id = $1", &[id])
+                    .await
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            }
+
+            Ok(total)
+        })
+    }
+
     fn close(&self) -> AegisResult<()> {
-        Ok(())
+        self.runtime
+            .block_on(self.pool.close())
+            .map_err(|e| AegisError::StorageConnection(e.to_string()))
     }
 }
 
@@ -934,7 +1208,9 @@ impl StorageTransaction for PostgresTransaction {
             let meta_val = tuple_clone
                 .metadata
                 .as_ref()
-                .map(|m| serde_json::to_value(m).unwrap_or_default());
+                .map(|m| serde_json::to_value(m))
+                .transpose()
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 
             conn
                 .execute(
@@ -989,7 +1265,31 @@ impl StorageTransaction for PostgresTransaction {
         })
     }
 
+    fn validate_savepoint_name(name: &str) -> AegisResult<()> {
+        if name.is_empty() {
+            return Err(AegisError::Validation(crate::types::ValidationError::Empty));
+        }
+        if name.len() > 64 {
+            return Err(AegisError::Validation(
+                crate::types::ValidationError::TooLong {
+                    max: 64,
+                    actual: name.len(),
+                },
+            ));
+        }
+        if !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(AegisError::Validation(
+                crate::types::ValidationError::InvalidCharacters(name.to_string()),
+            ));
+        }
+        Ok(())
+    }
+
     fn savepoint(&self, name: &str) -> AegisResult<()> {
+        Self::validate_savepoint_name(name)?;
         let name_owned = name.to_string();
         self.block_on(async {
             let conn = self.conn.as_ref().unwrap();
@@ -1002,6 +1302,7 @@ impl StorageTransaction for PostgresTransaction {
     }
 
     fn rollback_to_savepoint(&self, name: &str) -> AegisResult<()> {
+        Self::validate_savepoint_name(name)?;
         let name_owned = name.to_string();
         self.block_on(async {
             let conn = self.conn.as_ref().unwrap();
@@ -1014,6 +1315,7 @@ impl StorageTransaction for PostgresTransaction {
     }
 
     fn release_savepoint(&self, name: &str) -> AegisResult<()> {
+        Self::validate_savepoint_name(name)?;
         let name_owned = name.to_string();
         self.block_on(async {
             let conn = self.conn.as_ref().unwrap();

@@ -9,6 +9,8 @@ pub struct ResolvedPolicy {
     /// Relations that satisfy this permission (from `union_of` in the schema).
     /// The graph engine's traversal handles any inheritance chains.
     pub relations: Vec<String>,
+    /// Optional ABAC condition expression string.
+    pub condition: Option<String>,
 }
 
 /// Resolve a permission on a resource type into the set of relations to check.
@@ -29,6 +31,7 @@ pub fn resolve_permission(
         resource_type: resource_type.to_string(),
         permission: permission.to_string(),
         relations: perm_def.union_of.clone(),
+        condition: perm_def.condition.clone(),
     })
 }
 

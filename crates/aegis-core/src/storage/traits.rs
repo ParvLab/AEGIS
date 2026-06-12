@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use crate::error::AegisResult;
+use crate::error::{AegisError, AegisResult};
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationParams, Relation, RelationshipTuple,
     ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
@@ -44,6 +44,7 @@ pub trait StorageBackend: Send + Sync {
         &self,
         object: &ResourceId,
         relation: Option<&Relation>,
+        consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>>;
 
     /// List all tuples for a given subject.
@@ -51,6 +52,7 @@ pub trait StorageBackend: Send + Sync {
         &self,
         subject: &SubjectId,
         relation: Option<&Relation>,
+        consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>>;
 
     /// List all tuples matching a relation on an object.
@@ -73,14 +75,10 @@ pub trait StorageBackend: Send + Sync {
 
     /// Read the stored schema version from the backend.
     /// Returns 0 if no schema version has been recorded.
-    fn read_schema_version(&self) -> AegisResult<u32> {
-        Ok(0)
-    }
+    fn read_schema_version(&self) -> AegisResult<u32>;
 
     /// Write the schema version to the backend for tracking.
-    fn write_schema_version(&self, _version: u32) -> AegisResult<()> {
-        Ok(())
-    }
+    fn write_schema_version(&self, _version: u32) -> AegisResult<()>;
 
     /// Return the current revision token (revision + node_id + timestamp).
     fn current_token(&self) -> AegisResult<RevisionToken>;
@@ -105,22 +103,23 @@ pub trait StorageBackend: Send + Sync {
 
     /// Delete audit events older than the given cutoff timestamp.
     /// Returns the number of deleted events.
-    fn delete_events_before(&self, _cutoff: DateTime<Utc>) -> AegisResult<usize> {
-        Ok(0)
-    }
+    fn delete_events_before(&self, _cutoff: DateTime<Utc>) -> AegisResult<usize>;
 
     /// Compact paired add/remove events to reduce audit log size.
     /// Only meaningful for backends that track individual events (SQLite, PostgreSQL).
     /// Returns the number of removed events.
-    fn compact_events(&self) -> AegisResult<usize> {
-        Ok(0)
-    }
+    fn compact_events(&self) -> AegisResult<usize>;
 
     /// Permanently remove soft-deleted tuples whose deletion revision
     /// corresponds to a timestamp before the given cutoff.
     /// Returns the number of deleted tuples.
-    fn delete_soft_deleted_tuples_before(&self, _cutoff: DateTime<Utc>) -> AegisResult<usize> {
-        Ok(0)
+    fn delete_soft_deleted_tuples_before(&self, _cutoff: DateTime<Utc>) -> AegisResult<usize>;
+
+    /// Recover the current state by replaying all logged events.
+    /// This reconstructs the tuple store from scratch using the event log,
+    /// returning the latest revision seen.
+    fn recover_from_events(&self) -> AegisResult<Revision> {
+        Err(AegisError::NotImplemented("recover_from_events not supported by this backend".to_string()))
     }
 
     /// Close the storage backend, flushing all pending operations.

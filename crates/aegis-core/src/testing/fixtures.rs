@@ -23,7 +23,7 @@ struct RawFixtureTuple {
 
 /// Load a test fixture from a YAML string.
 pub fn load_fixture_yaml(yaml: &str) -> AegisResult<TestFixture> {
-    let raw: RawFixture = serde_yaml::from_str(yaml)
+    let raw: RawFixture = serde_yml::from_str(yaml)
         .map_err(|e| AegisError::SchemaValidation(format!("invalid fixture YAML: {e}")))?;
 
     let mut tuples = Vec::with_capacity(raw.tuples.len());

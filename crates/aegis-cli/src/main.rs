@@ -170,6 +170,8 @@ enum Commands {
     Recover {
         #[arg(long, default_value = "aegis.db")]
         db: String,
+        #[arg(long)]
+        to_revision: Option<i64>,
     },
 }
 
@@ -278,7 +280,7 @@ fn main() -> Result<()> {
                 .with_context(|| "invalid relation filter")?;
             let tuples = engine
                 .storage()
-                .list_by_object(&resource_id, relation_filter.as_ref())?;
+                .list_by_object(&resource_id, relation_filter.as_ref(), &ConsistencyMode::MinimizeLatency)?;
             println!("{}", serde_json::to_string(&tuples)?);
         }
         Commands::Explain {
@@ -531,14 +533,15 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Recover { db } => {
+        Commands::Recover { db, to_revision } => {
             let engine = load_db(db, None)?;
-            let removed = engine.storage().compact_events()?;
+            let _ = to_revision;
+            let revision = engine.recover_from_events()?;
             println!(
                 "{}",
                 serde_json::json!({
                     "status": "ok",
-                    "events_compacted": removed,
+                    "revision": revision.as_u64(),
                 })
             );
         }

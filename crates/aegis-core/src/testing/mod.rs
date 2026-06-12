@@ -92,6 +92,7 @@ impl TestAegis {
         &self,
         object: &ResourceId,
         relation: Option<&Relation>,
+        _consistency: Option<ConsistencyMode>,
     ) -> Vec<RelationshipTuple> {
         self.tuples
             .iter()
@@ -105,6 +106,7 @@ impl TestAegis {
         &self,
         subject: &SubjectId,
         relation: Option<&Relation>,
+        _consistency: Option<ConsistencyMode>,
     ) -> Vec<RelationshipTuple> {
         self.tuples
             .iter()
@@ -274,7 +276,7 @@ mod tests {
             ))
             .unwrap();
 
-        let results = aegis.list_by_object(&ResourceId::new("repo:a").unwrap(), None);
+        let results = aegis.list_by_object(&ResourceId::new("repo:a").unwrap(), None, None);
         assert_eq!(results.len(), 2);
     }
 
@@ -296,7 +298,7 @@ mod tests {
             ))
             .unwrap();
 
-        let results = aegis.list_by_subject(&SubjectId::new("user:1").unwrap(), None);
+        let results = aegis.list_by_subject(&SubjectId::new("user:1").unwrap(), None, None);
         assert_eq!(results.len(), 2);
     }
 
