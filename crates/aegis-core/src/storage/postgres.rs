@@ -991,7 +991,7 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
-    fn recover_from_events(&self) -> AegisResult<Revision> {
+    fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
 
@@ -1021,6 +1021,11 @@ impl StorageBackend for PostgresStorage {
                 let meta_val: Option<serde_json::Value> = row.get(5);
 
                 let revision = Revision::new(rev as u64);
+                if let Some(target) = to_revision {
+                    if revision > target {
+                        continue;
+                    }
+                }
 
                 match action.as_str() {
                     "add" => {

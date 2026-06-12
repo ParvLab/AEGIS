@@ -408,8 +408,8 @@ impl GraphEngine {
     /// Recover the tuple store from the event log by replaying all events.
     /// Returns the latest revision after recovery.
     /// Only meaningful for backends that persist an event log (e.g. SQLite).
-    pub fn recover_from_events(&self) -> AegisResult<Revision> {
-        let rev = self.storage.recover_from_events()?;
+    pub fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
+        let rev = self.storage.recover_from_events(to_revision)?;
         self.emit_log(hooks::LogLevel::Info, "Recovered from event log", &format!("revision={}", rev));
         Ok(rev)
     }

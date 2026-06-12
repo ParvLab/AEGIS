@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use clap::{Parser, Subcommand};
 use serde_json::json;
 
@@ -11,6 +12,15 @@ use aegis_core::storage::StorageBackend;
 use aegis_core::storage::TupleFilter;
 use aegis_core::types::*;
 
+#[cfg(feature = "postgres")]
+use aegis_core::storage::PostgresStorage;
+#[cfg(feature = "rocksdb")]
+use aegis_core::storage::RocksDbStorage;
+#[cfg(feature = "mysql")]
+use aegis_core::storage::mysql::MysqlConfig;
+#[cfg(feature = "mysql")]
+use aegis_core::storage::MysqlStorage;
+
 mod repl;
 
 #[derive(Parser)]
@@ -18,6 +28,14 @@ mod repl;
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+
+    /// Storage backend type: sqlite, postgres, rocksdb, mysql
+    #[arg(long, default_value = "sqlite", global = true)]
+    storage: String,
+
+    /// Connection string for database backends (postgresql://user:pass@host/db, mysql://user:pass@host/db)
+    #[arg(long, global = true)]
+    connection_string: Option<String>,
 }
 
 #[derive(Subcommand)]
@@ -74,6 +92,8 @@ enum Commands {
         db: String,
         #[arg(long)]
         schema: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Query tuples with filters
     Query {
@@ -138,6 +158,10 @@ enum Commands {
         path: String,
         #[arg(long, default_value = "aegis.db")]
         db: String,
+        #[arg(long)]
+        schema: Option<String>,
+        #[arg(long, default_value = "json")]
+        format: String,
     },
     /// Restore tuples and events from a backup file
     BackupRestore {
@@ -173,18 +197,115 @@ enum Commands {
         #[arg(long)]
         to_revision: Option<i64>,
     },
+    /// Delete a subject with an ownership policy (GDPR right to erasure)
+    DeleteSubject {
+        subject: String,
+        #[arg(long, default_value = "fail")]
+        policy: String,
+        #[arg(long)]
+        transfer_to: Option<String>,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
 }
 
-fn load_db(path: &str, schema_path: Option<&str>) -> Result<GraphEngine> {
-    let config = SqliteConfig {
-        path: path.to_string(),
-        ..Default::default()
+fn load_storage(
+    db_path: &str,
+    storage_type: &str,
+    _conn_str: Option<&str>,
+) -> Result<Box<dyn StorageBackend>> {
+    match storage_type {
+        "sqlite" => {
+            let config = SqliteConfig {
+                path: db_path.to_string(),
+                ..Default::default()
+            };
+            let mut storage = SqliteStorage::new(config)
+                .with_context(|| format!("failed to create SQLite storage at {db_path}"))?;
+            storage
+                .initialize()
+                .context("failed to initialize storage")?;
+            Ok(Box::new(storage))
+        }
+        #[cfg(feature = "postgres")]
+        "postgres" | "pg" => {
+            let cs = _conn_str.context("--connection-string is required for postgres backend")?;
+            let mut storage = PostgresStorage::new(cs)
+                .context("failed to create Postgres storage")?;
+            storage
+                .initialize()
+                .context("failed to initialize storage")?;
+            Ok(Box::new(storage))
+        }
+        #[cfg(not(feature = "postgres"))]
+        "postgres" | "pg" => {
+            anyhow::bail!("postgres backend is not enabled. Rebuild aegis-cli with --features postgres");
+        }
+        #[cfg(feature = "rocksdb")]
+        "rocksdb" => {
+            let mut storage = RocksDbStorage::new(db_path)
+                .with_context(|| format!("failed to create RocksDB storage at {db_path}"))?;
+            storage
+                .initialize()
+                .context("failed to initialize storage")?;
+            Ok(Box::new(storage))
+        }
+        #[cfg(not(feature = "rocksdb"))]
+        "rocksdb" => {
+            anyhow::bail!("rocksdb backend is not enabled. Rebuild aegis-cli with --features rocksdb");
+        }
+        #[cfg(feature = "mysql")]
+        "mysql" => {
+            let cs = _conn_str.context("--connection-string is required for mysql backend")?;
+            let config = parse_mysql_connection_string(cs)?;
+            let mut storage = MysqlStorage::new(config)
+                .context("failed to create MySQL storage")?;
+            storage
+                .initialize()
+                .context("failed to initialize storage")?;
+            Ok(Box::new(storage))
+        }
+        #[cfg(not(feature = "mysql"))]
+        "mysql" => {
+            anyhow::bail!("mysql backend is not enabled. Rebuild aegis-cli with --features mysql");
+        }
+        _ => anyhow::bail!(
+            "unknown storage backend: {storage_type}. Supported: sqlite, postgres, rocksdb, mysql"
+        ),
+    }
+}
+
+#[cfg(feature = "mysql")]
+fn parse_mysql_connection_string(cs: &str) -> Result<MysqlConfig> {
+    let remainder = cs
+        .strip_prefix("mysql://")
+        .with_context(|| "mysql connection string must start with mysql://")?;
+    let (userinfo, rest) = remainder
+        .split_once('@')
+        .with_context(|| "invalid mysql connection string: expected user:pass@host/db")?;
+    let (user, pass) = userinfo
+        .split_once(':')
+        .with_context(|| "invalid mysql connection string: expected user:pass")?;
+    let (hostinfo, database) = rest
+        .split_once('/')
+        .with_context(|| "invalid mysql connection string: expected host/db")?;
+    let (host, port) = if let Some((h, p)) = hostinfo.split_once(':') {
+        (h.to_string(), p.parse::<u16>().with_context(|| "invalid port in connection string")?)
+    } else {
+        (hostinfo.to_string(), 3306u16)
     };
-    let mut storage = SqliteStorage::new(config)
-        .with_context(|| format!("failed to create SQLite storage at {path}"))?;
-    storage
-        .initialize()
-        .context("failed to initialize storage")?;
+    Ok(MysqlConfig {
+        host,
+        port,
+        user: user.to_string(),
+        password: pass.to_string(),
+        database: database.to_string(),
+        pool_size: 10,
+    })
+}
+
+fn load_db(path: &str, schema_path: Option<&str>, storage_type: &str, conn_str: Option<&str>) -> Result<GraphEngine> {
+    let storage = load_storage(path, storage_type, conn_str)?;
 
     let schema = if let Some(sp) = schema_path {
         let yaml = std::fs::read_to_string(sp)
@@ -198,11 +319,15 @@ fn load_db(path: &str, schema_path: Option<&str>) -> Result<GraphEngine> {
         }
     };
 
-    Ok(GraphEngine::new(Box::new(storage), schema))
+    Ok(GraphEngine::new(storage, schema))
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+
+    let mk_engine = |db: &str, schema: Option<&str>| -> Result<GraphEngine> {
+        load_db(db, schema, &cli.storage, cli.connection_string.as_deref())
+    };
 
     match &cli.command {
         Commands::Check {
@@ -212,7 +337,7 @@ fn main() -> Result<()> {
             db,
             schema,
         } => {
-            let engine = load_db(db, schema.as_deref())?;
+            let engine = mk_engine(db, schema.as_deref())?;
             let subject_id = SubjectId::new(subject.as_str())
                 .with_context(|| format!("invalid subject: {subject}"))?;
             let resource_id = ResourceId::new(resource.as_str())
@@ -231,7 +356,7 @@ fn main() -> Result<()> {
             db,
             schema,
         } => {
-            let engine = load_db(db, schema.as_deref())?;
+            let engine = mk_engine(db, schema.as_deref())?;
             let subject_id = SubjectId::new(subject.as_str())
                 .with_context(|| format!("invalid subject: {subject}"))?;
             let relation_val = Relation::new(relation.as_str())
@@ -249,7 +374,7 @@ fn main() -> Result<()> {
             resource,
             db,
         } => {
-            let engine = load_db(db, None)?;
+            let engine = mk_engine(db, None)?;
             let subject_id = SubjectId::new(subject.as_str())
                 .with_context(|| format!("invalid subject: {subject}"))?;
             let relation_val = Relation::new(relation.as_str())
@@ -270,7 +395,7 @@ fn main() -> Result<()> {
             relation,
             db,
         } => {
-            let engine = load_db(db, None)?;
+            let engine = mk_engine(db, None)?;
             let resource_id = ResourceId::new(object.as_str())
                 .with_context(|| format!("invalid object: {object}"))?;
             let relation_filter = relation
@@ -290,7 +415,7 @@ fn main() -> Result<()> {
             db,
             schema,
         } => {
-            let engine = load_db(db, schema.as_deref())?;
+            let engine = mk_engine(db, schema.as_deref())?;
             let subject_id = SubjectId::new(subject.as_str())
                 .with_context(|| format!("invalid subject: {subject}"))?;
             let resource_id = ResourceId::new(resource.as_str())
@@ -305,7 +430,7 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&output)?);
         }
         Commands::Health { db, schema } => {
-            let engine = load_db(db, schema.as_deref())?;
+            let engine = mk_engine(db, schema.as_deref())?;
             let report = engine.health();
             let output = serde_json::to_value(&report)?;
             println!("{}", serde_json::to_string(&output)?);
@@ -317,7 +442,7 @@ fn main() -> Result<()> {
             db,
             schema,
         } => {
-            let engine = load_db(db, schema.as_deref())?;
+            let engine = mk_engine(db, schema.as_deref())?;
             let subject_id = SubjectId::new(subject.as_str())
                 .with_context(|| format!("invalid subject: {subject}"))?;
             let resource_id = ResourceId::new(resource.as_str())
@@ -337,7 +462,7 @@ fn main() -> Result<()> {
             db,
             schema,
         } => {
-            let engine = load_db(db, schema.as_deref())?;
+            let engine = mk_engine(db, schema.as_deref())?;
             let subject_id = SubjectId::new(subject.as_str())
                 .with_context(|| format!("invalid subject: {subject}"))?;
             let relation_val = Relation::new(relation.as_str())
@@ -360,7 +485,7 @@ fn main() -> Result<()> {
             limit,
             db,
         } => {
-            let engine = load_db(db, None)?;
+            let engine = mk_engine(db, None)?;
             let resource_id = ResourceId::new(object.as_str())
                 .with_context(|| format!("invalid object: {object}"))?;
             let from_rev = from.map(Revision::new);
@@ -373,14 +498,14 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string(&entries)?);
         }
         Commands::ExportSubject { subject, db } => {
-            let engine = load_db(db, None)?;
+            let engine = mk_engine(db, None)?;
             let subject_id = SubjectId::new(subject.as_str())
                 .with_context(|| format!("invalid subject: {subject}"))?;
             let tuples = engine.export_subject(&subject_id)?;
             println!("{}", serde_json::to_string(&tuples)?);
         }
-        Commands::Repl { db, schema } => {
-            repl::run_repl(db, schema.as_deref())?;
+        Commands::Repl { db, schema, json } => {
+            repl::run_repl(db, schema.as_deref(), &cli.storage, cli.connection_string.as_deref(), *json)?;
         }
         Commands::Query {
             subject_type,
@@ -389,7 +514,7 @@ fn main() -> Result<()> {
             limit,
             db,
         } => {
-            let engine = load_db(db, None)?;
+            let engine = mk_engine(db, None)?;
             let filter = TupleFilter {
                 subject_type: subject_type.clone(),
                 relation: relation
@@ -412,8 +537,13 @@ fn main() -> Result<()> {
             )?;
             println!("{}", serde_json::to_string(&result)?);
         }
-        Commands::BackupCreate { path, db } => {
-            let engine = load_db(db, None)?;
+        Commands::BackupCreate {
+            path,
+            db,
+            schema,
+            format: _format,
+        } => {
+            let engine = mk_engine(db, None)?;
             let all_tuples = engine
                 .storage()
                 .query_tuples(
@@ -425,35 +555,75 @@ fn main() -> Result<()> {
                     &ConsistencyMode::MinimizeLatency,
                 )?
                 .tuples;
+            let schema_yaml = if let Some(sp) = schema {
+                std::fs::read_to_string(sp)
+                    .with_context(|| format!("failed to read schema file {sp}"))?
+            } else {
+                String::new()
+            };
+            let events = engine.query_audit_all(
+                None,
+                None,
+                &PaginationParams {
+                    limit: u64::MAX,
+                    cursor: None,
+                },
+            )?;
+            let revision = engine.storage().current_revision()?;
+            let backend_type = engine.storage().backend_type().to_string();
+            let exported_at = Utc::now().to_rfc3339();
             let backup = serde_json::json!({
-                "version": 1,
+                "version": 2,
+                "schema_yaml": schema_yaml,
                 "tuples": all_tuples,
+                "events": events,
+                "metadata": {
+                    "backend_type": backend_type,
+                    "revision": revision.as_u64(),
+                    "exported_at": exported_at,
+                },
             });
-            let json = serde_json::to_string_pretty(&backup)?;
-            std::fs::write(path, json)
+            let output = serde_json::to_string_pretty(&backup)?;
+            std::fs::write(path, output)
                 .with_context(|| format!("failed to write backup to {path}"))?;
-            println!(r#"{{"status":"ok","tuples":{}}}"#, all_tuples.len());
+            println!(r#"{{"status":"ok","tuples":{},"events":{},"revision":{}}}"#,
+                all_tuples.len(), events.len(), revision.as_u64());
         }
         Commands::BackupRestore { path, db } => {
-            let engine = load_db(db, None)?;
+            let engine = mk_engine(db, None)?;
             let content = std::fs::read_to_string(path)
                 .with_context(|| format!("failed to read backup from {path}"))?;
             let backup: serde_json::Value = serde_json::from_str(&content)?;
+            let version = backup.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
+            if version >= 2 {
+                if let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str()) {
+                    if !sy.is_empty() {
+                        let schema = parse_schema(sy)
+                            .context("failed to parse schema from backup")?;
+                        engine.reload_schema(schema)?;
+                    }
+                }
+            }
             let tuples: Vec<TupleImport> = serde_json::from_value(
                 backup.get("tuples").cloned().unwrap_or(serde_json::Value::Null),
             )
             .context("invalid backup format: missing or invalid 'tuples' field")?;
             let mut count = 0usize;
-            for t in &tuples {
-                let subject_id = SubjectId::new(&t.subject)
-                    .with_context(|| format!("invalid subject: {}", t.subject))?;
-                let relation_val = Relation::new(&t.relation)
-                    .with_context(|| format!("invalid relation: {}", t.relation))?;
-                let object_id = ResourceId::new(&t.object)
-                    .with_context(|| format!("invalid object: {}", t.object))?;
-                let tuple = RelationshipTuple::new(subject_id, relation_val, object_id);
-                engine.write(&tuple)?;
-                count += 1;
+            for chunk in tuples.chunks(100) {
+                let batch: Vec<RelationshipTuple> = chunk
+                    .iter()
+                    .map(|t| {
+                        let subject_id = SubjectId::new(&t.subject)
+                            .with_context(|| format!("invalid subject: {}", t.subject))?;
+                        let relation_val = Relation::new(&t.relation)
+                            .with_context(|| format!("invalid relation: {}", t.relation))?;
+                        let object_id = ResourceId::new(&t.object)
+                            .with_context(|| format!("invalid object: {}", t.object))?;
+                        Ok(RelationshipTuple::new(subject_id, relation_val, object_id))
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                engine.write_batch(&batch)?;
+                count += batch.len();
             }
             println!(r#"{{"status":"ok","restored":{count}}}"#);
         }
@@ -462,7 +632,7 @@ fn main() -> Result<()> {
             db,
             schema,
         } => {
-            let engine = load_db(db, schema.as_deref())?;
+            let engine = mk_engine(db, schema.as_deref())?;
             let tuples = if let Some(s) = subject {
                 let subject_id = SubjectId::new(s.as_str())
                     .with_context(|| format!("invalid subject: {s}"))?;
@@ -487,7 +657,7 @@ fn main() -> Result<()> {
             db,
             schema,
         } => {
-            let engine = load_db(db, schema.as_deref())?;
+            let engine = mk_engine(db, schema.as_deref())?;
             let content = std::fs::read_to_string(path)
                 .with_context(|| format!("failed to read import file {path}"))?;
             let tuples: Vec<TupleImport> = serde_json::from_str(&content)
@@ -534,14 +704,44 @@ fn main() -> Result<()> {
             }
         }
         Commands::Recover { db, to_revision } => {
-            let engine = load_db(db, None)?;
-            let _ = to_revision;
-            let revision = engine.recover_from_events()?;
+            let engine = mk_engine(db, None)?;
+            let to_rev = to_revision.map(|r| Revision::new(r as u64));
+            let revision = engine.recover_from_events(to_rev)?;
             println!(
                 "{}",
                 serde_json::json!({
                     "status": "ok",
                     "revision": revision.as_u64(),
+                })
+            );
+        }
+        Commands::DeleteSubject {
+            subject,
+            policy,
+            transfer_to,
+            db,
+        } => {
+            let engine = mk_engine(db, None)?;
+            let subject_id = SubjectId::new(subject.as_str())
+                .with_context(|| format!("invalid subject: {subject}"))?;
+            let transfer = if let Some(t) = transfer_to {
+                Some(
+                    SubjectId::new(t.as_str())
+                        .with_context(|| format!("invalid transfer_to subject: {t}"))?,
+                )
+            } else {
+                None
+            };
+            let token = engine.delete_subject_with_policy(
+                &subject_id,
+                policy,
+                transfer.as_ref(),
+            )?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "revision": token.revision.as_u64(),
                 })
             );
         }

@@ -1,5 +1,5 @@
 use chrono::{DateTime, Utc};
-use crate::error::{AegisError, AegisResult};
+use crate::error::AegisResult;
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationParams, Relation, RelationshipTuple,
     ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
@@ -118,9 +118,7 @@ pub trait StorageBackend: Send + Sync {
     /// Recover the current state by replaying all logged events.
     /// This reconstructs the tuple store from scratch using the event log,
     /// returning the latest revision seen.
-    fn recover_from_events(&self) -> AegisResult<Revision> {
-        Err(AegisError::NotImplemented("recover_from_events not supported by this backend".to_string()))
-    }
+    fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision>;
 
     /// Close the storage backend, flushing all pending operations.
     fn close(&self) -> AegisResult<()>;

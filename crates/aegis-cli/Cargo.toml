@@ -8,6 +8,7 @@ description = "Aegis authorization engine CLI"
 
 [dependencies]
 aegis-core = { path = "../aegis-core" }
+chrono.workspace = true
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -15,3 +16,8 @@ serde_yml.workspace = true
 anyhow = "1"
 rustyline = "14"
 dirs = "5"
+
+[features]
+postgres = ["aegis-core/postgres"]
+rocksdb = ["aegis-core/rocksdb"]
+mysql = ["aegis-core/mysql"]

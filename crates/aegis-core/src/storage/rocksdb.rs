@@ -904,7 +904,7 @@ impl StorageBackend for RocksDbStorage {
         Ok(0)
     }
 
-    fn recover_from_events(&self) -> AegisResult<Revision> {
+    fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
         let _guard = self.revision_mutex.lock()
             .map_err(|_| AegisError::Internal("revision mutex poisoned".into()))?;
 
@@ -944,6 +944,11 @@ impl StorageBackend for RocksDbStorage {
                 let relation = event["relation"].as_str().unwrap_or("");
                 let object = event["object"].as_str().unwrap_or("");
                 let revision = Revision::new(rev);
+                if let Some(target) = to_revision {
+                    if revision > target {
+                        continue;
+                    }
+                }
 
                 match action {
                     "add" => {

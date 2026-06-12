@@ -818,7 +818,7 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn recover_from_events(&self) -> AegisResult<Revision> {
+    fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
 
@@ -840,6 +840,11 @@ impl StorageBackend for MysqlStorage {
 
             for (rev, action, subject, relation, object, metadata) in &rows {
                 let revision = Revision::new(*rev as u64);
+                if let Some(target) = to_revision {
+                    if revision > target {
+                        continue;
+                    }
+                }
                 let now = Utc::now().to_rfc3339();
 
                 match action.as_str() {

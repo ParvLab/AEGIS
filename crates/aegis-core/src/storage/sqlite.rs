@@ -1193,8 +1193,8 @@ impl StorageBackend for SqliteStorage {
         Ok(())
     }
 
-    fn recover_from_events(&self) -> AegisResult<Revision> {
-        self.recover_from_events_impl()
+    fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
+        self.recover_from_events_impl(to_revision)
     }
 }
 
@@ -1204,7 +1204,7 @@ impl SqliteStorage {
     /// Recover the tuple graph from the event log.
     /// Replays all events in revision order to reconstruct the current state.
     /// After recovery, verifies that the final revision matches.
-    fn recover_from_events_impl(&self) -> AegisResult<Revision> {
+    fn recover_from_events_impl(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             conn.execute("DELETE FROM _aegis_tuples WHERE revision_removed IS NOT NULL OR 1=1", [])
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1236,6 +1236,11 @@ impl SqliteStorage {
                     row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
                 let rev = Revision::new(rev as u64);
+                if let Some(target) = to_revision {
+                    if rev > target {
+                        continue;
+                    }
+                }
                 let now = Utc::now().to_rfc3339();
 
                 match action.as_str() {
@@ -2213,7 +2218,7 @@ mod tests {
         store.write_tuple(&tuple("user:2", "viewer", "repo:b")).unwrap();
         let rev_before = store.current_revision().unwrap();
 
-        let recovered = store.recover_from_events().unwrap();
+        let recovered = store.recover_from_events(None).unwrap();
         assert_eq!(recovered, rev_before);
 
         assert!(store.has_tuple(&key("user:1", "editor", "repo:a")).unwrap());
@@ -2263,7 +2268,7 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let recovered = store.recover_from_events().unwrap();
+        let recovered = store.recover_from_events(None).unwrap();
         assert_eq!(recovered.as_u64(), 0);
     }
 }
