@@ -21,8 +21,8 @@ use aegis_core::storage::RocksDbStorage;
 
 const COMMANDS: &[&str] = &[
     "check", "write", "delete", "list", "explain", "health", "dry-run",
-    "audit", "export", "schema", "query", "watch", "unwatch", "backup",
-    "restore", "import", "help", "exit",
+    "audit", "export", "export-subject", "schema", "query", "watch", "unwatch",
+    "backup", "restore", "import", "recover", "delete-subject", "help", "exit",
 ];
 
 struct ReplState {
@@ -117,6 +117,10 @@ fn print_help() {
     println!("  backup <path>                                    - Backup all tuples/events to file");
     println!("  restore <path>                                   - Restore tuples/events from backup");
     println!("  import <path>                                    - Import tuples from JSON file");
+    println!("  recover [--to-revision N] [--dry-run]             - Recover from event log");
+    println!("  delete-subject <subject> --policy <cascade|fail|transfer> [--transfer-to X]");
+    println!("                                                   - Delete subject with policy");
+    println!("  export-subject <subject>                          - Export all tuples for a subject");
     println!("  help                                             - Show this help");
     println!("  exit                                             - Exit the REPL");
 }
@@ -304,6 +308,7 @@ fn process_command(state: &mut ReplState, line: &str) -> Result<()> {
         "dry-run" => cmd_dry_run(state, &parts[1..]),
         "audit" => cmd_audit(state, &parts[1..]),
         "export" => cmd_export(state, &parts[1..]),
+        "export-subject" => cmd_export_subject_repl(state, &parts[1..]),
         "schema" => cmd_schema(state),
         "query" => cmd_query(state, &parts[1..]),
         "watch" => cmd_watch(state, &parts[1..]),
@@ -311,6 +316,8 @@ fn process_command(state: &mut ReplState, line: &str) -> Result<()> {
         "backup" => cmd_backup(state, &parts[1..]),
         "restore" => cmd_restore(state, &parts[1..]),
         "import" => cmd_import(state, &parts[1..]),
+        "recover" => cmd_recover_repl(state, &parts[1..]),
+        "delete-subject" => cmd_delete_subject_repl(state, &parts[1..]),
         "help" => {
             print_help();
             Ok(())
@@ -685,6 +692,7 @@ fn cmd_query(state: &ReplState, args: &[&str]) -> Result<()> {
         object_type,
         metadata_key: None,
         metadata_value: None,
+        ..Default::default()
     };
 
     let pagination = PaginationParams {
@@ -871,5 +879,131 @@ fn cmd_import(state: &ReplState, args: &[&str]) -> Result<()> {
     }
     Ok(())
 }
+
+fn cmd_recover_repl(state: &ReplState, args: &[&str]) -> Result<()> {
+    let mut to_revision: Option<u64> = None;
+    let mut dry_run = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i] {
+            "--to-revision" | "--to" => {
+                i += 1;
+                to_revision = Some(
+                    args.get(i)
+                        .ok_or_else(|| anyhow::anyhow!("missing revision number"))?
+                        .parse::<u64>()
+                        .with_context(|| "invalid revision number")?,
+                );
+            }
+            "--dry-run" => dry_run = true,
+            other => {
+                eprintln!("Unknown flag: {other}");
+                return Ok(());
+            }
+        }
+        i += 1;
+    }
+
+    let to_rev = to_revision.map(|r| Revision::new(r));
+    if dry_run {
+        let current_rev = state.engine.storage().current_revision()?;
+        let target_rev = to_rev.unwrap_or(current_rev);
+        if state.json_mode {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "dry_run",
+                    "current_revision": current_rev.as_u64(),
+                    "target_revision": target_rev.as_u64(),
+                })
+            );
+        } else {
+            println!("  {} Dry-run: would recover events up to revision {} (current: {})",
+                yellow("!"), target_rev.as_u64(), current_rev.as_u64());
+        }
+    } else {
+        let revision = state.engine.recover_from_events(to_rev)?;
+        if state.json_mode {
+            println!(
+                "{}",
+                serde_json::json!({
+                    "status": "ok",
+                    "revision": revision.as_u64(),
+                })
+            );
+        } else {
+            println!("  {} Recovered to revision {}", green("✓"), revision.as_u64());
+        }
+    }
+    Ok(())
+}
+
+fn cmd_delete_subject_repl(state: &ReplState, args: &[&str]) -> Result<()> {
+    if args.len() < 2 {
+        eprintln!("Usage: delete-subject <subject> --policy <cascade|fail|transfer> [--transfer-to X]");
+        return Ok(());
+    }
+    let subject = SubjectId::new(args[0])?;
+    let mut policy = "cascade";
+    let mut transfer_to: Option<SubjectId> = None;
+    let mut i = 1;
+    while i < args.len() {
+        match args[i] {
+            "--policy" => {
+                i += 1;
+                policy = args.get(i)
+                    .ok_or_else(|| anyhow::anyhow!("missing policy value"))?;
+            }
+            "--transfer-to" => {
+                i += 1;
+                let subj = args.get(i)
+                    .ok_or_else(|| anyhow::anyhow!("missing transfer target subject"))?;
+                transfer_to = Some(SubjectId::new(*subj)?);
+            }
+            other => {
+                eprintln!("Unknown flag: {other}");
+                return Ok(());
+            }
+        }
+        i += 1;
+    }
+    let token = state.engine.delete_subject_with_policy(&subject, policy, transfer_to.as_ref())?;
+    if state.json_mode {
+        println!(
+            "{}",
+            serde_json::json!({
+                "status": "ok",
+                "revision": token.revision.as_u64(),
+            })
+        );
+    } else {
+        println!("  {} Subject deleted (revision={})", green("✓"), token.revision.as_u64());
+    }
+    Ok(())
+}
+
+fn cmd_export_subject_repl(state: &ReplState, args: &[&str]) -> Result<()> {
+    if args.is_empty() {
+        eprintln!("Usage: export-subject <subject>");
+        return Ok(());
+    }
+    let subject = SubjectId::new(args[0])?;
+    let tuples = state.engine.export_subject(&subject)?;
+    if state.json_mode {
+        println!("{}", serde_json::to_string_pretty(&tuples)?);
+    } else {
+        if tuples.is_empty() {
+            println!("  {} No tuples found for subject", yellow("!"));
+        } else {
+            for t in &tuples {
+                println!("  {} {} {} {}", green("•"), t.subject.as_str(), t.relation.as_str(), t.object.as_str());
+            }
+            println!("  {} tuple(s)", tuples.len());
+        }
+    }
+    Ok(())
+}
+
+
 
 

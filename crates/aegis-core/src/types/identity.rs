@@ -3,7 +3,12 @@ use std::fmt;
 
 const MAX_IDENTITY_LENGTH: usize = 256;
 
-/// A validated principal identity string (e.g. "user:123", "team:eng", "agent:planner")
+/// A validated principal identity string (e.g. "user:123", "team:eng", "team:eng#member").
+///
+/// When the string contains `#`, it represents a *subject-set* reference:
+/// the subject is not a single principal but rather the set of all principals
+/// holding a given relation on a given object (e.g. `team:eng#member` means
+/// "all members of team:eng").
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SubjectId(String);
 
@@ -22,6 +27,24 @@ impl SubjectId {
         self.0
     }
 
+    /// If this subject is a subject-set reference (e.g. `team:eng#member`),
+    /// parse it into its object + relation components.
+    /// Returns `None` for simple subjects (no `#`).
+    pub fn as_subject_set(&self) -> Option<SubjectSet> {
+        if let Some(pos) = self.0.rfind('#') {
+            let object_str = &self.0[..pos];
+            let relation_str = &self.0[pos + 1..];
+            if object_str.is_empty() || relation_str.is_empty() {
+                return None;
+            }
+            let object = ResourceId::new(object_str).ok()?;
+            let relation = Relation::new(relation_str).ok()?;
+            Some(SubjectSet { object, relation })
+        } else {
+            None
+        }
+    }
+
     fn validate(s: &str) -> Result<(), ValidationError> {
         if s.is_empty() {
             return Err(ValidationError::Empty);
@@ -32,15 +55,18 @@ impl SubjectId {
                 actual: s.len(),
             });
         }
+        // Allow `#` for subject-set references (e.g. `team:eng#member`)
         if !s
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '_' || c == '-')
+            .all(|c| c.is_ascii_alphanumeric() || c == ':' || c == '_' || c == '-' || c == '#')
         {
             return Err(ValidationError::InvalidCharacters(s.to_string()));
         }
         Ok(())
     }
 }
+
+
 
 impl fmt::Display for SubjectId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -176,6 +202,39 @@ impl TryFrom<&str> for Relation {
     type Error = ValidationError;
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         Self::new(value)
+    }
+}
+
+/// A subject-set reference: all principals holding `relation` on `object`.
+///
+/// In Zanzibar-style ReBAC this is written as `object#relation` (e.g. `team:eng#member`).
+/// A tuple `(team:eng#member, editor, repo:fluxbus)` means "anyone with `member` on `team:eng`
+/// is an `editor` of `repo:fluxbus`".
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct SubjectSet {
+    pub object: ResourceId,
+    pub relation: Relation,
+}
+
+impl SubjectSet {
+    pub fn new(object: ResourceId, relation: Relation) -> Self {
+        Self { object, relation }
+    }
+
+    /// Format as `object#relation` string (e.g. `team:eng#member`).
+    pub fn subject_id_string(&self) -> String {
+        format!("{}#{}", self.object.as_str(), self.relation.as_str())
+    }
+
+    /// Look up all principals that satisfy this subject-set.
+    /// Returns the subject field from tuples where `object == self.object` and `relation == self.relation`.
+    pub fn resolve(
+        &self,
+        storage: &dyn crate::storage::StorageBackend,
+        consistency: &crate::types::ConsistencyMode,
+    ) -> Result<Vec<SubjectId>, crate::error::AegisError> {
+        let tuples = storage.list_by_object(&self.object, Some(&self.relation), consistency)?;
+        Ok(tuples.into_iter().map(|t| t.subject).collect())
     }
 }
 

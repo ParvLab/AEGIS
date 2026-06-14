@@ -457,6 +457,7 @@ fn main() -> Result<()> {
                 object_type: object_type.clone(),
                 metadata_key: None,
                 metadata_value: None,
+                ..Default::default()
             };
             let pagination = PaginationParams {
                 limit: *limit,
@@ -612,15 +613,17 @@ fn main() -> Result<()> {
                 .with_context(|| format!("failed to read schema file {path}"))?;
             match parse_schema(&yaml) {
                 Ok(schema) => {
-                    let report = aegis_core::schema::check_schema_compatibility(&schema, &schema);
-                    if report.breaking.is_empty() && report.warnings.is_empty() {
+                    let report = aegis_core::schema::lint_schema(&schema, false);
+                    if report.errors.is_empty() && report.warnings.is_empty() {
                         println!(r#"{{"status":"ok","types":{},"version":{}}}"#,
                             schema.types.len(), schema.schema_version);
                     } else {
+                        let status = if !report.errors.is_empty() { "error" } else { "warning" };
                         let output = serde_json::json!({
-                            "status": report.breaking.is_empty().then(|| "warning").unwrap_or("error"),
-                            "breaking": report.breaking,
+                            "status": status,
+                            "errors": report.errors,
                             "warnings": report.warnings,
+                            "passed": report.passed,
                         });
                         println!("{}", serde_json::to_string_pretty(&output)?);
                     }

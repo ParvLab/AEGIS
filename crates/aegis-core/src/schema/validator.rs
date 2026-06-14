@@ -1,5 +1,5 @@
 use crate::error::{AegisError, AegisResult};
-use crate::types::schema::{Schema, SchemaCompatibilityReport};
+use crate::types::schema::{Effect, Schema, SchemaCompatibilityReport};
 use std::collections::HashSet;
 
 /// Lint result from schema analysis.
@@ -18,8 +18,7 @@ impl LintReport {
 
 /// Run lint checks on a schema, returning warnings and errors.
 /// When `strict` is true, warnings are promoted to errors.
-#[allow(dead_code)]
-pub(crate) fn lint_schema(schema: &Schema, strict: bool) -> LintReport {
+pub fn lint_schema(schema: &Schema, strict: bool) -> LintReport {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
 
@@ -45,6 +44,26 @@ pub(crate) fn lint_schema(schema: &Schema, strict: bool) -> LintReport {
             let combined = perm_def.union_of.join(" ");
             if combined.contains('*') {
                 let msg = format!("permission '{perm_name}' on type '{type_name}' uses wildcard '*' — overly broad");
+                if strict { errors.push(msg); } else { warnings.push(msg); }
+            }
+        }
+
+        // Check for Deny permissions that reference undefined relations
+        for (perm_name, perm_def) in &type_def.permissions {
+            if perm_def.effect == Effect::Deny {
+                for rel_ref in &perm_def.union_of {
+                    if !type_def.relations.contains_key(rel_ref) {
+                        let msg = format!("deny permission '{perm_name}' on type '{type_name}' references undefined relation '{rel_ref}'");
+                        if strict { errors.push(msg); } else { warnings.push(msg); }
+                    }
+                }
+            }
+        }
+
+        // Check for empty roles (no permissions) — generate a warning
+        for (role_name, role_def) in &type_def.roles {
+            if role_def.permissions.is_empty() {
+                let msg = format!("role '{role_name}' on type '{type_name}' has no permissions assigned");
                 if strict { errors.push(msg); } else { warnings.push(msg); }
             }
         }
@@ -320,13 +339,15 @@ types:
             union_of: vec!["owner".to_string()],
             condition: Some("role eq admin".to_string()),
             description: Some("admin".to_string()),
+            ..Default::default()
         });
         permissions.insert("invalid".to_string(), PermissionDef {
             union_of: vec!["owner".to_string()],
             condition: Some("bad syntax here".to_string()),
             description: Some("invalid".to_string()),
+            ..Default::default()
         });
-        types.insert("repo".to_string(), TypeDef { relations, permissions });
+        types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
         let schema = Schema {
             schema_version: 1,
             namespace: "test".to_string(),

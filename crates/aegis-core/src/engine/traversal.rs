@@ -1,7 +1,9 @@
+use chrono::Utc;
 use crate::engine::cache::TraversalCache;
+use crate::engine::condition::{self, ConditionEvalContext};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::StorageBackend;
-use crate::types::{ConsistencyMode, Relation, ResourceId, Revision, SubjectId};
+use crate::types::{ConsistencyMode, Relation, ResourceId, Revision, SubjectId, SubjectSet};
 use std::collections::{HashSet, VecDeque};
 
 /// A single step in a traversal trace.
@@ -47,7 +49,20 @@ pub fn bfs_traversal(
     revision: Option<Revision>,
     consistency: Option<ConsistencyMode>,
 ) -> AegisResult<TraversalResult> {
-    bfs_traversal_with_limits(storage, subject, relation, target, revision, consistency, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None)
+    bfs_traversal_with_limits_and_context(storage, subject, relation, target, revision, consistency, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None, None, None)
+}
+
+/// BFS traversal with context for tuple condition evaluation.
+pub fn bfs_traversal_with_context(
+    storage: &dyn StorageBackend,
+    subject: &SubjectId,
+    relation: &Relation,
+    target: &ResourceId,
+    revision: Option<Revision>,
+    consistency: Option<ConsistencyMode>,
+    context: Option<&ConditionEvalContext>,
+) -> AegisResult<TraversalResult> {
+    bfs_traversal_with_limits_and_context(storage, subject, relation, target, revision, consistency, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None, context, None)
 }
 
 /// BFS traversal with configurable depth and visit limits.
@@ -60,15 +75,40 @@ pub fn bfs_traversal_with_limits(
     consistency: Option<ConsistencyMode>,
     max_depth: usize,
     max_visits: usize,
+    cache: Option<&mut TraversalCache>,
+) -> AegisResult<TraversalResult> {
+    bfs_traversal_with_limits_and_context(
+        storage, subject, relation, target, revision, consistency,
+        max_depth, max_visits, cache, None, None,
+    )
+}
+
+/// BFS traversal with limits, condition context, and per-branch visit limiting.
+///
+/// `per_branch_max_visits` limits how many tuples each branch may explore before
+/// being pruned. This prevents a single deep branch from dominating the traversal budget.
+pub fn bfs_traversal_with_limits_and_context(
+    storage: &dyn StorageBackend,
+    subject: &SubjectId,
+    relation: &Relation,
+    target: &ResourceId,
+    revision: Option<Revision>,
+    consistency: Option<ConsistencyMode>,
+    max_depth: usize,
+    max_visits: usize,
     mut cache: Option<&mut TraversalCache>,
+    context: Option<&ConditionEvalContext>,
+    per_branch_max_visits: Option<usize>,
 ) -> AegisResult<TraversalResult> {
     let consistency_ref = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
 
     let mut visited: HashSet<(String, String)> = HashSet::new();
     let mut queue: VecDeque<(SubjectId, Vec<TraceStep>)> = VecDeque::new();
     let mut visit_count = 0usize;
+    let mut per_branch_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let per_branch_limit = per_branch_max_visits.unwrap_or(usize::MAX);
 
-    let found_direct = check_direct(storage, subject, relation, target, consistency_ref)?;
+    let found_direct = check_direct(storage, subject, relation, target, consistency_ref, context)?;
     if found_direct {
         return Ok(TraversalResult {
             found: true,
@@ -102,16 +142,7 @@ pub fn bfs_traversal_with_limits(
                     }
                     result
                 } else {
-                    let tuples = match storage.list_by_subject(&current_subject, Some(relation), consistency_ref) {
-                        Ok(t) => t,
-                        Err(e) => {
-                            if matches!(e, AegisError::StorageNotInitialized) {
-                                Vec::new()
-                            } else {
-                                return Err(e);
-                            }
-                        }
-                    };
+                    let tuples = load_tuples(storage, &current_subject, relation, consistency_ref)?;
                     let objects: Vec<String> = tuples.iter().map(|t| t.object.as_str().to_string()).collect();
                     if !objects.is_empty() {
                         c.insert(current_subject.as_str(), relation.as_str(), objects, current_rev);
@@ -119,20 +150,29 @@ pub fn bfs_traversal_with_limits(
                     tuples
                 }
             } else {
-                match storage.list_by_subject(&current_subject, Some(relation), consistency_ref) {
-                    Ok(t) => t,
-                    Err(e) => {
-                        if matches!(e, AegisError::StorageNotInitialized) {
-                            Vec::new()
-                        } else {
-                            return Err(e);
-                        }
-                    }
-                }
+                load_tuples(storage, &current_subject, relation, consistency_ref)?
             }
         };
 
         for tuple in &tuples {
+            // Skip expired tuples (valid_until in the past)
+            if tuple.valid_until.is_some_and(|v| v <= Utc::now()) {
+                continue;
+            }
+
+            // Skip tuples whose condition is not met
+            if !evaluate_tuple_condition(&tuple.condition, context) {
+                continue;
+            }
+
+            // Per-branch visit limiting: limit edges followed from each node
+            let origin_key = current_subject.to_string();
+            let branch_count = per_branch_counts.entry(origin_key).or_insert(0);
+            *branch_count += 1;
+            if *branch_count > per_branch_limit {
+                continue;
+            }
+
             visit_count += 1;
             if visit_count > max_visits {
                 return Ok(TraversalResult {
@@ -141,6 +181,18 @@ pub fn bfs_traversal_with_limits(
                     trace: Vec::new(),
                     revision: revision.unwrap_or(Revision::ZERO),
                 });
+            }
+
+            // Subject-set resolution: if the tuple's subject is a subject-set
+            // (e.g. "team:eng#member"), we need to verify that our original
+            // traversal subject satisfies the subject-set condition.
+            if let Some(ref subject_set) = tuple.subject.as_subject_set() {
+                if !is_subject_set_member(storage, subject, subject_set, consistency_ref, context)? {
+                    continue;
+                }
+                // For subject-set tuples, the edge still goes from current_subject
+                // (which equals subject_set.object) to tuple.object via tuple.relation.
+                // We continue processing normally below.
             }
 
             let object_str = tuple.object.as_str().to_string();
@@ -192,16 +244,116 @@ pub fn bfs_traversal_with_limits(
     })
 }
 
+/// Load tuples from the current subject, including both direct subject matches
+/// AND subject-set tuples where the subject-set's object matches the current subject.
+/// Subject-set tuples are those whose subject field is of the form `{object}#{relation}`
+/// (e.g. `team:eng#member`).
+fn load_tuples(
+    storage: &dyn StorageBackend,
+    current_subject: &SubjectId,
+    relation: &Relation,
+    consistency: &ConsistencyMode,
+) -> AegisResult<Vec<crate::types::RelationshipTuple>> {
+    // 1. Direct subject match (existing behavior)
+    let mut tuples = match storage.list_by_subject(current_subject, Some(relation), consistency) {
+        Ok(t) => t,
+        Err(e) => {
+            if matches!(e, AegisError::StorageNotInitialized) {
+                Vec::new()
+            } else {
+                return Err(e);
+            }
+        }
+    };
+
+    // 2. Subject-set match: find tuples where subject is `{current_subject}#{relation}`
+    //    e.g. if current_subject = team:eng, find tuples with subject = team:eng#member
+    //    If current_subject is itself a subject-set, extract its object.
+    let set_object = if let Some(ss) = current_subject.as_subject_set() {
+        ss.object
+    } else if let Ok(rid) = ResourceId::new(current_subject.as_str()) {
+        rid
+    } else {
+        return Ok(tuples);
+    };
+    let set_tuples = storage.list_by_subject_set_of(&set_object, Some(relation), consistency);
+    if let Ok(mut st) = set_tuples {
+        tuples.append(&mut st);
+    }
+
+    Ok(tuples)
+}
+
 /// Direct check: does subject have the given relation on the target resource?
+/// Handles both direct subject match AND subject-set resolution.
 fn check_direct(
     storage: &dyn StorageBackend,
     subject: &SubjectId,
     relation: &Relation,
     target: &ResourceId,
     consistency: &ConsistencyMode,
+    context: Option<&ConditionEvalContext>,
 ) -> AegisResult<bool> {
     let tuples = storage.list_by_object(target, Some(relation), consistency)?;
-    Ok(tuples.iter().any(|t| t.subject == *subject))
+    let now = Utc::now();
+    for t in &tuples {
+        // Skip expired tuples
+        if t.valid_until.is_some_and(|v| v <= now) {
+            continue;
+        }
+        // Skip tuples whose condition is not met
+        if !evaluate_tuple_condition(&t.condition, context) {
+            continue;
+        }
+        // Direct subject match
+        if t.subject == *subject {
+            return Ok(true);
+        }
+        // Subject-set match: subject is like `team:eng#member`
+        if let Some(ref subject_set) = t.subject.as_subject_set() {
+            if is_subject_set_member(storage, subject, subject_set, consistency, context)? {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// Check if `subject` is a member of the given subject-set.
+/// Subject-set `team:eng#member` means: does subject have `member` relation on `team:eng`?
+fn is_subject_set_member(
+    storage: &dyn StorageBackend,
+    subject: &SubjectId,
+    subject_set: &SubjectSet,
+    consistency: &ConsistencyMode,
+    context: Option<&ConditionEvalContext>,
+) -> AegisResult<bool> {
+    let tuples = storage.list_by_object(&subject_set.object, Some(&subject_set.relation), consistency)?;
+    let now = Utc::now();
+    Ok(tuples.iter().any(|t| {
+        t.subject == *subject
+            && t.valid_until.map_or(true, |v| v > now)
+            && evaluate_tuple_condition(&t.condition, context)
+    }))
+}
+
+/// Evaluate a tuple-level condition against the available context.
+/// Returns `true` if the tuple has no condition or if the condition evaluates to `true`.
+/// Returns `false` if no context is available (condition cannot be evaluated).
+fn evaluate_tuple_condition(
+    condition: &Option<String>,
+    context: Option<&ConditionEvalContext>,
+) -> bool {
+    match condition {
+        Some(cond) => match context {
+            Some(ctx) => match condition::parse_condition(cond) {
+                Ok(expr) => condition::evaluate_condition(&expr, ctx),
+                Err(_) => false,
+            },
+            None => false,
+        },
+        None => true,
+    }
 }
 
 #[cfg(test)]

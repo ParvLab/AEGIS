@@ -30,6 +30,7 @@ const TUPLES_TABLE: &str = "
         object           TEXT NOT NULL,
         created_at       TEXT NOT NULL,
         metadata         TEXT,
+        valid_until      TEXT,
         revision_added   INTEGER NOT NULL,
         revision_removed INTEGER DEFAULT NULL
     )";
@@ -110,7 +111,9 @@ struct SqliteConnectionConfigurator {
 impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for SqliteConnectionConfigurator {
     fn on_acquire(&self, conn: &mut Connection) -> Result<(), rusqlite::Error> {
         conn.execute_batch(&format!("PRAGMA busy_timeout = {};", self.config.busy_timeout_ms))?;
-        conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        if self.config.wal_mode {
+            conn.execute_batch("PRAGMA journal_mode = WAL;")?;
+        }
         conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
         conn.execute_batch("PRAGMA foreign_keys = ON;")?;
         if self.config.mmap_size > 0 {
@@ -181,6 +184,9 @@ impl SqliteStorage {
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         conn.execute_batch(SCHEMA_TABLE)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        // V2: Add valid_until and condition columns (no-op if columns already exist)
+        let _ = conn.execute_batch("ALTER TABLE _aegis_tuples ADD COLUMN valid_until TEXT");
+        let _ = conn.execute_batch("ALTER TABLE _aegis_tuples ADD COLUMN condition TEXT");
         Ok(())
     }
 
@@ -194,8 +200,10 @@ impl SqliteStorage {
         ))
         .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
 
-        conn.execute_batch("PRAGMA journal_mode = WAL;")
-            .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
+        if config.wal_mode {
+            conn.execute_batch("PRAGMA journal_mode = WAL;")
+                .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
+        }
 
         conn.execute_batch("PRAGMA synchronous = NORMAL;")
             .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
@@ -308,7 +316,7 @@ impl SqliteStorage {
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let mut stmt = conn
             .prepare(
-                "SELECT subject, relation, object, created_at, metadata
+                "SELECT subject, relation, object, created_at, metadata, valid_until, condition
                  FROM _aegis_tuples
                  WHERE revision_added <= ?1
                    AND (revision_removed IS NULL OR revision_removed > ?1)
@@ -317,12 +325,14 @@ impl SqliteStorage {
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
         let rows = stmt
-            .query_map(params![target_revision], |row| {
+                .query_map(params![target_revision], |row| {
                 let subject_str: String = row.get(0)?;
                 let relation_str: String = row.get(1)?;
                 let object_str: String = row.get(2)?;
                 let created_at_str: String = row.get(3)?;
                 let metadata_json: Option<String> = row.get(4)?;
+                let valid_until_str: Option<String> = row.get(5)?;
+                let condition_str: Option<String> = row.get(6)?;
 
                 let subject = SubjectId::new(&subject_str)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -333,6 +343,7 @@ impl SqliteStorage {
                 let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
                 let metadata = metadata_json
                     .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
+                let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
                 Ok(RelationshipTuple {
                     subject,
@@ -340,6 +351,8 @@ impl SqliteStorage {
                     object,
                     created_at,
                     metadata,
+                    valid_until,
+                    condition: condition_str,
                 })
             })
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -419,15 +432,19 @@ impl StorageBackend for SqliteStorage {
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+            let valid_until_str = tuple.valid_until.map(|v| v.to_rfc3339());
+            let condition_str = tuple.condition.as_deref();
             conn.execute(
-                "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, revision_added, revision_removed)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, valid_until, condition, revision_added, revision_removed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
                 params![
                     tuple.subject.as_str(),
                     tuple.relation.as_str(),
                     tuple.object.as_str(),
                     tuple.created_at.to_rfc3339(),
                     metadata_json,
+                    valid_until_str,
+                    condition_str,
                     revision.as_u64() as i64,
                 ],
             )
@@ -476,15 +493,19 @@ impl StorageBackend for SqliteStorage {
                 )
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+                let valid_until_str = tuple.valid_until.map(|v| v.to_rfc3339());
+                let condition_str = tuple.condition.as_deref();
                 conn.execute(
-                    "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, revision_added, revision_removed)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                    "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, valid_until, condition, revision_added, revision_removed)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
                     params![
                         tuple.subject.as_str(),
                         tuple.relation.as_str(),
                         tuple.object.as_str(),
                         tuple.created_at.to_rfc3339(),
                         metadata_json,
+                        valid_until_str,
+                        condition_str,
                         revision.as_u64() as i64,
                     ],
                 )
@@ -658,7 +679,7 @@ impl StorageBackend for SqliteStorage {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT subject, relation, object, created_at, metadata, revision_added
+                "SELECT subject, relation, object, created_at, metadata, valid_until, condition, revision_added
                  FROM _aegis_tuples
                  WHERE subject = ?1 AND relation = ?2 AND object = ?3 AND revision_removed IS NULL",
             )
@@ -673,6 +694,8 @@ impl StorageBackend for SqliteStorage {
                     let object_str: String = row.get(2)?;
                     let created_at_str: String = row.get(3)?;
                     let metadata_json: Option<String> = row.get(4)?;
+                    let valid_until_str: Option<String> = row.get(5)?;
+                    let condition_str: Option<String> = row.get(6)?;
 
                     let subject = SubjectId::new(&subject_str)
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -683,6 +706,7 @@ impl StorageBackend for SqliteStorage {
                     let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
                     let metadata = metadata_json
                         .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
+                    let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
                     Ok(RelationshipTuple {
                         subject,
@@ -690,6 +714,8 @@ impl StorageBackend for SqliteStorage {
                         object,
                         created_at,
                         metadata,
+                        valid_until,
+                        condition: condition_str,
                     })
                 },
             );
@@ -708,6 +734,12 @@ impl StorageBackend for SqliteStorage {
         consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let conn = self.conn()?;
+
+        if *consistency == ConsistencyMode::FullyConsistent && self.config.wal_mode {
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        }
+
         let revision_filter = match consistency {
             ConsistencyMode::AtRevision(rev) => {
                 let r = rev.as_u64() as i64;
@@ -718,7 +750,7 @@ impl StorageBackend for SqliteStorage {
         let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(rel) = relation {
             (
                 format!(
-                    "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                    "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
                      WHERE object = ?1 AND relation = ?2 AND {revision_filter}"
                 ),
                 vec![
@@ -729,7 +761,7 @@ impl StorageBackend for SqliteStorage {
         } else {
             (
                 format!(
-                    "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                    "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
                      WHERE object = ?1 AND {revision_filter}"
                 ),
                 vec![Box::new(object.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>],
@@ -748,6 +780,8 @@ impl StorageBackend for SqliteStorage {
                 let object_str: String = row.get(2)?;
                 let created_at_str: String = row.get(3)?;
                 let metadata_json: Option<String> = row.get(4)?;
+                let valid_until_str: Option<String> = row.get(5)?;
+                let condition_str: Option<String> = row.get(6)?;
 
                 let subject = SubjectId::new(&subject_str)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -758,6 +792,7 @@ impl StorageBackend for SqliteStorage {
                 let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
                 let metadata = metadata_json
                     .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
+                let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
                 Ok(RelationshipTuple {
                     subject,
@@ -765,6 +800,8 @@ impl StorageBackend for SqliteStorage {
                     object,
                     created_at,
                     metadata,
+                    valid_until,
+                    condition: condition_str,
                 })
             })
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -785,6 +822,12 @@ impl StorageBackend for SqliteStorage {
         consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let conn = self.conn()?;
+
+        if *consistency == ConsistencyMode::FullyConsistent && self.config.wal_mode {
+            conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        }
+
         let revision_filter = match consistency {
             ConsistencyMode::AtRevision(rev) => {
                 let r = rev.as_u64() as i64;
@@ -795,7 +838,7 @@ impl StorageBackend for SqliteStorage {
         let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(rel) = relation {
             (
                 format!(
-                    "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                    "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
                      WHERE subject = ?1 AND relation = ?2 AND {revision_filter}"
                 ),
                 vec![
@@ -806,7 +849,7 @@ impl StorageBackend for SqliteStorage {
         } else {
             (
                 format!(
-                    "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                    "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
                      WHERE subject = ?1 AND {revision_filter}"
                 ),
                 vec![Box::new(subject.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>],
@@ -825,6 +868,8 @@ impl StorageBackend for SqliteStorage {
                 let object_str: String = row.get(2)?;
                 let created_at_str: String = row.get(3)?;
                 let metadata_json: Option<String> = row.get(4)?;
+                let valid_until_str: Option<String> = row.get(5)?;
+                let condition_str: Option<String> = row.get(6)?;
 
                 let subject = SubjectId::new(&subject_str)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -835,6 +880,7 @@ impl StorageBackend for SqliteStorage {
                 let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
                 let metadata = metadata_json
                     .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
+                let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
                 Ok(RelationshipTuple {
                     subject,
@@ -842,6 +888,8 @@ impl StorageBackend for SqliteStorage {
                     object,
                     created_at,
                     metadata,
+                    valid_until,
+                    condition: condition_str,
                 })
             })
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -863,7 +911,7 @@ impl StorageBackend for SqliteStorage {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
-                "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+                "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
                  WHERE object = ?1 AND relation = ?2 AND revision_removed IS NULL",
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -877,6 +925,8 @@ impl StorageBackend for SqliteStorage {
                     let object_str: String = row.get(2)?;
                     let created_at_str: String = row.get(3)?;
                     let metadata_json: Option<String> = row.get(4)?;
+                    let valid_until_str: Option<String> = row.get(5)?;
+                    let condition_str: Option<String> = row.get(6)?;
 
                     let subject = SubjectId::new(&subject_str)
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -887,6 +937,7 @@ impl StorageBackend for SqliteStorage {
                     let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
                     let metadata = metadata_json
                         .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
+                    let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
                     Ok(RelationshipTuple {
                         subject,
@@ -894,6 +945,8 @@ impl StorageBackend for SqliteStorage {
                         object,
                         created_at,
                         metadata,
+                        valid_until,
+                        condition: condition_str,
                     })
                 },
             )
@@ -922,7 +975,14 @@ impl StorageBackend for SqliteStorage {
         }
         let revision = Self::read_revision(&conn)?;
 
-        let mut conditions = vec!["revision_removed IS NULL".to_string()];
+        let revision_filter = match consistency {
+            ConsistencyMode::AtRevision(rev) => {
+                let r = rev.as_u64() as i64;
+                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+            }
+            _ => "revision_removed IS NULL".to_string(),
+        };
+        let mut conditions = vec![revision_filter];
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
         if let Some(ref st) = filter.subject_type {
@@ -951,7 +1011,7 @@ impl StorageBackend for SqliteStorage {
         let limit = pagination.limit;
 
         let sql = format!(
-            "SELECT subject, relation, object, created_at, metadata FROM _aegis_tuples
+            "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
              WHERE {where_clause}
              ORDER BY subject, relation, object
              LIMIT ?{limit_idx} OFFSET ?{offset_idx}",
@@ -976,6 +1036,8 @@ impl StorageBackend for SqliteStorage {
                 let object_str: String = row.get(2)?;
                 let created_at_str: String = row.get(3)?;
                 let metadata_json: Option<String> = row.get(4)?;
+                let valid_until_str: Option<String> = row.get(5)?;
+                let condition_str: Option<String> = row.get(6)?;
 
                 let subject = SubjectId::new(&subject_str)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -986,6 +1048,7 @@ impl StorageBackend for SqliteStorage {
                 let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
                 let metadata = metadata_json
                     .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
+                let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
                 Ok(RelationshipTuple {
                     subject,
@@ -993,6 +1056,8 @@ impl StorageBackend for SqliteStorage {
                     object,
                     created_at,
                     metadata,
+                    valid_until,
+                    condition: condition_str,
                 })
             })
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1293,8 +1358,8 @@ impl SqliteStorage {
                 match action.as_str() {
                     "add" => {
                         conn.execute(
-                            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, revision_added, revision_removed)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, valid_until, revision_added, revision_removed)
+                             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, NULL)",
                             rusqlite::params![subject, relation, object, now, metadata, rev.as_u64() as i64],
                         )
                         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1368,8 +1433,8 @@ impl SqliteStorage {
                 match action.as_str() {
                     "add" => {
                         conn.execute(
-                            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, revision_added, revision_removed)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+                            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, valid_until, revision_added, revision_removed)
+                             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, NULL)",
                             rusqlite::params![subject, relation, object, now, metadata, rev.as_u64() as i64],
                         )
                         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1544,15 +1609,17 @@ impl StorageTransaction for SqliteTransaction {
         )
         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+        let valid_until_str = tuple.valid_until.map(|v| v.to_rfc3339());
         conn.execute(
-            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, revision_added, revision_removed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL)",
+            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, valid_until, revision_added, revision_removed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
             params![
                 tuple.subject.as_str(),
                 tuple.relation.as_str(),
                 tuple.object.as_str(),
                 tuple.created_at.to_rfc3339(),
                 metadata_json,
+                valid_until_str,
                 revision.as_u64() as i64,
             ],
         )

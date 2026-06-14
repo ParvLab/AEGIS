@@ -348,29 +348,23 @@ types:
   repo:
     relations:
       owner:
-        - user
-        - team#member        # team members inherit owner relation
+        inherit_from: [user, team#member]        # team members inherit owner relation
 
       editor:
-        - owner              # owners are always editors
-        - collaborator
+        inherit_from: [owner, collaborator]              # owners are always editors
 
       viewer:
-        - editor             # editors are always viewers
-        - public
+        inherit_from: [editor, public]             # editors are always viewers
 
     permissions:
       read:
-        - viewer
-        - editor
-        - owner
+        union_of: [viewer, editor, owner]
 
       write:
-        - editor
-        - owner
+        union_of: [editor, owner]
 
       delete:
-        - owner
+        union_of: [owner]
 ```
 
 ### Indexes
@@ -1545,22 +1539,23 @@ const auth = new Aegis({
 - Test helpers / fixtures
 - Input validation & constraints
 
-### V2 — (Not planned — embedded-only scope)
+### V2 — Multi-Model Authorization (Complete)
 
-Aegis is designed as an **embedded ReBAC engine** only. Distributed features (multi-instance sync,
-edge replicas, event log, etc.) are **out of scope**. The feature set below is completed in V1:
+V2 expands Aegis from a ReBAC engine into a complete multi-model authorization runtime,
+adding RBAC, ACL, ABAC conditions, deny semantics, tenant isolation, and time-based controls.
 
-- PostgreSQL, MySQL, RocksDB backends (optional, behind feature flags)
-- Watch streams (synchronous MPSC, no I/O threads)
-- OpenTelemetry integration (counters, histograms, gauges)
-- Structured logging (via `tracing`)
-- GDPR compliance APIs (deleteSubject, exportSubject, cascading ownership)
-- Schema hot-reload (polling, behind `hot-reload` feature)
-- Audit log integrity & retention
-- Go SDK + Python SDK (via C FFI / PyO3)
-- ABAC (attribute-based conditions on relationship metadata)
-- Consistency-level controls per check (minimize_latency, at_revision, fully_consistent)
-- Rate limiting & abuse prevention (token bucket per-key)
+Implemented V2 features:
+
+- **RBAC helpers**: `assign_role()`, `unassign_role()`, `check_role()`, `get_roles()` in `engine/rbac.rs`
+- **ACL helpers**: `grant()`, `revoke()`, `list_acls()` in `engine/acl.rs`
+- **ABAC condition engine**: `parse_condition()` and `evaluate_condition()` supporting `Eq`, `Neq`, `In`, `Gt`, `Lt`, `Exists`, `NotExists` operators, composite `AND`/`OR`/`NOT` expressions, and time predicates (`Before`, `After`, `DayOfWeek`)
+- **Deny semantics**: Explicit deny rules via `DenyDef` in schema YAML `deny` block; deny pass in `check_inner()` that overrides allow decisions
+- **Permission-level Effect::Deny**: Permissions can declare `effect: Deny` to invert their union_of semantics
+- **Explain deny awareness**: `explain()` includes the deny pass for accurate results
+- **Schema roles**: `roles` block with `RoleDef` mapping role names to permission lists (declarative, validated)
+- **Tuple extensions**: `valid_until: Option<DateTime<Utc>>` on `RelationshipTuple`; constructor helper `with_expiry()`
+- **Schema validator updates**: Effect-aware permission validation, empty-role warnings, deny relation cross-reference linting
+- **23 V2 integration tests** covering RBAC lifecycle, ACL CRUD, deny precedence, Effect::Deny, composite AND/OR/NOT conditions, schema YAML parsing, tuple struct extensions, passive expiry filtering, future expiry allowing, explain deny awareness, and dry-run with V2 features
 
 ---
 

@@ -407,13 +407,19 @@ schema:
   types:
     repo:
       relations:
-        owner: [user, team#member]
-        editor: [owner, collaborator]
-        viewer: [editor, public]
+        owner:
+          inherit_from: [user, team#member]
+        editor:
+          inherit_from: [owner, collaborator]
+        viewer:
+          inherit_from: [editor, public]
       permissions:
-        read: [viewer, editor, owner]
-        write: [editor, owner]
-        delete: [owner]
+        read:
+          union_of: [viewer, editor, owner]
+        write:
+          union_of: [editor, owner]
+        delete:
+          union_of: [owner]
 
 tuples:
   - subject: "user:123"
@@ -439,17 +445,23 @@ schema:
   types:
     org:
       relations:
-        member: [user]
+        member:
+          inherit_from: [user]
     workspace:
       relations:
-        parent: [org, workspace]
-        member: [user, team#member]
+        parent:
+          inherit_from: [org, workspace]
+        member:
+          inherit_from: [user, team#member]
     repo:
       relations:
-        parent: [workspace, repo]
-        viewer: [parent#member]
+        parent:
+          inherit_from: [workspace, repo]
+        viewer:
+          inherit_from: [parent#member]
       permissions:
-        read: [viewer]
+        read:
+          union_of: [viewer]
 
 tuples:
   - subject: "user:1"  relation: "member" object: "org:root"
@@ -471,11 +483,14 @@ schema:
   types:
     tenant:
       relations:
-        member: [user]
+        member:
+          inherit_from: [user]
     workspace:
       relations:
-        parent: [tenant]
-        member: [tenant#member, user]
+        parent:
+          inherit_from: [tenant]
+        member:
+          inherit_from: [tenant#member, user]
 
 tuples:
   # Tenant alpha
@@ -495,7 +510,8 @@ schema:
   types:
     node:
       relations:
-        linked: [node]
+        linked:
+          inherit_from: [node]
 
 tuples:
   - subject: "node:a" relation: "linked" object: "node:b"

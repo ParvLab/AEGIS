@@ -7,7 +7,7 @@
 
 ## Current Status (June 2026)
 
-**Sprints 0–7 Complete — 217 tests pass (211 unit + 6 integration), 0 failures**
+**Sprints 0–9 Complete — 280 tests pass (233 unit + 47 integration/stress/closure), 0 failures — V1+V2 fully implemented**
 
 | Sprint | Focus | Status | Key Deliverables |
 |--------|-------|--------|-----------------|
@@ -19,7 +19,7 @@
 | 5 | Test Coverage | ✅ | 24 new tests across 12 categories |
 | **6** | **Polish & Cleanup** | **✅** | **Dead code removal, deps cleanup, LRU cache, rate limiter GC, health fields, CI hardening, supply-chain docs** |
 | 7 | Go & Python SDKs | ✅ | C FFI, Go CGo SDK, PyO3 bindings |
-| 8 | Distributed Features | ❌ | Removed — embedded-only scope |
+| **8** | **V1 Closure** | **✅** | **7 bug fixes, 4 gap closures, 10 integration tests, docs alignment** |
 
 **Architecture:** Purely embedded — zero servers, ports, HTTP/gRPC listeners. SQLite + RocksDB as embedded storage backends (PG/MySQL available programmatically, not in CLI).
 
@@ -469,7 +469,7 @@ Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 | Aegis Version | Protocol | Storage Schema | Migration Path |
 |---------------|----------|---------------|----------------|
 | V1 | rev-based | v1 (tuples + meta + schema) | — |
-| V2 | rev-based | v2 (adds events + audit tables) | `migrate(v1 → v2)` |
+| V2 | rev-based | v2 (adds roles + valid_until + deny + ABAC conditions) | `migrate(v1 → v2)` |
 | ~~V3~~ | ~~rev-based + CRDT~~ | ~~Removed — embedded-only~~ | ❌ |
 
 

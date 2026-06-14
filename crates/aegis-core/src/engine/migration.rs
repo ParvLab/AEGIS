@@ -120,8 +120,30 @@ impl MigrationRunner {
 
 impl Default for MigrationRunner {
     fn default() -> Self {
-        Self::new()
+        let mut runner = Self::new();
+        register_default_migrations(&mut runner);
+        runner
     }
+}
+
+/// Register the built-in migration steps.
+///
+/// V1: Initial schema version (baseline no-op — DDL is handled by `run_ddl`).
+/// V2: Reserved for future schema format changes.
+/// Additional migrations are added incrementally across versions.
+pub fn register_default_migrations(runner: &mut MigrationRunner) {
+    runner.register(
+        1,
+        "Initial core schema (records: _aegis_meta, _aegis_tuples, _aegis_events, _aegis_schema)",
+        Box::new(|_storage| Ok(())),
+        Box::new(|_storage| Ok(())),
+    );
+    runner.register(
+        2,
+        "Add valid_until column to _aegis_tuples (DDL handled by storage initialization)",
+        Box::new(|_storage| Ok(())),
+        Box::new(|_storage| Ok(())),
+    );
 }
 
 /// Check schema compatibility between an existing and new schema.
@@ -225,6 +247,7 @@ mod tests {
                 union_of: vec!["viewer".to_string(), "owner".to_string()],
                 condition: None,
                 description: None,
+                ..Default::default()
             },
         );
         types.insert(
@@ -232,6 +255,7 @@ mod tests {
             TypeDef {
                 relations: repo_rels,
                 permissions: repo_perms,
+                ..Default::default()
             },
         );
         Schema {
@@ -272,6 +296,7 @@ mod tests {
                 union_of: vec!["viewer".to_string(), "editor".to_string(), "owner".to_string()],
                 condition: None,
                 description: None,
+                ..Default::default()
             },
         );
         repo_perms.insert(
@@ -280,6 +305,7 @@ mod tests {
                 union_of: vec!["editor".to_string(), "owner".to_string()],
                 condition: None,
                 description: None,
+                ..Default::default()
             },
         );
         types.insert(
@@ -287,6 +313,7 @@ mod tests {
             TypeDef {
                 relations: repo_rels,
                 permissions: repo_perms,
+                ..Default::default()
             },
         );
         Schema {

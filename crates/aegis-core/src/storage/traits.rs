@@ -55,6 +55,35 @@ pub trait StorageBackend: Send + Sync {
         consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>>;
 
+    /// List tuples where the subject is a subject-set referencing the given object.
+    ///
+    /// For example, if `object` = `team:eng`, returns tuples with subjects like
+    /// `team:eng#member`, `team:eng#owner`, etc. — any subject of the form
+    /// `{object}#{relation}`.
+    ///
+    /// The default implementation uses `query_tuples` with a subject prefix filter.
+    /// Backends should override for efficient prefix-based lookups.
+    fn list_by_subject_set_of(
+        &self,
+        object: &ResourceId,
+        relation: Option<&Relation>,
+        _consistency: &ConsistencyMode,
+    ) -> AegisResult<Vec<RelationshipTuple>> {
+        // Default: scan using query_tuples with prefix-like filter.
+        // Optimized overrides exist for SQLite (LIKE) and other indexed backends.
+        let prefix = format!("{}#", object.as_str());
+        let all = self.query_tuples(
+            &TupleFilter {
+                subject_type: Some(prefix),
+                relation: relation.cloned(),
+                ..Default::default()
+            },
+            &PaginationParams { cursor: None, limit: 10_000 },
+            _consistency,
+        )?;
+        Ok(all.tuples)
+    }
+
     /// List all tuples matching a relation on an object.
     fn list_by_relation(
         &self,
@@ -206,6 +235,7 @@ pub struct TupleFilter {
     pub object_type: Option<String>,
     pub metadata_key: Option<String>,
     pub metadata_value: Option<String>,
+    pub namespace: Option<String>,
 }
 
 /// Result of an integrity check.

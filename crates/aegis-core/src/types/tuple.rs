@@ -14,21 +14,21 @@ pub struct RelationshipTuple {
     pub object: ResourceId,
     pub created_at: DateTime<Utc>,
     pub metadata: Option<HashMap<String, String>>,
+    pub valid_until: Option<DateTime<Utc>>,
+    pub condition: Option<String>,
 }
 
 impl RelationshipTuple {
     pub fn new(subject: SubjectId, relation: Relation, object: ResourceId) -> Self {
-        let tuple = Self {
+        Self {
             subject,
             relation,
             object,
             created_at: Utc::now(),
             metadata: None,
-        };
-        // Size check should never fail for a tuple without metadata,
-        // but call it to enforce the invariant.
-        let _ = tuple.ensure_size();
-        tuple
+            valid_until: None,
+            condition: None,
+        }
     }
 
     pub fn with_metadata(
@@ -44,9 +44,45 @@ impl RelationshipTuple {
             object,
             created_at: Utc::now(),
             metadata: Some(metadata),
+            valid_until: None,
+            condition: None,
         };
         tuple.ensure_size()?;
         Ok(tuple)
+    }
+
+    pub fn with_expiry(
+        subject: SubjectId,
+        relation: Relation,
+        object: ResourceId,
+        valid_until: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            subject,
+            relation,
+            object,
+            created_at: Utc::now(),
+            metadata: None,
+            valid_until: Some(valid_until),
+            condition: None,
+        }
+    }
+
+    pub fn with_condition(
+        subject: SubjectId,
+        relation: Relation,
+        object: ResourceId,
+        condition: String,
+    ) -> Self {
+        Self {
+            subject,
+            relation,
+            object,
+            created_at: Utc::now(),
+            metadata: None,
+            valid_until: None,
+            condition: Some(condition),
+        }
     }
 
     /// Check that the serialized tuple size does not exceed the maximum.
@@ -68,6 +104,9 @@ impl RelationshipTuple {
             for (k, v) in meta {
                 size += k.len() + v.len() + 8;
             }
+        }
+        if let Some(ref cond) = self.condition {
+            size += cond.len();
         }
         size
     }
@@ -103,6 +142,15 @@ const MAX_METADATA_KEY_LENGTH: usize = 64;
 const MAX_METADATA_VALUE_LENGTH: usize = 512;
 /// Maximum serialized size of a relationship tuple in bytes.
 const MAX_TUPLE_SERIALIZED_SIZE: usize = 65_536; // 64 KiB
+
+/// Validate that a tuple's subject, relation, and object are all well-formed.
+/// Returns `Ok(())` if all three pass validation, or the first `ValidationError` encountered.
+pub fn validate_tuple(subject: &str, relation: &str, object: &str) -> Result<(), crate::types::ValidationError> {
+    SubjectId::new(subject).map(|_| ())?;
+    Relation::new(relation).map(|_| ())?;
+    ResourceId::new(object).map(|_| ())?;
+    Ok(())
+}
 
 pub fn validate_metadata(
     metadata: &HashMap<String, String>,
@@ -221,6 +269,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, MetadataValidationError::InvalidKey(_)));
+    }
+
+    #[test]
+    fn tuple_with_condition_constructor() {
+        let tuple = RelationshipTuple::with_condition(
+            SubjectId::new("user:1").unwrap(),
+            Relation::new("editor").unwrap(),
+            ResourceId::new("repo:a").unwrap(),
+            "role eq admin".to_string(),
+        );
+        assert_eq!(tuple.condition, Some("role eq admin".to_string()));
+        assert!(tuple.metadata.is_none());
+        assert!(tuple.valid_until.is_none());
     }
 
     #[test]

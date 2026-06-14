@@ -1,12 +1,15 @@
+pub mod acl;
 pub mod cache;
 pub mod condition;
 pub mod gdpr;
+pub mod hierarchy;
 pub mod hooks;
 #[cfg(feature = "hot-reload")]
 pub mod hot_reload;
 pub mod migration;
 pub mod policy;
 pub mod ratelimit;
+pub mod rbac;
 pub mod traversal;
 pub mod watch;
 
@@ -54,7 +57,7 @@ pub struct GraphEngine {
     schema_watcher: Mutex<Option<SchemaWatcher>>,
     #[cfg(feature = "hot-reload")]
     watcher_thread: Mutex<Option<JoinHandle<()>>>,
-    rate_limiter: TokenBucketRateLimiter,
+    rate_limiter: Mutex<TokenBucketRateLimiter>,
     telemetry_enabled: std::sync::atomic::AtomicBool,
     api_key_hash: Option<u64>,
     parallel_eval: AtomicBool,
@@ -97,7 +100,7 @@ impl GraphEngine {
             schema_watcher: Mutex::new(None),
             #[cfg(feature = "hot-reload")]
             watcher_thread: Mutex::new(None),
-            rate_limiter: TokenBucketRateLimiter::new(ratelimit::RateLimitConfig::default()),
+            rate_limiter: Mutex::new(TokenBucketRateLimiter::new(ratelimit::RateLimitConfig::default())),
             telemetry_enabled: std::sync::atomic::AtomicBool::new(false),
             api_key_hash: None,
             parallel_eval: AtomicBool::new(true),
@@ -420,7 +423,7 @@ impl GraphEngine {
             denied_checks: crate::telemetry::METRIC_CHECK_DENIED.load(std::sync::atomic::Ordering::Relaxed),
             error_checks: crate::telemetry::METRIC_CHECK_ERROR.load(std::sync::atomic::Ordering::Relaxed),
             cache_size: crate::telemetry::METRIC_CACHE_SIZE.load(std::sync::atomic::Ordering::Relaxed),
-            cache_hit_ratio: 0.0,
+            cache_hit_ratio: cache_info.0,
             integrity_status,
             uptime_ms,
             storage_version: self.storage.storage_version(),
@@ -464,12 +467,14 @@ impl GraphEngine {
                 Err(_) => continue,
             };
 
-            let max_depth = self.rate_limiter.max_traversal_depth();
-            let max_visits = self.rate_limiter.max_traversal_visits();
+            let (max_depth, max_visits) = {
+                let rl = self.rate_limiter.lock().unwrap();
+                (rl.max_traversal_depth(), rl.max_traversal_visits())
+            };
             let rev = Some(revision);
             let mut cache_guard = self.traversal_cache.lock().ok();
             let cache_ref = cache_guard.as_deref_mut();
-            let result = match traversal::bfs_traversal_with_limits(
+            let result = match traversal::bfs_traversal_with_limits_and_context(
                 self.storage.as_ref(),
                 subject,
                 &relation,
@@ -479,6 +484,8 @@ impl GraphEngine {
                 max_depth,
                 max_visits,
                 cache_ref,
+                Some(&context),
+                None,
             ) {
                 Ok(r) => r,
                 Err(e) => return Err(e),
@@ -503,8 +510,10 @@ impl GraphEngine {
         context: condition::ConditionEvalContext,
     ) -> AegisResult<bool> {
         let found = std::sync::atomic::AtomicBool::new(false);
-        let max_depth = self.rate_limiter.max_traversal_depth();
-        let max_visits = self.rate_limiter.max_traversal_visits();
+        let (max_depth, max_visits) = {
+            let rl = self.rate_limiter.lock().unwrap();
+            (rl.max_traversal_depth(), rl.max_traversal_visits())
+        };
 
         let rel_names: Vec<String> = resolved.relations.clone();
         let condition_str = std::sync::Arc::new(resolved.condition);
@@ -531,7 +540,7 @@ impl GraphEngine {
                         return;
                     }
                     let mut cache = TraversalCache::new(100);
-                    let result = traversal::bfs_traversal_with_limits(
+                    let result = traversal::bfs_traversal_with_limits_and_context(
                         self.storage.as_ref(),
                         subj.as_ref(),
                         &relation,
@@ -541,6 +550,8 @@ impl GraphEngine {
                         max_depth,
                         max_visits,
                         Some(&mut cache),
+                        Some(ctx_ref.as_ref()),
+                        None,
                     );
                     if let Ok(r) = result {
                         if r.found && evaluate_condition_if_present(cond.as_ref(), ctx_ref.as_ref()) {
@@ -627,7 +638,7 @@ impl GraphEngine {
 
         // Rate limit check
         let rl_key = format!("check:{}", resource.as_str());
-        if let Err(e) = self.rate_limiter.check(&rl_key, RateLimitOp::Check) {
+        if let Err(e) = self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Check) {
             crate::telemetry::inc_check_error();
             return Err(e);
         }
@@ -681,11 +692,14 @@ impl GraphEngine {
         };
         drop(schema);
 
+        // Capture effect before resolved is moved into evaluation
+        let perm_effect = resolved.effect;
+
         // Try each relation — any match means allowed (union semantics)
         // Parallel evaluation via scoped threads when enabled.
         let has_context = context.is_some();
         let ctx = context.unwrap_or_default();
-        let allowed = match if self.parallel_eval.load(Ordering::Relaxed) && resolved.relations.len() > 1 {
+        let mut allowed = match if self.parallel_eval.load(Ordering::Relaxed) && resolved.relations.len() > 1 {
             self.evaluate_relations_parallel(
                 resolved, subject, resource, revision, consistency, ctx,
             )
@@ -701,6 +715,43 @@ impl GraphEngine {
                 return self.fail_closed_response(e);
             }
         };
+
+        // Permission-level Deny effect: if the permission has Effect::Deny,
+        // finding any match in the union_of relations denies instead of allows.
+        if allowed && perm_effect == crate::types::schema::Effect::Deny {
+            allowed = false;
+        }
+
+        // Deny evaluation pass: check if any deny rule matches
+        // Only runs if the allow pass succeeded — deny rules only override allows.
+        if allowed {
+            let schema = self.schema.read().unwrap();
+            if let Some(type_def) = schema.types.get(&resource_type) {
+                'deny_outer: for deny_def in &type_def.deny {
+                    for deny_rel in &deny_def.relations {
+                        let relation = match Relation::new(deny_rel) {
+                            Ok(r) => r,
+                            Err(_) => continue,
+                        };
+                        let traversal_result = traversal::bfs_traversal(
+                            self.storage.as_ref(),
+                            subject,
+                            &relation,
+                            resource,
+                            Some(revision),
+                            consistency,
+                        );
+                        if let Ok(tr) = traversal_result {
+                            if tr.found {
+                                allowed = false;
+                                break 'deny_outer;
+                            }
+                        }
+                    }
+                }
+            }
+            drop(schema);
+        }
 
         if !dry_run && !has_context {
             // Cache the decision
@@ -807,6 +858,36 @@ impl GraphEngine {
             }
         }
 
+        // Deny evaluation pass for explain
+        if allowed {
+            let schema = self.schema.read().unwrap();
+            if let Some(type_def) = schema.types.get(&resource_type) {
+                'deny_outer: for deny_def in &type_def.deny {
+                    for deny_rel in &deny_def.relations {
+                        let relation = match Relation::new(deny_rel) {
+                            Ok(r) => r,
+                            Err(_) => continue,
+                        };
+                        let tr = traversal::bfs_traversal(
+                            self.storage.as_ref(),
+                            subject,
+                            &relation,
+                            resource,
+                            Some(revision),
+                            consistency,
+                        );
+                        if let Ok(tr) = tr {
+                            if tr.found {
+                                allowed = false;
+                                break 'deny_outer;
+                            }
+                        }
+                    }
+                }
+            }
+            drop(schema);
+        }
+
         let duration_ms = start.elapsed().as_micros() as u64 / 1000;
 
         let resolved_via = if allowed && !all_traces.is_empty() {
@@ -845,7 +926,7 @@ impl GraphEngine {
 
         // Rate limit check
         let rl_key = format!("write:{}", tuple.object.as_str());
-        self.rate_limiter.check(&rl_key, RateLimitOp::Write)?;
+        self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
 
         // Schema validation
         let resource_type = resource_type_name(tuple.object.as_str());
@@ -897,7 +978,7 @@ impl GraphEngine {
 
         // Rate limit check
         let rl_key = format!("delete:{}", key.object.as_str());
-        self.rate_limiter.check(&rl_key, RateLimitOp::Write)?;
+        self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
 
         let revision = self.storage.delete_tuple(key)?;
         crate::telemetry::update_revision_current(revision.as_u64());
@@ -1041,6 +1122,8 @@ impl GraphEngine {
                         object: tuple.object.clone(),
                         created_at: Utc::now(),
                         metadata: tuple.metadata.clone(),
+                        valid_until: None,
+                        condition: None,
                     };
                     txn.write(&new_tuple)?;
                     txn.delete(&tuple.key())?;
@@ -1061,8 +1144,27 @@ impl GraphEngine {
         tuples: &[RelationshipTuple],
     ) -> AegisResult<RevisionToken> {
         let _span = span!(Level::INFO, "aegis.write_batch", count = tuples.len()).entered();
+        self.check_closed()?;
         let rl_key = "write_batch";
-        self.rate_limiter.check(rl_key, RateLimitOp::Write)?;
+        self.rate_limiter.lock().unwrap().check(rl_key, RateLimitOp::Write)?;
+
+        // Schema validation for each tuple
+        let schema = self.schema.read().unwrap();
+        for tuple in tuples {
+            let resource_type = resource_type_name(tuple.object.as_str());
+            let type_def = match schema.types.get(&resource_type) {
+                Some(t) => t,
+                None => return Err(AegisError::UnknownSubjectType(resource_type)),
+            };
+            if !type_def.relations.contains_key(tuple.relation.as_str()) {
+                return Err(AegisError::UnknownRelation {
+                    type_name: resource_type,
+                    relation: tuple.relation.to_string(),
+                });
+            }
+        }
+        drop(schema);
+
         let revision = self.storage.write_tuples_batch(tuples)?;
         crate::telemetry::update_revision_current(revision.as_u64());
         for tuple in tuples {
@@ -1135,7 +1237,7 @@ impl GraphEngine {
 
     /// Run schema migrations to reach the target version.
     pub fn migrate(&self, target_version: u32) -> AegisResult<MigrationResult> {
-        let runner = MigrationRunner::new();
+        let runner = MigrationRunner::default();
         let current = self.storage.read_schema_version()?;
         let result = runner.migrate(self.storage.as_ref(), current, target_version)?;
         self.storage.write_schema_version(target_version)?;
@@ -1153,7 +1255,7 @@ impl GraphEngine {
     pub fn delete_object(&self, object: &ResourceId) -> AegisResult<RevisionToken> {
         let _span = span!(Level::INFO, "aegis.delete_object", resource = object.as_str()).entered();
         let rl_key = format!("delete_object:{}", object.as_str());
-        self.rate_limiter.check(&rl_key, RateLimitOp::Write)?;
+        self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
         let revision = self.storage.delete_object(object)?;
         crate::telemetry::update_revision_current(revision.as_u64());
         info!(revision = field::display(&revision), "object deleted");
@@ -1166,19 +1268,25 @@ impl GraphEngine {
     }
 
     /// Access the rate limiter for configuration.
-    pub fn rate_limiter(&self) -> &TokenBucketRateLimiter {
-        &self.rate_limiter
+    pub fn rate_limiter(&self) -> std::sync::MutexGuard<'_, TokenBucketRateLimiter> {
+        self.rate_limiter.lock().unwrap()
     }
 
     /// Replace the rate limiter with a new configuration.
-    pub fn set_rate_limiter(&mut self, limiter: TokenBucketRateLimiter) {
-        self.rate_limiter = limiter;
+    pub fn set_rate_limiter(&self, limiter: TokenBucketRateLimiter) {
+        *self.rate_limiter.lock().unwrap() = limiter;
     }
 }
 
-#[cfg(feature = "hot-reload")]
 impl Drop for GraphEngine {
     fn drop(&mut self) {
+        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        if let Err(e) = self.storage.close() {
+            tracing::warn!("GraphEngine::drop: storage close failed: {e}");
+        }
+        #[cfg(feature = "hot-reload")]
         self.stop_watcher();
     }
 }
@@ -1208,8 +1316,8 @@ mod tests {
     use super::*;
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
     use crate::types::*;
-
-
+    use crate::engine::rbac;
+    use crate::engine::acl;
     fn make_engine() -> GraphEngine {
         let schema = Schema {
             schema_version: 1,
@@ -1238,6 +1346,7 @@ mod tests {
                         union_of: vec!["viewer".to_string(), "owner".to_string()],
                         condition: None,
                         description: None,
+                        ..Default::default()
                     },
                 );
                 permissions.insert(
@@ -1246,6 +1355,7 @@ mod tests {
                         union_of: vec!["owner".to_string()],
                         condition: None,
                         description: None,
+                        ..Default::default()
                     },
                 );
                 types.insert(
@@ -1253,6 +1363,7 @@ mod tests {
                     crate::types::schema::TypeDef {
                         relations,
                         permissions,
+                        ..Default::default()
                     },
                 );
                 types
@@ -1965,13 +2076,13 @@ types:
                 let mut repo_relations = std::collections::HashMap::new();
                 repo_relations.insert("owner".to_string(), RelationDef { inherit_from: vec![], description: None });
                 let mut repo_permissions = std::collections::HashMap::new();
-                repo_permissions.insert("read".to_string(), PermissionDef { union_of: vec!["owner".to_string()], condition: None, description: None });
-                types.insert("repo".to_string(), TypeDef { relations: repo_relations, permissions: repo_permissions });
+                repo_permissions.insert("read".to_string(), PermissionDef { union_of: vec!["owner".to_string()], condition: None, description: None, ..Default::default() });
+                types.insert("repo".to_string(), TypeDef { relations: repo_relations, permissions: repo_permissions, ..Default::default() });
                 let mut doc_relations = std::collections::HashMap::new();
                 doc_relations.insert("editor".to_string(), RelationDef { inherit_from: vec![], description: None });
                 let mut doc_permissions = std::collections::HashMap::new();
-                doc_permissions.insert("read".to_string(), PermissionDef { union_of: vec!["editor".to_string()], condition: None, description: None });
-                types.insert("doc".to_string(), TypeDef { relations: doc_relations, permissions: doc_permissions });
+                doc_permissions.insert("read".to_string(), PermissionDef { union_of: vec!["editor".to_string()], condition: None, description: None, ..Default::default() });
+                types.insert("doc".to_string(), TypeDef { relations: doc_relations, permissions: doc_permissions, ..Default::default() });
                 types
             },
         };
@@ -2006,8 +2117,9 @@ types:
                     union_of: vec!["viewer".to_string()],
                     condition: Some("role eq admin".to_string()),
                     description: None,
+                    ..Default::default()
                 });
-                types.insert("repo".to_string(), TypeDef { relations, permissions });
+                types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
                 types
             },
         };
@@ -2050,8 +2162,9 @@ types:
                     union_of: vec!["viewer".to_string()],
                     condition: Some("role eq admin".to_string()),
                     description: None,
+                    ..Default::default()
                 });
-                types.insert("repo".to_string(), TypeDef { relations, permissions });
+                types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
                 types
             },
         };
@@ -2070,5 +2183,221 @@ types:
         // dry_run without context
         let result = engine.check_dry_run(&alice, "read", &repo, None).unwrap();
         assert!(!result.allowed, "dry-run without context should deny");
+    }
+
+    #[test]
+    fn test_deny_evaluation_overrides_allow() {
+        use crate::types::schema::{DenyDef, PermissionDef, RelationDef, TypeDef};
+        let schema = Schema {
+            schema_version: 1,
+            namespace: "test".to_string(),
+            types: {
+                let mut types = std::collections::HashMap::new();
+                let mut relations = std::collections::HashMap::new();
+                relations.insert("owner".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert("banned".to_string(), RelationDef { inherit_from: vec![], description: None });
+                let mut permissions = std::collections::HashMap::new();
+                permissions.insert("read".to_string(), PermissionDef {
+                    union_of: vec!["owner".to_string()],
+                    condition: None,
+                    description: None,
+                    ..Default::default()
+                });
+                let deny = vec![DenyDef {
+                    relations: vec!["banned".to_string()],
+                    description: Some("banned users cannot read".to_string()),
+                }];
+                types.insert("repo".to_string(), TypeDef { relations, permissions, deny, ..Default::default() });
+                types
+            },
+        };
+        let mut storage = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage.initialize().unwrap();
+        let engine = GraphEngine::new(Box::new(storage), schema);
+        let alice = SubjectId::new("user:alice").unwrap();
+        let repo = ResourceId::new("repo:test").unwrap();
+
+        // Alice is owner — should be allowed
+        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("owner").unwrap(), repo.clone())).unwrap();
+        let result = engine.check(&alice, "read", &repo, None).unwrap();
+        assert!(result.allowed, "owner should be allowed to read");
+
+        // Alice is also banned — deny should override allow
+        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("banned").unwrap(), repo.clone())).unwrap();
+        let result = engine.check(&alice, "read", &repo, None).unwrap();
+        assert!(!result.allowed, "deny rule for banned should override owner allow");
+    }
+
+    #[test]
+    fn test_rbac_assign_and_check_role() {
+        use crate::types::schema::{PermissionDef, RelationDef, TypeDef};
+        let schema = Schema {
+            schema_version: 1,
+            namespace: "test".to_string(),
+            types: {
+                let mut types = std::collections::HashMap::new();
+                let mut relations = std::collections::HashMap::new();
+                relations.insert("admin".to_string(), RelationDef { inherit_from: vec![], description: None });
+                let mut permissions = std::collections::HashMap::new();
+                permissions.insert("admin".to_string(), PermissionDef {
+                    union_of: vec!["admin".to_string()],
+                    condition: None,
+                    description: None,
+                    ..Default::default()
+                });
+                types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
+                types
+            },
+        };
+        let mut storage = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage.initialize().unwrap();
+        let engine = GraphEngine::new(Box::new(storage), schema);
+        let alice = SubjectId::new("user:alice").unwrap();
+        let repo = ResourceId::new("repo:test").unwrap();
+
+        // Assign role
+        let token = rbac::assign_role(&engine, &alice, "admin", &repo).unwrap();
+        assert!(token.revision.as_u64() > 0);
+
+        // Check role
+        let result = rbac::check_role(&engine, &alice, "admin", &repo).unwrap();
+        assert!(result.allowed, "alice should have admin role");
+
+        // Get roles
+        let roles = rbac::get_roles(&engine, &alice, &repo).unwrap();
+        assert_eq!(roles.len(), 1);
+        assert!(roles.contains(&"admin".to_string()));
+
+        // Unassign role
+        let _ = rbac::unassign_role(&engine, &alice, "admin", &repo).unwrap();
+        let result = rbac::check_role(&engine, &alice, "admin", &repo).unwrap();
+        assert!(!result.allowed, "alice should no longer have admin role");
+    }
+
+    #[test]
+    fn test_acl_grant_revoke_list() {
+        use crate::types::schema::{PermissionDef, RelationDef, TypeDef};
+        let schema = Schema {
+            schema_version: 1,
+            namespace: "test".to_string(),
+            types: {
+                let mut types = std::collections::HashMap::new();
+                let mut relations = std::collections::HashMap::new();
+                relations.insert("viewer".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert("editor".to_string(), RelationDef { inherit_from: vec![], description: None });
+                let mut permissions = std::collections::HashMap::new();
+                permissions.insert("read".to_string(), PermissionDef {
+                    union_of: vec!["viewer".to_string(), "editor".to_string()],
+                    condition: None,
+                    description: None,
+                    ..Default::default()
+                });
+                permissions.insert("write".to_string(), PermissionDef {
+                    union_of: vec!["editor".to_string()],
+                    condition: None,
+                    description: None,
+                    ..Default::default()
+                });
+                types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
+                types
+            },
+        };
+        let mut storage = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage.initialize().unwrap();
+        let engine = GraphEngine::new(Box::new(storage), schema);
+        let alice = SubjectId::new("user:alice").unwrap();
+        let bob = SubjectId::new("user:bob").unwrap();
+        let repo = ResourceId::new("repo:test").unwrap();
+
+        // Grant read to alice (writes viewer tuple)
+        let token = acl::grant(&engine, &alice, "read", &repo).unwrap();
+        assert!(token.revision.as_u64() > 0);
+
+        // Check read permission
+        let result = engine.check(&alice, "read", &repo, None).unwrap();
+        assert!(result.allowed, "alice should have read after grant");
+
+        // Grant write to bob (writes editor tuple since write uses editor)
+        let _ = acl::grant(&engine, &bob, "write", &repo).unwrap();
+        let result = engine.check(&bob, "write", &repo, None).unwrap();
+        assert!(result.allowed, "bob should have write after grant");
+
+        // List ACLs
+        let acls = acl::list_acls(&engine, &repo).unwrap();
+        assert_eq!(acls.len(), 2);
+
+        // Revoke read from alice
+        let _ = acl::revoke(&engine, &alice, "read", &repo).unwrap();
+        let result = engine.check(&alice, "read", &repo, None).unwrap();
+        assert!(!result.allowed, "alice should not have read after revoke");
+    }
+
+    #[test]
+    fn test_rbac_get_roles_empty() {
+        use crate::types::schema::{PermissionDef, RelationDef, TypeDef};
+        let schema = Schema {
+            schema_version: 1,
+            namespace: "test".to_string(),
+            types: {
+                let mut types = std::collections::HashMap::new();
+                let mut relations = std::collections::HashMap::new();
+                relations.insert("member".to_string(), RelationDef { inherit_from: vec![], description: None });
+                let mut permissions = std::collections::HashMap::new();
+                permissions.insert("member".to_string(), PermissionDef {
+                    union_of: vec!["member".to_string()],
+                    condition: None,
+                    description: None,
+                    ..Default::default()
+                });
+                types.insert("team".to_string(), TypeDef { relations, permissions, ..Default::default() });
+                types
+            },
+        };
+        let mut storage = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage.initialize().unwrap();
+        let engine = GraphEngine::new(Box::new(storage), schema);
+        let alice = SubjectId::new("user:alice").unwrap();
+        let team = ResourceId::new("team:eng").unwrap();
+
+        let roles = rbac::get_roles(&engine, &alice, &team).unwrap();
+        assert!(roles.is_empty(), "no roles assigned yet");
+    }
+
+    #[test]
+    fn test_deny_no_effect_when_no_deny_relation() {
+        use crate::types::schema::{DenyDef, PermissionDef, RelationDef, TypeDef};
+        let schema = Schema {
+            schema_version: 1,
+            namespace: "test".to_string(),
+            types: {
+                let mut types = std::collections::HashMap::new();
+                let mut relations = std::collections::HashMap::new();
+                relations.insert("member".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert("banned".to_string(), RelationDef { inherit_from: vec![], description: None });
+                let mut permissions = std::collections::HashMap::new();
+                permissions.insert("access".to_string(), PermissionDef {
+                    union_of: vec!["member".to_string()],
+                    condition: None,
+                    description: None,
+                    ..Default::default()
+                });
+                let deny = vec![DenyDef {
+                    relations: vec!["banned".to_string()],
+                    description: Some("banned users denied".to_string()),
+                }];
+                types.insert("workspace".to_string(), TypeDef { relations, permissions, deny, ..Default::default() });
+                types
+            },
+        };
+        let mut storage = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage.initialize().unwrap();
+        let engine = GraphEngine::new(Box::new(storage), schema);
+        let alice = SubjectId::new("user:alice").unwrap();
+        let ws = ResourceId::new("workspace:acme").unwrap();
+
+        // Alice is a member (no deny relation)
+        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("member").unwrap(), ws.clone())).unwrap();
+        let result = engine.check(&alice, "access", &ws, None).unwrap();
+        assert!(result.allowed, "member without ban should be allowed");
     }
 }

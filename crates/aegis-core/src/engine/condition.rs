@@ -1,4 +1,5 @@
 use crate::error::AegisResult;
+use chrono::{Datelike, Utc};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
@@ -14,18 +15,89 @@ pub enum ConditionOp {
     Neq(String),
     In(Vec<String>),
     Exists,
+    NotExists,
     Gt(String),
     Lt(String),
+    Before(String),
+    After(String),
+    DayOfWeek(Vec<String>),
 }
 
 #[derive(Debug, Clone)]
-pub struct ConditionExpr {
-    pub attr: String,
-    pub op: ConditionOp,
+pub enum ConditionExpr {
+    Leaf {
+        attr: String,
+        op: ConditionOp,
+    },
+    And(Vec<ConditionExpr>),
+    Or(Vec<ConditionExpr>),
+    Not(Box<ConditionExpr>),
 }
 
 pub fn parse_condition(expr: &str) -> AegisResult<ConditionExpr> {
-    let parts: Vec<&str> = expr.splitn(2, char::is_whitespace).collect();
+    let trimmed = expr.trim();
+
+    // Composite: NOT (expr)
+    if let Some(inner) = trimmed.strip_prefix("NOT ") {
+        let inner = inner.trim();
+        if inner.starts_with('(') && inner.ends_with(')') {
+            let inner_expr = parse_condition(&inner[1..inner.len() - 1])?;
+            return Ok(ConditionExpr::Not(Box::new(inner_expr)));
+        }
+        return Err(crate::error::AegisError::SchemaValidation(
+            format!("NOT condition must be parenthesized: {:?}", expr),
+        ));
+    }
+
+    // Composite: (expr1) AND (expr2) or (expr1) OR (expr2)
+    if trimmed.starts_with('(') {
+        let mut depth = 0;
+        let mut close_paren = None;
+        let mut split_pos = None;
+        let mut op_type: Option<&str> = None;
+        for (i, ch) in trimmed.char_indices() {
+            match ch {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 && close_paren.is_none() {
+                        close_paren = Some(i);
+                    }
+                }
+                _ => {}
+            }
+            if depth == 0 && close_paren.is_some() {
+                let remaining = &trimmed[i + 1..];
+                if remaining.starts_with(" AND ") {
+                    split_pos = Some(i + 1);
+                    op_type = Some("AND");
+                    break;
+                }
+                if remaining.starts_with(" OR ") {
+                    split_pos = Some(i + 1);
+                    op_type = Some("OR");
+                    break;
+                }
+            }
+        }
+        if let Some(pos) = split_pos {
+            let close = close_paren.unwrap();
+            let left_str = trimmed[1..close].trim();
+            let offset = if op_type == Some("OR") { 4 } else { 5 };
+            let right_str = trimmed[pos + offset..].trim();
+            let right_str = right_str.strip_prefix('(').and_then(|s| s.strip_suffix(')')).unwrap_or(right_str);
+            let left = parse_condition(left_str)?;
+            let right = parse_condition(right_str)?;
+            return match op_type {
+                Some("AND") => Ok(ConditionExpr::And(vec![left, right])),
+                Some("OR") => Ok(ConditionExpr::Or(vec![left, right])),
+                _ => unreachable!(),
+            };
+        }
+    }
+
+    // Leaf condition: "attr op value"
+    let parts: Vec<&str> = trimmed.splitn(2, char::is_whitespace).collect();
     if parts.len() < 2 {
         return Err(crate::error::AegisError::SchemaValidation(
             format!("invalid condition expression: {:?}", expr),
@@ -35,12 +107,12 @@ pub fn parse_condition(expr: &str) -> AegisResult<ConditionExpr> {
     let rest = parts[1].trim().to_string();
 
     if let Some(val) = rest.strip_prefix("eq ") {
-        Ok(ConditionExpr {
+        Ok(ConditionExpr::Leaf {
             attr,
             op: ConditionOp::Eq(val.trim().to_string()),
         })
     } else if let Some(val) = rest.strip_prefix("neq ") {
-        Ok(ConditionExpr {
+        Ok(ConditionExpr::Leaf {
             attr,
             op: ConditionOp::Neq(val.trim().to_string()),
         })
@@ -51,24 +123,50 @@ pub fn parse_condition(expr: &str) -> AegisResult<ConditionExpr> {
             .split(',')
             .map(|s| s.trim().to_string())
             .collect();
-        Ok(ConditionExpr {
+        Ok(ConditionExpr::Leaf {
             attr,
             op: ConditionOp::In(items),
         })
     } else if rest == "exists" {
-        Ok(ConditionExpr {
+        Ok(ConditionExpr::Leaf {
             attr,
             op: ConditionOp::Exists,
         })
+    } else if rest == "not_exists" {
+        Ok(ConditionExpr::Leaf {
+            attr,
+            op: ConditionOp::NotExists,
+        })
     } else if let Some(val) = rest.strip_prefix("gt ") {
-        Ok(ConditionExpr {
+        Ok(ConditionExpr::Leaf {
             attr,
             op: ConditionOp::Gt(val.trim().to_string()),
         })
     } else if let Some(val) = rest.strip_prefix("lt ") {
-        Ok(ConditionExpr {
+        Ok(ConditionExpr::Leaf {
             attr,
             op: ConditionOp::Lt(val.trim().to_string()),
+        })
+    } else if let Some(val) = rest.strip_prefix("before ") {
+        Ok(ConditionExpr::Leaf {
+            attr,
+            op: ConditionOp::Before(val.trim().to_string()),
+        })
+    } else if let Some(val) = rest.strip_prefix("after ") {
+        Ok(ConditionExpr::Leaf {
+            attr,
+            op: ConditionOp::After(val.trim().to_string()),
+        })
+    } else if let Some(val) = rest.strip_prefix("day_of_week ") {
+        let items: Vec<String> = val
+            .trim()
+            .trim_matches(|c| c == '[' || c == ']')
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .collect();
+        Ok(ConditionExpr::Leaf {
+            attr,
+            op: ConditionOp::DayOfWeek(items),
         })
     } else {
         Err(crate::error::AegisError::SchemaValidation(
@@ -77,18 +175,19 @@ pub fn parse_condition(expr: &str) -> AegisResult<ConditionExpr> {
     }
 }
 
-pub fn evaluate_condition(expr: &ConditionExpr, ctx: &ConditionEvalContext) -> bool {
+fn evaluate_leaf(attr: &str, op: &ConditionOp, ctx: &ConditionEvalContext) -> bool {
     let value = ctx
         .subject_meta
-        .get(&expr.attr)
-        .or_else(|| ctx.resource_meta.get(&expr.attr))
-        .or_else(|| ctx.env.get(&expr.attr));
+        .get(attr)
+        .or_else(|| ctx.resource_meta.get(attr))
+        .or_else(|| ctx.env.get(attr));
 
-    match &expr.op {
+    match op {
         ConditionOp::Eq(expected) => value.map_or(false, |v| v == expected),
         ConditionOp::Neq(expected) => value.map_or(true, |v| v != expected),
         ConditionOp::In(items) => value.map_or(false, |v| items.contains(v)),
         ConditionOp::Exists => value.is_some(),
+        ConditionOp::NotExists => value.is_none(),
         ConditionOp::Gt(expected) => value
             .and_then(|v| v.parse::<f64>().ok())
             .zip(expected.parse::<f64>().ok())
@@ -97,6 +196,58 @@ pub fn evaluate_condition(expr: &ConditionExpr, ctx: &ConditionEvalContext) -> b
             .and_then(|v| v.parse::<f64>().ok())
             .zip(expected.parse::<f64>().ok())
             .map_or(false, |(v, e)| v < e),
+        ConditionOp::Before(time_str) => {
+            let now = Utc::now();
+            let parsed = parse_time(time_str);
+            parsed.map_or(false, |t| now < t)
+        }
+        ConditionOp::After(time_str) => {
+            let now = Utc::now();
+            let parsed = parse_time(time_str);
+            parsed.map_or(false, |t| now > t)
+        }
+        ConditionOp::DayOfWeek(days) => {
+            let now = Utc::now();
+            let today = match now.weekday() {
+                chrono::Weekday::Mon => "Mon",
+                chrono::Weekday::Tue => "Tue",
+                chrono::Weekday::Wed => "Wed",
+                chrono::Weekday::Thu => "Thu",
+                chrono::Weekday::Fri => "Fri",
+                chrono::Weekday::Sat => "Sat",
+                chrono::Weekday::Sun => "Sun",
+            };
+            days.iter().any(|d| d == today)
+        }
+    }
+}
+
+fn parse_time(time_str: &str) -> Option<chrono::DateTime<Utc>> {
+    // Try ISO 8601 first
+    if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(time_str) {
+        return Some(dt.with_timezone(&Utc));
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(time_str, "%Y-%m-%dT%H:%M:%S") {
+        return Some(dt.and_utc());
+    }
+    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(time_str, "%Y-%m-%d %H:%M:%S") {
+        return Some(dt.and_utc());
+    }
+    // Try HH:MM format — use today's date
+    if let Ok(naive_time) = chrono::NaiveTime::parse_from_str(time_str, "%H:%M") {
+        let today = Utc::now().date_naive();
+        let naive_dt = today.and_time(naive_time);
+        return Some(naive_dt.and_utc());
+    }
+    None
+}
+
+pub fn evaluate_condition(expr: &ConditionExpr, ctx: &ConditionEvalContext) -> bool {
+    match expr {
+        ConditionExpr::Leaf { attr, op } => evaluate_leaf(attr, op, ctx),
+        ConditionExpr::And(exprs) => exprs.iter().all(|e| evaluate_condition(e, ctx)),
+        ConditionExpr::Or(exprs) => exprs.iter().any(|e| evaluate_condition(e, ctx)),
+        ConditionExpr::Not(inner) => !evaluate_condition(inner, ctx),
     }
 }
 
@@ -142,8 +293,14 @@ mod tests {
     }
 
     #[test]
-    fn test_not_exists() {
-        let expr = parse_condition("missing exists").unwrap();
+    fn test_not_exists_attr_missing() {
+        let expr = parse_condition("missing not_exists").unwrap();
+        assert!(evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_not_exists_attr_present() {
+        let expr = parse_condition("role not_exists").unwrap();
         assert!(!evaluate_condition(&expr, &ctx()));
     }
 
@@ -185,5 +342,98 @@ mod tests {
     #[test]
     fn test_empty_expr() {
         assert!(parse_condition("").is_err());
+    }
+
+    #[test]
+    fn test_and_composite() {
+        let expr = parse_condition("(role eq admin) AND (score gt 90)").unwrap();
+        assert!(evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_and_one_false() {
+        let expr = parse_condition("(role eq admin) AND (score lt 50)").unwrap();
+        assert!(!evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_or_composite() {
+        let expr = parse_condition("(role eq viewer) OR (score gt 90)").unwrap();
+        assert!(evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_or_all_false() {
+        let expr = parse_condition("(role eq viewer) OR (score lt 50)").unwrap();
+        assert!(!evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_not_composite() {
+        let expr = parse_condition("NOT (role eq viewer)").unwrap();
+        assert!(evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_not_false() {
+        let expr = parse_condition("NOT (role eq admin)").unwrap();
+        assert!(!evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_before_iso() {
+        // "before" a future date should be true
+        let expr = parse_condition("attr before 2099-01-01T00:00:00Z").unwrap();
+        assert!(evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_after_iso() {
+        // "after" a past date should be true
+        let expr = parse_condition("attr after 2020-01-01T00:00:00Z").unwrap();
+        assert!(evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_before_past() {
+        // "before" a past date should be false
+        let expr = parse_condition("attr before 2020-01-01T00:00:00Z").unwrap();
+        assert!(!evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_day_of_week() {
+        let now = Utc::now();
+        let today = match now.weekday() {
+            chrono::Weekday::Mon => "Mon",
+            chrono::Weekday::Tue => "Tue",
+            chrono::Weekday::Wed => "Wed",
+            chrono::Weekday::Thu => "Thu",
+            chrono::Weekday::Fri => "Fri",
+            chrono::Weekday::Sat => "Sat",
+            chrono::Weekday::Sun => "Sun",
+        };
+        let expr_str = format!("attr day_of_week [{}]", today);
+        let expr = parse_condition(&expr_str).unwrap();
+        assert!(evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_day_of_week_no_match() {
+        let expr = parse_condition("attr day_of_week [Nonexistent]").unwrap();
+        assert!(!evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_not_exists_in_ctx() {
+        let expr = parse_condition("nonexistent_attr not_exists").unwrap();
+        assert!(evaluate_condition(&expr, &ctx()));
+    }
+
+    #[test]
+    fn test_time_hhmm_format() {
+        let expr = parse_condition("attr after 00:00").unwrap();
+        // 00:00 is always in the past for any reasonable test run
+        assert!(evaluate_condition(&expr, &ctx()));
     }
 }

@@ -164,6 +164,7 @@ mod tests {
                         union_of: vec!["viewer".to_string(), "owner".to_string()],
                         condition: None,
                         description: None,
+                        ..Default::default()
                     },
                 );
                 types.insert(
@@ -171,6 +172,7 @@ mod tests {
                     crate::types::schema::TypeDef {
                         relations,
                         permissions,
+                        ..Default::default()
                     },
                 );
                 types

@@ -1,4 +1,4 @@
-use crate::types::schema::Schema;
+use crate::types::schema::{Effect, Schema};
 
 /// Resolved policy: which relations satisfy a given permission.
 pub struct ResolvedPolicy {
@@ -11,6 +11,8 @@ pub struct ResolvedPolicy {
     pub relations: Vec<String>,
     /// Optional ABAC condition expression string.
     pub condition: Option<String>,
+    /// The permission effect (Allow or Deny).
+    pub effect: Effect,
 }
 
 /// Resolve a permission on a resource type into the set of relations to check.
@@ -32,6 +34,7 @@ pub fn resolve_permission(
         permission: permission.to_string(),
         relations: perm_def.union_of.clone(),
         condition: perm_def.condition.clone(),
+        effect: perm_def.effect,
     })
 }
 
@@ -82,6 +85,7 @@ mod tests {
                 union_of: vec!["viewer".to_string(), "editor".to_string(), "owner".to_string()],
                 condition: None,
                 description: None,
+                ..Default::default()
             },
         );
         repo_perms.insert(
@@ -90,6 +94,7 @@ mod tests {
                 union_of: vec!["editor".to_string(), "owner".to_string()],
                 condition: None,
                 description: None,
+                ..Default::default()
             },
         );
 
@@ -98,6 +103,7 @@ mod tests {
             crate::types::schema::TypeDef {
                 relations: repo_rels,
                 permissions: repo_perms,
+                ..Default::default()
             },
         );
 

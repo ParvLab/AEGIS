@@ -58,6 +58,7 @@ fn test_soak_no_memory_leak() {
             object_type: None,
             metadata_key: None,
             metadata_value: None,
+            ..Default::default()
         };
         let pagination = PaginationParams::new(100, None);
         let _ = engine.query(&filter, &pagination, None);
