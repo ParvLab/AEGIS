@@ -13,8 +13,8 @@ use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::{StorageBackend, StorageTransaction, TupleFilter};
 use aegis_core::types::{
-    AuditEntry, ConsistencyMode, PaginationParams, Relation, RelationshipTuple, ResourceId,
-    Revision, SubjectId, TupleKey,
+    AuditEntry, ConsistencyMode, PaginationParams, PartitionId, Relation, RelationshipTuple,
+    ResourceId, Revision, SubjectId, TupleKey,
 };
 use chrono::{DateTime, Utc};
 use napi_derive::napi;
@@ -714,7 +714,7 @@ impl JsAegis {
             let current_rev = self
                 .engine
                 .storage()
-                .current_revision()
+                .current_revision(&PartitionId::default())
                 .map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let pp = PaginationParams {
                 limit: pagination.limit as u64,
@@ -885,7 +885,7 @@ impl JsAegis {
             let revision = self
                 .engine
                 .storage()
-                .current_revision()
+                .current_revision(&PartitionId::default())
                 .map_err(|e| napi::Error::from_reason(e.to_string()))?;
             Ok(ExportSubjectResultNAP {
                 subject: subject.clone(),
@@ -1161,7 +1161,7 @@ impl JsTransaction {
             let txn = guard
                 .as_mut()
                 .ok_or_else(|| napi::Error::from_reason("transaction not initialized"))?;
-            txn.write(&tuple)
+            txn.write(&PartitionId::default(), &tuple)
                 .map_err(|e| napi::Error::from_reason(e.to_string()))?;
             Ok(())
         })
@@ -1184,7 +1184,7 @@ impl JsTransaction {
             let txn = guard
                 .as_mut()
                 .ok_or_else(|| napi::Error::from_reason("transaction not initialized"))?;
-            txn.delete(&key)
+            txn.delete(&PartitionId::default(), &key)
                 .map_err(|e| napi::Error::from_reason(e.to_string()))?;
             Ok(())
         })

@@ -414,7 +414,7 @@ fn cmd_list(state: &ReplState, args: &[&str]) -> Result<()> {
     }
     let object = ResourceId::new(args[0])?;
     let relation = args.get(1).map(|r| Relation::new(*r)).transpose()?;
-    let tuples = state.engine.storage().list_by_object(&object, relation.as_ref(), &ConsistencyMode::MinimizeLatency)?;
+    let tuples = state.engine.storage().list_by_object(&PartitionId::default(), &object, relation.as_ref(), &ConsistencyMode::MinimizeLatency)?;
     if state.json_mode {
         println!("{}", serde_json::to_string(&tuples)?);
     } else {
@@ -701,6 +701,7 @@ fn cmd_query(state: &ReplState, args: &[&str]) -> Result<()> {
     };
 
     let result = state.engine.storage().query_tuples(
+        &PartitionId::default(),
         &filter,
         &pagination,
         &ConsistencyMode::MinimizeLatency,
@@ -743,6 +744,7 @@ fn cmd_backup(state: &ReplState, args: &[&str]) -> Result<()> {
         .engine
         .storage()
         .query_tuples(
+            &PartitionId::default(),
             &TupleFilter::default(),
             &PaginationParams {
                 limit: u64::MAX,
@@ -761,7 +763,7 @@ fn cmd_backup(state: &ReplState, args: &[&str]) -> Result<()> {
         },
     )?;
 
-    let revision = state.engine.storage().current_revision()?;
+    let revision = state.engine.storage().current_revision(&PartitionId::default())?;
     let backend_type = state.engine.storage().backend_type().to_string();
     let exported_at = chrono::Utc::now().to_rfc3339();
 
@@ -906,7 +908,7 @@ fn cmd_recover_repl(state: &ReplState, args: &[&str]) -> Result<()> {
 
     let to_rev = to_revision.map(|r| Revision::new(r));
     if dry_run {
-        let current_rev = state.engine.storage().current_revision()?;
+        let current_rev = state.engine.storage().current_revision(&PartitionId::default())?;
         let target_rev = to_rev.unwrap_or(current_rev);
         if state.json_mode {
             println!(

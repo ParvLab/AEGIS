@@ -10,6 +10,7 @@ use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
 use aegis_core::types::*;
+use aegis_core::types::PartitionId;
 use chrono::{DateTime, Utc};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -595,7 +596,7 @@ impl PyAegis {
         }
         let subject_id = SubjectId::new(&subject).map_err(py_err)?;
         let tuples = self.engine.export_subject(&subject_id).map_err(py_err)?;
-        let revision = self.engine.storage().current_revision().map_err(py_err)?;
+        let revision = self.engine.storage().current_revision(&PartitionId::default()).map_err(py_err)?;
         Ok(PyExportResult {
             subject: subject.clone(),
             active_tuples: tuples.iter().map(tuple_to_py).collect(),

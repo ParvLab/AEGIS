@@ -3,8 +3,9 @@ use crate::storage::traits::{
     BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
 };
 use crate::types::{
-    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, Relation,
-    RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
+    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId,
+    Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
+    TupleMutation,
 };
 use chrono::{DateTime, Utc};
 use rocksdb::{
@@ -23,16 +24,16 @@ const CF_EVENTS: &str = "events";
 const META_REVISION: &str = "revision";
 const META_SCHEMA_VERSION: &str = "schema_version";
 
-fn tuple_key(subject: &str, relation: &str, object: &str) -> Vec<u8> {
-    format!("{}\x00{}\x00{}", subject, relation, object).into_bytes()
+fn tuple_key(partition_id: &str, subject: &str, relation: &str, object: &str) -> Vec<u8> {
+    format!("{}\x00{}\x00{}\x00{}", partition_id, subject, relation, object).into_bytes()
 }
 
-fn object_idx_key(object: &str, relation: &str, subject: &str) -> Vec<u8> {
-    format!("{}\x00{}\x00{}", object, relation, subject).into_bytes()
+fn object_idx_key(partition_id: &str, object: &str, relation: &str, subject: &str) -> Vec<u8> {
+    format!("{}\x00{}\x00{}\x00{}", partition_id, object, relation, subject).into_bytes()
 }
 
-fn event_key(revision: Revision, id: Uuid) -> Vec<u8> {
-    format!("{:016x}:{}", revision.as_u64(), id).into_bytes()
+fn event_key(partition_id: &str, revision: Revision, id: Uuid) -> Vec<u8> {
+    format!("{}:{:016x}:{}", partition_id, revision.as_u64(), id).into_bytes()
 }
 
 fn tuple_from_value(value: &[u8]) -> AegisResult<RelationshipTuple> {
@@ -151,6 +152,7 @@ impl RocksDbStorage {
 
     fn append_event(
         &self,
+        partition_id: &PartitionId,
         revision: Revision,
         action: &str,
         subject: &str,
@@ -170,7 +172,7 @@ impl RocksDbStorage {
             "timestamp": Utc::now().to_rfc3339(),
         });
         let event_id = Uuid::new_v4();
-        let key = event_key(revision, event_id);
+        let key = event_key(partition_id.as_str(), revision, event_id);
         let val = serde_json::to_string(&event)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         self.db.put_cf(&cf, key, val.as_bytes())
@@ -178,7 +180,7 @@ impl RocksDbStorage {
         Ok(())
     }
 
-    fn put_tuple(&self, tuple: &RelationshipTuple, revision: Revision) -> AegisResult<()> {
+    fn put_tuple(&self, partition_id: &PartitionId, tuple: &RelationshipTuple, revision: Revision) -> AegisResult<()> {
         let cf_tuples = self.db.cf_handle(CF_TUPLES)
             .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
         let cf_idx = self.db.cf_handle(CF_IDX_OBJECT)
@@ -186,8 +188,8 @@ impl RocksDbStorage {
 
         let val = serde_json::to_string(tuple)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
-        let key = tuple_key(tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
-        let idx_key = object_idx_key(tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
+        let key = tuple_key(partition_id.as_str(), tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
+        let idx_key = object_idx_key(partition_id.as_str(), tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
 
         let mut batch = rocksdb::WriteBatch::default();
         batch.put_cf(&cf_tuples, &key, val.as_bytes());
@@ -197,14 +199,14 @@ impl RocksDbStorage {
         Ok(())
     }
 
-    fn delete_tuple_key(&self, key: &TupleKey, revision: Revision) -> AegisResult<()> {
+    fn delete_tuple_key(&self, partition_id: &PartitionId, key: &TupleKey, revision: Revision) -> AegisResult<()> {
         let cf_tuples = self.db.cf_handle(CF_TUPLES)
             .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
         let cf_idx = self.db.cf_handle(CF_IDX_OBJECT)
             .ok_or_else(|| AegisError::StorageConnection("missing idx_object cf".into()))?;
 
-        let pk = tuple_key(key.subject.as_str(), key.relation.as_str(), key.object.as_str());
-        let idx_key = object_idx_key(key.object.as_str(), key.relation.as_str(), key.subject.as_str());
+        let pk = tuple_key(partition_id.as_str(), key.subject.as_str(), key.relation.as_str(), key.object.as_str());
+        let idx_key = object_idx_key(partition_id.as_str(), key.object.as_str(), key.relation.as_str(), key.subject.as_str());
 
         let mut batch = rocksdb::WriteBatch::default();
         batch.delete_cf(&cf_tuples, &pk);
@@ -230,16 +232,16 @@ impl StorageBackend for RocksDbStorage {
         })
     }
 
-    fn write_tuple(&self, tuple: &RelationshipTuple) -> AegisResult<Revision> {
+    fn write_tuple(&self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<Revision> {
         let revision = self.bump_revision()?;
 
         // Remove existing tuple if present
-        let existing = self.has_tuple(&tuple.key())?;
+        let existing = self.has_tuple(partition_id, &tuple.key())?;
         if existing {
-            self.delete_tuple_key(&tuple.key(), revision)?;
+            self.delete_tuple_key(partition_id, &tuple.key(), revision)?;
         }
 
-        self.put_tuple(tuple, revision)?;
+        self.put_tuple(partition_id, tuple, revision)?;
 
         let metadata_json = tuple.metadata.as_ref()
             .map(serde_json::to_string)
@@ -247,6 +249,7 @@ impl StorageBackend for RocksDbStorage {
             .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 
         self.append_event(
+            partition_id,
             revision,
             "add",
             tuple.subject.as_str(),
@@ -258,9 +261,9 @@ impl StorageBackend for RocksDbStorage {
         Ok(revision)
     }
 
-    fn write_tuples_batch(&self, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
+    fn write_tuples_batch(&self, partition_id: &PartitionId, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
         if tuples.is_empty() {
-            return self.current_revision();
+            return self.current_revision(partition_id);
         }
 
         let revision = self.bump_revision()?;
@@ -274,8 +277,8 @@ impl StorageBackend for RocksDbStorage {
 
         let mut batch = rocksdb::WriteBatch::default();
         for tuple in tuples {
-            let pk = tuple_key(tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
-            let idx_key = object_idx_key(tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
+            let pk = tuple_key(partition_id.as_str(), tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
+            let idx_key = object_idx_key(partition_id.as_str(), tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
             let val = serde_json::to_string(tuple)
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
@@ -300,7 +303,7 @@ impl StorageBackend for RocksDbStorage {
                 "timestamp": Utc::now().to_rfc3339(),
             });
             let event_id = Uuid::new_v4();
-            batch.put_cf(&cf_events, event_key(revision, event_id), serde_json::to_string(&event).map_err(|e| AegisError::StorageQuery(e.to_string()))?.as_bytes());
+            batch.put_cf(&cf_events, event_key(partition_id.as_str(), revision, event_id), serde_json::to_string(&event).map_err(|e| AegisError::StorageQuery(e.to_string()))?.as_bytes());
         }
         self.db.write(batch)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -308,16 +311,17 @@ impl StorageBackend for RocksDbStorage {
         Ok(revision)
     }
 
-    fn delete_tuple(&self, key: &TupleKey) -> AegisResult<Revision> {
-        let exists = self.has_tuple(key)?;
+    fn delete_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Revision> {
+        let exists = self.has_tuple(partition_id, key)?;
         if !exists {
-            return self.current_revision();
+            return self.current_revision(partition_id);
         }
 
         let revision = self.bump_revision()?;
-        self.delete_tuple_key(key, revision)?;
+        self.delete_tuple_key(partition_id, key, revision)?;
 
         self.append_event(
+            partition_id,
             revision,
             "remove",
             key.subject.as_str(),
@@ -329,10 +333,10 @@ impl StorageBackend for RocksDbStorage {
         Ok(revision)
     }
 
-    fn delete_subject(&self, subject: &SubjectId) -> AegisResult<Revision> {
-        let tuples = self.list_by_subject(subject, None, &ConsistencyMode::MinimizeLatency)?;
+    fn delete_subject(&self, partition_id: &PartitionId, subject: &SubjectId) -> AegisResult<Revision> {
+        let tuples = self.list_by_subject(partition_id, subject, None, &ConsistencyMode::MinimizeLatency)?;
         if tuples.is_empty() {
-            return self.current_revision();
+            return self.current_revision(partition_id);
         }
 
         let revision = self.bump_revision()?;
@@ -344,7 +348,7 @@ impl StorageBackend for RocksDbStorage {
         let cf_events = self.db.cf_handle(CF_EVENTS)
             .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
 
-        let prefix = format!("{}\x00", subject.as_str()).into_bytes();
+        let prefix = format!("{}\x00{}\x00", partition_id.as_str(), subject.as_str()).into_bytes();
         let mut batch = rocksdb::WriteBatch::default();
         let iter = self.db.prefix_iterator_cf(&cf_tuples, &prefix);
         let mut keys_to_delete = Vec::new();
@@ -360,14 +364,17 @@ impl StorageBackend for RocksDbStorage {
         }
 
         // Also remove from idx_object
-        let objects_prefix = b""; // need to scan all idx entries matching this subject
-        let idx_iter = self.db.prefix_iterator_cf(&cf_idx, objects_prefix);
+        let partition_prefix = format!("{}\x00", partition_id.as_str()).into_bytes();
+        let idx_iter = self.db.prefix_iterator_cf(&cf_idx, &partition_prefix);
         for item in idx_iter {
             let (k, _) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
-            // idx key format: object\x00relation\x00subject
+            if !k.starts_with(&partition_prefix) {
+                break;
+            }
+            // idx key format: partition_id\x00object\x00relation\x00subject
             if let Ok(s) = std::str::from_utf8(&k) {
                 let parts: Vec<&str> = s.split('\x00').collect();
-                if parts.len() == 3 && parts[2] == subject.as_str() {
+                if parts.len() == 4 && parts[3] == subject.as_str() {
                     batch.delete_cf(&cf_idx, &k);
                 }
             }
@@ -387,7 +394,7 @@ impl StorageBackend for RocksDbStorage {
             let json_bytes = serde_json::to_string(&event)
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?
                 .into_bytes();
-            batch.put_cf(&cf_events, event_key(revision, event_id), &json_bytes);
+            batch.put_cf(&cf_events, event_key(partition_id.as_str(), revision, event_id), &json_bytes);
         }
 
         self.db.write(batch)
@@ -396,10 +403,10 @@ impl StorageBackend for RocksDbStorage {
         Ok(revision)
     }
 
-    fn delete_object(&self, object: &ResourceId) -> AegisResult<Revision> {
-        let tuples = self.list_by_object(object, None, &ConsistencyMode::MinimizeLatency)?;
+    fn delete_object(&self, partition_id: &PartitionId, object: &ResourceId) -> AegisResult<Revision> {
+        let tuples = self.list_by_object(partition_id, object, None, &ConsistencyMode::MinimizeLatency)?;
         if tuples.is_empty() {
-            return self.current_revision();
+            return self.current_revision(partition_id);
         }
 
         let revision = self.bump_revision()?;
@@ -414,8 +421,8 @@ impl StorageBackend for RocksDbStorage {
         let mut batch = rocksdb::WriteBatch::default();
 
         for tuple in &tuples {
-            let pk = tuple_key(tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
-            let idx_key = object_idx_key(tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
+            let pk = tuple_key(partition_id.as_str(), tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
+            let idx_key = object_idx_key(partition_id.as_str(), tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
             batch.delete_cf(&cf_tuples, &pk);
             batch.delete_cf(&cf_idx, &idx_key);
 
@@ -432,7 +439,7 @@ impl StorageBackend for RocksDbStorage {
             let json_bytes = serde_json::to_string(&event)
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?
                 .into_bytes();
-            batch.put_cf(&cf_events, event_key(revision, event_id), &json_bytes);
+            batch.put_cf(&cf_events, event_key(partition_id.as_str(), revision, event_id), &json_bytes);
         }
 
         self.db.write(batch)
@@ -441,19 +448,19 @@ impl StorageBackend for RocksDbStorage {
         Ok(revision)
     }
 
-    fn has_tuple(&self, key: &TupleKey) -> AegisResult<bool> {
+    fn has_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<bool> {
         let cf = self.db.cf_handle(CF_TUPLES)
             .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
-        let pk = tuple_key(key.subject.as_str(), key.relation.as_str(), key.object.as_str());
+        let pk = tuple_key(partition_id.as_str(), key.subject.as_str(), key.relation.as_str(), key.object.as_str());
         let val = self.db.get_cf(&cf, &pk)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         Ok(val.is_some())
     }
 
-    fn read_tuple(&self, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>> {
+    fn read_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>> {
         let cf = self.db.cf_handle(CF_TUPLES)
             .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
-        let pk = tuple_key(key.subject.as_str(), key.relation.as_str(), key.object.as_str());
+        let pk = tuple_key(partition_id.as_str(), key.subject.as_str(), key.relation.as_str(), key.object.as_str());
         let val = self.db.get_cf(&cf, &pk)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         match val {
@@ -464,6 +471,7 @@ impl StorageBackend for RocksDbStorage {
 
     fn list_by_object(
         &self,
+        partition_id: &PartitionId,
         object: &ResourceId,
         relation: Option<&Relation>,
         consistency: &ConsistencyMode,
@@ -471,8 +479,8 @@ impl StorageBackend for RocksDbStorage {
         let cf = self.db.cf_handle(CF_TUPLES)
             .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
         let prefix = match relation {
-            Some(rel) => format!("{}\x00{}\x00", object.as_str(), rel.as_str()).into_bytes(),
-            None => format!("{}\x00", object.as_str()).into_bytes(),
+            Some(rel) => format!("{}\x00{}\x00{}\x00", partition_id.as_str(), object.as_str(), rel.as_str()).into_bytes(),
+            None => format!("{}\x00{}\x00", partition_id.as_str(), object.as_str()).into_bytes(),
         };
 
         // For FullyConsistent, use a snapshot to get a consistent view
@@ -500,11 +508,11 @@ impl StorageBackend for RocksDbStorage {
             }
             if let Ok(s) = std::str::from_utf8(&k) {
                 let parts: Vec<&str> = s.split('\x00').collect();
-                if parts.len() == 3 {
-                    let obj = parts[0];
-                    let rel = parts[1];
-                    let subj = parts[2];
-                    let pk = tuple_key(subj, rel, obj);
+                if parts.len() == 4 {
+                    let obj = parts[1];
+                    let rel = parts[2];
+                    let subj = parts[3];
+                    let pk = tuple_key(partition_id.as_str(), subj, rel, obj);
                     let val = if let Some(ref snap) = snapshot {
                         snap.get_cf(&cf, &pk)
                     } else {
@@ -523,6 +531,7 @@ impl StorageBackend for RocksDbStorage {
 
     fn list_by_subject(
         &self,
+        partition_id: &PartitionId,
         subject: &SubjectId,
         relation: Option<&Relation>,
         consistency: &ConsistencyMode,
@@ -530,8 +539,8 @@ impl StorageBackend for RocksDbStorage {
         let cf = self.db.cf_handle(CF_TUPLES)
             .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
         let prefix = match relation {
-            Some(rel) => format!("{}\x00{}\x00", subject.as_str(), rel.as_str()).into_bytes(),
-            None => format!("{}\x00", subject.as_str()).into_bytes(),
+            Some(rel) => format!("{}\x00{}\x00{}\x00", partition_id.as_str(), subject.as_str(), rel.as_str()).into_bytes(),
+            None => format!("{}\x00{}\x00", partition_id.as_str(), subject.as_str()).into_bytes(),
         };
 
         let snapshot = if *consistency == ConsistencyMode::FullyConsistent {
@@ -561,14 +570,16 @@ impl StorageBackend for RocksDbStorage {
 
     fn list_by_relation(
         &self,
+        partition_id: &PartitionId,
         object: &ResourceId,
         relation: &Relation,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        self.list_by_object(object, Some(relation), &ConsistencyMode::MinimizeLatency)
+        self.list_by_object(partition_id, object, Some(relation), &ConsistencyMode::MinimizeLatency)
     }
 
     fn query_tuples(
         &self,
+        partition_id: &PartitionId,
         filter: &TupleFilter,
         pagination: &PaginationParams,
         consistency: &ConsistencyMode,
@@ -592,23 +603,29 @@ impl StorageBackend for RocksDbStorage {
 
         let mut all_tuples = Vec::with_capacity(limit);
 
+        let pid_prefix = format!("{}\x00", partition_id.as_str());
+
         if filter.object_type.is_some() || filter.relation.is_some() {
             // Use the object index for efficient filtering
+            let pid_prefix_bytes = pid_prefix.as_bytes();
             let iter: Box<dyn Iterator<Item = Result<_, _>>> = if let Some(ref snap) = snapshot {
-                Box::new(snap.iterator_cf(&cf_idx, IteratorMode::Start))
+                Box::new(snap.prefix_iterator_cf(&cf_idx, pid_prefix_bytes))
             } else {
-                Box::new(self.db.iterator_cf(&cf_idx, IteratorMode::Start))
+                Box::new(self.db.prefix_iterator_cf(&cf_idx, pid_prefix_bytes))
             };
             for item in iter {
                 if all_tuples.len() >= limit { break; }
                 let (key, _) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                if !key.starts_with(pid_prefix_bytes) {
+                    break;
+                }
                 let key_str = std::str::from_utf8(&key)
                     .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
                 let parts: Vec<&str> = key_str.split('\x00').collect();
-                if parts.len() < 3 { continue; }
-                let obj = parts[0];
-                let rel = parts[1];
-                let subj = parts[2];
+                if parts.len() < 4 { continue; }
+                let obj = parts[1];
+                let rel = parts[2];
+                let subj = parts[3];
 
                 if let Some(ref ot) = filter.object_type {
                     if !obj.starts_with(&format!("{ot}:")) { continue; }
@@ -620,7 +637,7 @@ impl StorageBackend for RocksDbStorage {
                     if !subj.starts_with(&format!("{st}:")) { continue; }
                 }
 
-                let pk = tuple_key(subj, rel, obj);
+                let pk = tuple_key(partition_id.as_str(), subj, rel, obj);
                 let value_opt = if let Some(ref snap) = snapshot {
                     snap.get_cf(&cf_tuples, &pk)
                 } else {
@@ -639,15 +656,16 @@ impl StorageBackend for RocksDbStorage {
                 }
             }
         } else if let Some(ref st) = filter.subject_type {
-            // Prefix scan by subject type
-            let prefix = format!("{st}:");
+            // Prefix scan by subject type within partition
+            let prefix = format!("{}\x00{}:", partition_id.as_str(), st);
+            let prefix_bytes = prefix.as_bytes();
             let iter: Box<dyn Iterator<Item = Result<(Box<[u8]>, Box<[u8]>), _>>> = if let Some(ref snap) = snapshot {
                 Box::new(snap.iterator_cf(&cf_tuples, IteratorMode::From(
-                    prefix.as_bytes(), Direction::Forward,
+                    prefix_bytes, Direction::Forward,
                 )))
             } else {
                 Box::new(self.db.iterator_cf(&cf_tuples, IteratorMode::From(
-                    prefix.as_bytes(), Direction::Forward,
+                    prefix_bytes, Direction::Forward,
                 )))
             };
             for item in iter {
@@ -661,15 +679,19 @@ impl StorageBackend for RocksDbStorage {
                 }
             }
         } else if filter.metadata_key.is_some() || filter.metadata_value.is_some() {
-            // Full scan required for metadata filtering, but bounded by limit
+            // Full scan within partition for metadata filtering, but bounded by limit
+            let pid_prefix_bytes = pid_prefix.as_bytes();
             let iter: Box<dyn Iterator<Item = Result<(Box<[u8]>, Box<[u8]>), _>>> = if let Some(ref snap) = snapshot {
-                Box::new(snap.iterator_cf(&cf_tuples, IteratorMode::Start))
+                Box::new(snap.prefix_iterator_cf(&cf_tuples, pid_prefix_bytes))
             } else {
-                Box::new(self.db.iterator_cf(&cf_tuples, IteratorMode::Start))
+                Box::new(self.db.prefix_iterator_cf(&cf_tuples, pid_prefix_bytes))
             };
             for item in iter {
                 if all_tuples.len() >= limit { break; }
-                let (_, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                let (key, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                if !key.starts_with(pid_prefix_bytes) {
+                    break;
+                }
                 if let Ok(tuple) = tuple_from_value(&value) {
                     if let Some(ref mk) = filter.metadata_key {
                         let has_key = tuple.metadata.as_ref()
@@ -714,7 +736,7 @@ impl StorageBackend for RocksDbStorage {
         Ok(PaginatedTuples { tuples, next_cursor, revision })
     }
 
-    fn current_revision(&self) -> AegisResult<Revision> {
+    fn current_revision(&self, _partition_id: &PartitionId) -> AegisResult<Revision> {
         self.read_revision()
     }
 
@@ -723,7 +745,7 @@ impl StorageBackend for RocksDbStorage {
         Ok(RevisionToken::new(revision, self.node_id))
     }
 
-    fn begin_transaction(&self) -> AegisResult<Box<dyn StorageTransaction>> {
+    fn begin_transaction(&self, partition_id: &PartitionId) -> AegisResult<Box<dyn StorageTransaction>> {
         let cf_tuples = self.db.cf_handle(CF_TUPLES)
             .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
         let cf_idx = self.db.cf_handle(CF_IDX_OBJECT)
@@ -735,6 +757,7 @@ impl StorageBackend for RocksDbStorage {
 
         Ok(Box::new(RocksDbTransaction {
             db: self.db.clone(),
+            partition_id: partition_id.as_str().to_string(),
             batch: rocksdb::WriteBatch::default(),
             cf_tuples,
             cf_idx,
@@ -748,6 +771,7 @@ impl StorageBackend for RocksDbStorage {
 
     fn query_audit(
         &self,
+        partition_id: &PartitionId,
         object: Option<&ResourceId>,
         from_revision: Option<Revision>,
         to_revision: Option<Revision>,
@@ -762,10 +786,13 @@ impl StorageBackend for RocksDbStorage {
         let from_rev = from_revision.map(|r| r.as_u64());
         let to_rev = to_revision.map(|r| r.as_u64());
 
-        // Seek to the `from_revision` key boundary for efficient range scan
+        let pid_prefix = format!("{}:", partition_id.as_str());
+        let pid_prefix_bytes = pid_prefix.as_bytes();
+
+        // Seek to the partition + `from_revision` key boundary for efficient range scan
         let seek_key = match from_rev {
-            Some(rev) => format!("{:016x}:", rev).into_bytes(),
-            None => Vec::new(),
+            Some(rev) => format!("{}{:016x}:", pid_prefix, rev).into_bytes(),
+            None => pid_prefix_bytes.to_vec(),
         };
         let mode = if seek_key.is_empty() {
             IteratorMode::Start
@@ -781,11 +808,17 @@ impl StorageBackend for RocksDbStorage {
                 break;
             }
             let (key, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
-            // If we started from a prefix, stop when we leave the revision range
+            // Filter by partition
+            if !key.starts_with(pid_prefix_bytes) {
+                break;
+            }
+            // Extract revision part (after partition_id:)
+            let key_pid_len = pid_prefix_bytes.len();
+            let rev_part = &key[key_pid_len..];
             if let Some(to) = to_rev {
-                if key.len() < 16 { break; }
+                if rev_part.len() < 16 { break; }
                 let key_rev = u64::from_str_radix(
-                    std::str::from_utf8(&key[..16]).unwrap_or(""),
+                    std::str::from_utf8(&rev_part[..16]).unwrap_or(""),
                     16,
                 ).unwrap_or(0);
                 if key_rev > to { break; }
@@ -876,13 +909,17 @@ impl StorageBackend for RocksDbStorage {
             .map_err(|e| AegisError::StorageQuery(e.to_string()))
     }
 
-    fn delete_events_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+    fn delete_events_before(&self, partition_id: &PartitionId, cutoff: DateTime<Utc>) -> AegisResult<usize> {
         let cf = self.db.cf_handle(CF_EVENTS)
             .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
-        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
+        let pid_prefix = format!("{}:", partition_id.as_str()).into_bytes();
+        let iter = self.db.prefix_iterator_cf(&cf, &pid_prefix);
         let mut to_delete: Vec<Vec<u8>> = Vec::new();
         for item in iter {
             let (key, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            if !key.starts_with(&pid_prefix) {
+                break;
+            }
             if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&value) {
                 let ts_str = event["timestamp"].as_str().unwrap_or("");
                 if let Ok(ts) = ts_str.parse::<DateTime<Utc>>() {
@@ -904,13 +941,13 @@ impl StorageBackend for RocksDbStorage {
         Ok(to_delete.len())
     }
 
-    fn delete_soft_deleted_tuples_before(&self, _cutoff: DateTime<Utc>) -> AegisResult<usize> {
+    fn delete_soft_deleted_tuples_before(&self, _partition_id: &PartitionId, _cutoff: DateTime<Utc>) -> AegisResult<usize> {
         // RocksDB does not maintain soft-deleted tuples — tuples are removed
         // from the CF on delete. Nothing to clean up.
         Ok(0)
     }
 
-    fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
+    fn recover_from_events(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision> {
         let _guard = self.revision_mutex.lock()
             .map_err(|_| AegisError::Internal("revision mutex poisoned".into()))?;
 
@@ -923,26 +960,41 @@ impl StorageBackend for RocksDbStorage {
         let cf_meta = self.db.cf_handle(CF_META)
             .ok_or_else(|| AegisError::StorageConnection("missing meta cf".into()))?;
 
+        let pid_prefix = format!("{}:", partition_id.as_str());
+        let pid_prefix_bytes = pid_prefix.as_bytes();
+
         let mut delete_batch = rocksdb::WriteBatch::default();
-        let tuples_iter = self.db.iterator_cf(&cf_tuples, IteratorMode::Start);
+
+        // Delete tuples and index entries for this partition only
+        let pid_tuple_prefix = format!("{}\x00", partition_id.as_str()).into_bytes();
+        let tuples_iter = self.db.prefix_iterator_cf(&cf_tuples, &pid_tuple_prefix);
         for item in tuples_iter {
             let (key, _) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            if !key.starts_with(&pid_tuple_prefix) {
+                break;
+            }
             delete_batch.delete_cf(&cf_tuples, &key);
         }
-        let idx_iter = self.db.iterator_cf(&cf_idx, IteratorMode::Start);
+        let idx_iter = self.db.prefix_iterator_cf(&cf_idx, &pid_tuple_prefix);
         for item in idx_iter {
             let (key, _) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            if !key.starts_with(&pid_tuple_prefix) {
+                break;
+            }
             delete_batch.delete_cf(&cf_idx, &key);
         }
         self.db.write(delete_batch)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
-        let events_iter = self.db.iterator_cf(&cf_events, IteratorMode::Start);
+        let events_iter = self.db.prefix_iterator_cf(&cf_events, pid_prefix_bytes);
         let mut last_revision = Revision::ZERO;
         let mut replay_batch = rocksdb::WriteBatch::default();
 
         for item in events_iter {
-            let (_, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            let (key, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            if !key.starts_with(pid_prefix_bytes) {
+                break;
+            }
             if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&value) {
                 let rev = event["revision"].as_u64().unwrap_or(0);
                 let action = event["action"].as_str().unwrap_or("");
@@ -968,14 +1020,14 @@ impl StorageBackend for RocksDbStorage {
                         );
                         let val = serde_json::to_string(&tuple)
                             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
-                        let pk = tuple_key(subject, relation, object);
-                        let idx_key = object_idx_key(object, relation, subject);
+                        let pk = tuple_key(partition_id.as_str(), subject, relation, object);
+                        let idx_key = object_idx_key(partition_id.as_str(), object, relation, subject);
                         replay_batch.put_cf(&cf_tuples, &pk, val.as_bytes());
                         replay_batch.put_cf(&cf_idx, &idx_key, &[]);
                     }
                     "remove" => {
-                        let pk = tuple_key(subject, relation, object);
-                        let idx_key = object_idx_key(object, relation, subject);
+                        let pk = tuple_key(partition_id.as_str(), subject, relation, object);
+                        let idx_key = object_idx_key(partition_id.as_str(), object, relation, subject);
                         replay_batch.delete_cf(&cf_tuples, &pk);
                         replay_batch.delete_cf(&cf_idx, &idx_key);
                     }
@@ -997,14 +1049,18 @@ impl StorageBackend for RocksDbStorage {
         Ok(last_revision)
     }
 
-    fn compact_events(&self) -> AegisResult<usize> {
+    fn compact_events(&self, partition_id: &PartitionId) -> AegisResult<usize> {
         let cf = self.db.cf_handle(CF_EVENTS)
             .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
-        let iter = self.db.iterator_cf(&cf, IteratorMode::Start);
+        let pid_prefix = format!("{}:", partition_id.as_str()).into_bytes();
+        let iter = self.db.prefix_iterator_cf(&cf, &pid_prefix);
         let mut adds: HashMap<(String, String, String), Vec<u8>> = HashMap::new();
         let mut to_delete: Vec<Vec<u8>> = Vec::new();
         for item in iter {
             let (key, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            if !key.starts_with(&pid_prefix) {
+                break;
+            }
             if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&value) {
                 let action = event["action"].as_str().unwrap_or("").to_string();
                 let subject = event["subject"].as_str().unwrap_or("").to_string();
@@ -1046,6 +1102,7 @@ impl StorageBackend for RocksDbStorage {
 /// A RocksDB transaction using WriteBatch for atomicity.
 pub struct RocksDbTransaction {
     db: DB,
+    partition_id: String,
     batch: rocksdb::WriteBatch,
     cf_tuples: rocksdb::ColumnFamily,
     cf_idx: rocksdb::ColumnFamily,
@@ -1070,7 +1127,7 @@ impl RocksDbTransaction {
                 "timestamp": Utc::now().to_rfc3339(),
             });
             let event_id = Uuid::new_v4();
-            let key = event_key(revision, event_id);
+            let key = event_key(&self.partition_id, revision, event_id);
             let val = serde_json::to_string(&event)
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             self.batch.put_cf(&self.cf_events, key, val.as_bytes());
@@ -1080,21 +1137,22 @@ impl RocksDbTransaction {
 
     fn put_tuple_to_batch(
         &self,
+        partition_id: &str,
         subject: &str,
         relation: &str,
         object: &str,
         value: &[u8],
     ) -> AegisResult<()> {
-        let pk = tuple_key(subject, relation, object);
-        let idx_key = object_idx_key(object, relation, subject);
+        let pk = tuple_key(partition_id, subject, relation, object);
+        let idx_key = object_idx_key(partition_id, object, relation, subject);
         self.batch.put_cf(&self.cf_tuples, &pk, value);
         self.batch.put_cf(&self.cf_idx, &idx_key, &[]);
         Ok(())
     }
 
-    fn delete_tuple_from_batch(&self, subject: &str, relation: &str, object: &str) -> AegisResult<()> {
-        let pk = tuple_key(subject, relation, object);
-        let idx_key = object_idx_key(object, relation, subject);
+    fn delete_tuple_from_batch(&self, partition_id: &str, subject: &str, relation: &str, object: &str) -> AegisResult<()> {
+        let pk = tuple_key(partition_id, subject, relation, object);
+        let idx_key = object_idx_key(partition_id, object, relation, subject);
         self.batch.delete_cf(&self.cf_tuples, &pk);
         self.batch.delete_cf(&self.cf_idx, &idx_key);
         Ok(())
@@ -1102,13 +1160,13 @@ impl RocksDbTransaction {
 }
 
 impl StorageTransaction for RocksDbTransaction {
-    fn write(&mut self, tuple: &RelationshipTuple) -> AegisResult<()> {
+    fn write(&mut self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<()> {
         let val = serde_json::to_string(tuple)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
         // Remove existing if present
-        let pk = tuple_key(tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
-        let idx_key = object_idx_key(tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
+        let pk = tuple_key(partition_id.as_str(), tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
+        let idx_key = object_idx_key(partition_id.as_str(), tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
         self.batch.delete_cf(&self.cf_tuples, &pk);
         self.batch.delete_cf(&self.cf_idx, &idx_key);
         // Insert new
@@ -1130,8 +1188,8 @@ impl StorageTransaction for RocksDbTransaction {
         Ok(())
     }
 
-    fn delete(&mut self, key: &TupleKey) -> AegisResult<()> {
-        self.delete_tuple_from_batch(key.subject.as_str(), key.relation.as_str(), key.object.as_str())?;
+    fn delete(&mut self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<()> {
+        self.delete_tuple_from_batch(partition_id.as_str(), key.subject.as_str(), key.relation.as_str(), key.object.as_str())?;
         self.pending_events.push((
             "remove".to_string(),
             key.subject.as_str().to_string(),
@@ -1229,10 +1287,10 @@ mod tests {
             Relation::new("owner").unwrap(),
             ResourceId::new("repo:fluxbus").unwrap(),
         );
-        let rev = storage.write_tuple(&tuple).unwrap();
+        let rev = storage.write_tuple(&PartitionId::default(), &tuple).unwrap();
         assert!(rev.as_u64() > 0);
 
-        let found = storage.read_tuple(&tuple.key()).unwrap();
+        let found = storage.read_tuple(&PartitionId::default(), &tuple.key()).unwrap();
         assert!(found.is_some());
         assert_eq!(found.unwrap().subject.as_str(), "user:alice");
     }
@@ -1245,15 +1303,15 @@ mod tests {
             relation: Relation::new("viewer").unwrap(),
             object: ResourceId::new("repo:other").unwrap(),
         };
-        assert!(!storage.has_tuple(&key).unwrap());
+        assert!(!storage.has_tuple(&PartitionId::default(), &key).unwrap());
 
         let tuple = RelationshipTuple::new(
             SubjectId::new("user:bob").unwrap(),
             Relation::new("viewer").unwrap(),
             ResourceId::new("repo:other").unwrap(),
         );
-        storage.write_tuple(&tuple).unwrap();
-        assert!(storage.has_tuple(&key).unwrap());
+        storage.write_tuple(&PartitionId::default(), &tuple).unwrap();
+        assert!(storage.has_tuple(&PartitionId::default(), &key).unwrap());
     }
 
     #[test]
@@ -1264,12 +1322,12 @@ mod tests {
             Relation::new("owner").unwrap(),
             ResourceId::new("repo:fluxbus").unwrap(),
         );
-        storage.write_tuple(&tuple).unwrap();
-        assert!(storage.has_tuple(&tuple.key()).unwrap());
+        storage.write_tuple(&PartitionId::default(), &tuple).unwrap();
+        assert!(storage.has_tuple(&PartitionId::default(), &tuple.key()).unwrap());
 
-        let del_rev = storage.delete_tuple(&tuple.key()).unwrap();
+        let del_rev = storage.delete_tuple(&PartitionId::default(), &tuple.key()).unwrap();
         assert!(del_rev.as_u64() > 0);
-        assert!(!storage.has_tuple(&tuple.key()).unwrap());
+        assert!(!storage.has_tuple(&PartitionId::default(), &tuple.key()).unwrap());
     }
 
     #[test]
@@ -1285,12 +1343,12 @@ mod tests {
             Relation::new("viewer").unwrap(),
             ResourceId::new("repo:2").unwrap(),
         );
-        let rev = storage.write_tuples_batch(&[t1, t2]).unwrap();
+        let rev = storage.write_tuples_batch(&PartitionId::default(), &[t1, t2]).unwrap();
         assert!(rev.as_u64() > 0);
 
-        let all = storage.list_by_subject(&SubjectId::new("user:a").unwrap(), None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let all = storage.list_by_subject(&PartitionId::default(), &SubjectId::new("user:a").unwrap(), None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(all.len(), 1);
-        let all = storage.list_by_subject(&SubjectId::new("user:b").unwrap(), None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let all = storage.list_by_subject(&PartitionId::default(), &SubjectId::new("user:b").unwrap(), None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(all.len(), 1);
     }
 
@@ -1301,17 +1359,17 @@ mod tests {
         let bob = SubjectId::new("user:bob").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
 
-        storage.write_tuple(&RelationshipTuple::new(alice.clone(), Relation::new("owner").unwrap(), repo.clone())).unwrap();
-        storage.write_tuple(&RelationshipTuple::new(alice.clone(), Relation::new("viewer").unwrap(), repo.clone())).unwrap();
-        storage.write_tuple(&RelationshipTuple::new(bob.clone(), Relation::new("viewer").unwrap(), repo.clone())).unwrap();
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(alice.clone(), Relation::new("owner").unwrap(), repo.clone())).unwrap();
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(alice.clone(), Relation::new("viewer").unwrap(), repo.clone())).unwrap();
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(bob.clone(), Relation::new("viewer").unwrap(), repo.clone())).unwrap();
 
-        let alice_tuples = storage.list_by_subject(&alice, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let alice_tuples = storage.list_by_subject(&PartitionId::default(), &alice, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(alice_tuples.len(), 2);
 
-        let alice_owner = storage.list_by_subject(&alice, Some(&Relation::new("owner").unwrap()), &ConsistencyMode::MinimizeLatency).unwrap();
+        let alice_owner = storage.list_by_subject(&PartitionId::default(), &alice, Some(&Relation::new("owner").unwrap()), &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(alice_owner.len(), 1);
 
-        let bob_tuples = storage.list_by_subject(&bob, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let bob_tuples = storage.list_by_subject(&PartitionId::default(), &bob, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(bob_tuples.len(), 1);
     }
 
@@ -1321,23 +1379,23 @@ mod tests {
         let repo_a = ResourceId::new("repo:a").unwrap();
         let repo_b = ResourceId::new("repo:b").unwrap();
 
-        storage.write_tuple(&RelationshipTuple::new(
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(
             SubjectId::new("user:alice").unwrap(), Relation::new("owner").unwrap(), repo_a.clone(),
         )).unwrap();
-        storage.write_tuple(&RelationshipTuple::new(
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(
             SubjectId::new("user:bob").unwrap(), Relation::new("viewer").unwrap(), repo_a.clone(),
         )).unwrap();
-        storage.write_tuple(&RelationshipTuple::new(
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(
             SubjectId::new("user:alice").unwrap(), Relation::new("owner").unwrap(), repo_b.clone(),
         )).unwrap();
 
-        let a_tuples = storage.list_by_object(&repo_a, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let a_tuples = storage.list_by_object(&PartitionId::default(), &repo_a, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(a_tuples.len(), 2);
 
-        let a_owners = storage.list_by_object(&repo_a, Some(&Relation::new("owner").unwrap()), &ConsistencyMode::MinimizeLatency).unwrap();
+        let a_owners = storage.list_by_object(&PartitionId::default(), &repo_a, Some(&Relation::new("owner").unwrap()), &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(a_owners.len(), 1);
 
-        let b_tuples = storage.list_by_object(&repo_b, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let b_tuples = storage.list_by_object(&PartitionId::default(), &repo_b, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(b_tuples.len(), 1);
     }
 
@@ -1347,17 +1405,17 @@ mod tests {
         let alice = SubjectId::new("user:alice").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
 
-        storage.write_tuple(&RelationshipTuple::new(
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(
             alice.clone(), Relation::new("owner").unwrap(), repo.clone(),
         )).unwrap();
-        storage.write_tuple(&RelationshipTuple::new(
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(
             alice.clone(), Relation::new("viewer").unwrap(), repo.clone(),
         )).unwrap();
 
-        let rev = storage.delete_subject(&alice).unwrap();
+        let rev = storage.delete_subject(&PartitionId::default(), &alice).unwrap();
         assert!(rev.as_u64() > 0);
 
-        let tuples = storage.list_by_subject(&alice, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let tuples = storage.list_by_subject(&PartitionId::default(), &alice, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(tuples.len(), 0);
     }
 
@@ -1366,31 +1424,31 @@ mod tests {
         let storage = make_storage();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
 
-        storage.write_tuple(&RelationshipTuple::new(
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(
             SubjectId::new("user:alice").unwrap(), Relation::new("owner").unwrap(), repo.clone(),
         )).unwrap();
-        storage.write_tuple(&RelationshipTuple::new(
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(
             SubjectId::new("user:bob").unwrap(), Relation::new("viewer").unwrap(), repo.clone(),
         )).unwrap();
 
-        let rev = storage.delete_object(&repo).unwrap();
+        let rev = storage.delete_object(&PartitionId::default(), &repo).unwrap();
         assert!(rev.as_u64() > 0);
 
-        let tuples = storage.list_by_object(&repo, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let tuples = storage.list_by_object(&PartitionId::default(), &repo, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(tuples.len(), 0);
     }
 
     #[test]
     fn test_current_revision() {
         let storage = make_storage();
-        assert_eq!(storage.current_revision().unwrap().as_u64(), 0);
+        assert_eq!(storage.current_revision(&PartitionId::default()).unwrap().as_u64(), 0);
 
-        storage.write_tuple(&RelationshipTuple::new(
+        storage.write_tuple(&PartitionId::default(), &RelationshipTuple::new(
             SubjectId::new("user:alice").unwrap(), Relation::new("owner").unwrap(),
             ResourceId::new("repo:fluxbus").unwrap(),
         )).unwrap();
 
-        assert_eq!(storage.current_revision().unwrap().as_u64(), 1);
+        assert_eq!(storage.current_revision(&PartitionId::default()).unwrap().as_u64(), 1);
     }
 
     #[test]
@@ -1408,11 +1466,11 @@ mod tests {
             Relation::new("owner").unwrap(),
             ResourceId::new("repo:fluxbus").unwrap(),
         );
-        let r1 = storage.write_tuple(&tuple).unwrap();
-        let r2 = storage.write_tuple(&tuple).unwrap();
+        let r1 = storage.write_tuple(&PartitionId::default(), &tuple).unwrap();
+        let r2 = storage.write_tuple(&PartitionId::default(), &tuple).unwrap();
         assert!(r2 > r1);
         // Only one active tuple after idempotent write
-        let count = storage.list_by_subject(&SubjectId::new("user:alice").unwrap(), None, &ConsistencyMode::MinimizeLatency).unwrap().len();
+        let count = storage.list_by_subject(&PartitionId::default(), &SubjectId::new("user:alice").unwrap(), None, &ConsistencyMode::MinimizeLatency).unwrap().len();
         assert_eq!(count, 1);
     }
 
@@ -1428,8 +1486,8 @@ mod tests {
             ResourceId::new("repo:fluxbus").unwrap(),
             meta,
         ).unwrap();
-        storage.write_tuple(&tuple).unwrap();
-        let found = storage.read_tuple(&tuple.key()).unwrap().unwrap();
+        storage.write_tuple(&PartitionId::default(), &tuple).unwrap();
+        let found = storage.read_tuple(&PartitionId::default(), &tuple.key()).unwrap().unwrap();
         assert_eq!(found.metadata.as_ref().unwrap().get("key1").unwrap(), "val1");
     }
 

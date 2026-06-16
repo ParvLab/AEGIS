@@ -3,7 +3,7 @@ use crate::engine::cache::TraversalCache;
 use crate::engine::condition::{self, ConditionEvalContext};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::StorageBackend;
-use crate::types::{ConsistencyMode, Relation, ResourceId, Revision, SubjectId, SubjectSet};
+use crate::types::{ConsistencyMode, PartitionId, Relation, ResourceId, Revision, SubjectId, SubjectSet};
 use std::collections::{HashSet, VecDeque};
 
 /// A single step in a traversal trace.
@@ -42,6 +42,7 @@ pub const DEFAULT_MAX_VISITS: usize = 10_000;
 ///   → look for tuples where O is the subject
 ///   → continue until we find the target object
 pub fn bfs_traversal(
+    partition_id: &PartitionId,
     storage: &dyn StorageBackend,
     subject: &SubjectId,
     relation: &Relation,
@@ -49,11 +50,12 @@ pub fn bfs_traversal(
     revision: Option<Revision>,
     consistency: Option<ConsistencyMode>,
 ) -> AegisResult<TraversalResult> {
-    bfs_traversal_with_limits_and_context(storage, subject, relation, target, revision, consistency, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None, None, None)
+    bfs_traversal_with_limits_and_context(partition_id, storage, subject, relation, target, revision, consistency, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None, None, None)
 }
 
 /// BFS traversal with context for tuple condition evaluation.
 pub fn bfs_traversal_with_context(
+    partition_id: &PartitionId,
     storage: &dyn StorageBackend,
     subject: &SubjectId,
     relation: &Relation,
@@ -62,11 +64,12 @@ pub fn bfs_traversal_with_context(
     consistency: Option<ConsistencyMode>,
     context: Option<&ConditionEvalContext>,
 ) -> AegisResult<TraversalResult> {
-    bfs_traversal_with_limits_and_context(storage, subject, relation, target, revision, consistency, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None, context, None)
+    bfs_traversal_with_limits_and_context(partition_id, storage, subject, relation, target, revision, consistency, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None, context, None)
 }
 
 /// BFS traversal with configurable depth and visit limits.
 pub fn bfs_traversal_with_limits(
+    partition_id: &PartitionId,
     storage: &dyn StorageBackend,
     subject: &SubjectId,
     relation: &Relation,
@@ -78,7 +81,7 @@ pub fn bfs_traversal_with_limits(
     cache: Option<&mut TraversalCache>,
 ) -> AegisResult<TraversalResult> {
     bfs_traversal_with_limits_and_context(
-        storage, subject, relation, target, revision, consistency,
+        partition_id, storage, subject, relation, target, revision, consistency,
         max_depth, max_visits, cache, None, None,
     )
 }
@@ -88,6 +91,7 @@ pub fn bfs_traversal_with_limits(
 /// `per_branch_max_visits` limits how many tuples each branch may explore before
 /// being pruned. This prevents a single deep branch from dominating the traversal budget.
 pub fn bfs_traversal_with_limits_and_context(
+    partition_id: &PartitionId,
     storage: &dyn StorageBackend,
     subject: &SubjectId,
     relation: &Relation,
@@ -108,7 +112,7 @@ pub fn bfs_traversal_with_limits_and_context(
     let mut per_branch_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     let per_branch_limit = per_branch_max_visits.unwrap_or(usize::MAX);
 
-    let found_direct = check_direct(storage, subject, relation, target, consistency_ref, context)?;
+    let found_direct = check_direct(partition_id, storage, subject, relation, target, consistency_ref, context)?;
     if found_direct {
         return Ok(TraversalResult {
             found: true,
@@ -142,7 +146,7 @@ pub fn bfs_traversal_with_limits_and_context(
                     }
                     result
                 } else {
-                    let tuples = load_tuples(storage, &current_subject, relation, consistency_ref)?;
+                    let tuples = load_tuples(partition_id, storage, &current_subject, relation, consistency_ref)?;
                     let objects: Vec<String> = tuples.iter().map(|t| t.object.as_str().to_string()).collect();
                     if !objects.is_empty() {
                         c.insert(current_subject.as_str(), relation.as_str(), objects, current_rev);
@@ -150,7 +154,7 @@ pub fn bfs_traversal_with_limits_and_context(
                     tuples
                 }
             } else {
-                load_tuples(storage, &current_subject, relation, consistency_ref)?
+                load_tuples(partition_id, storage, &current_subject, relation, consistency_ref)?
             }
         };
 
@@ -187,7 +191,7 @@ pub fn bfs_traversal_with_limits_and_context(
             // (e.g. "team:eng#member"), we need to verify that our original
             // traversal subject satisfies the subject-set condition.
             if let Some(ref subject_set) = tuple.subject.as_subject_set() {
-                if !is_subject_set_member(storage, subject, subject_set, consistency_ref, context)? {
+                if !is_subject_set_member(partition_id, storage, subject, subject_set, consistency_ref, context)? {
                     continue;
                 }
                 // For subject-set tuples, the edge still goes from current_subject
@@ -249,13 +253,14 @@ pub fn bfs_traversal_with_limits_and_context(
 /// Subject-set tuples are those whose subject field is of the form `{object}#{relation}`
 /// (e.g. `team:eng#member`).
 fn load_tuples(
+    partition_id: &PartitionId,
     storage: &dyn StorageBackend,
     current_subject: &SubjectId,
     relation: &Relation,
     consistency: &ConsistencyMode,
 ) -> AegisResult<Vec<crate::types::RelationshipTuple>> {
     // 1. Direct subject match (existing behavior)
-    let mut tuples = match storage.list_by_subject(current_subject, Some(relation), consistency) {
+    let mut tuples = match storage.list_by_subject(partition_id, current_subject, Some(relation), consistency) {
         Ok(t) => t,
         Err(e) => {
             if matches!(e, AegisError::StorageNotInitialized) {
@@ -276,7 +281,7 @@ fn load_tuples(
     } else {
         return Ok(tuples);
     };
-    let set_tuples = storage.list_by_subject_set_of(&set_object, Some(relation), consistency);
+    let set_tuples = storage.list_by_subject_set_of(partition_id, &set_object, Some(relation), consistency);
     if let Ok(mut st) = set_tuples {
         tuples.append(&mut st);
     }
@@ -287,6 +292,7 @@ fn load_tuples(
 /// Direct check: does subject have the given relation on the target resource?
 /// Handles both direct subject match AND subject-set resolution.
 fn check_direct(
+    partition_id: &PartitionId,
     storage: &dyn StorageBackend,
     subject: &SubjectId,
     relation: &Relation,
@@ -294,7 +300,7 @@ fn check_direct(
     consistency: &ConsistencyMode,
     context: Option<&ConditionEvalContext>,
 ) -> AegisResult<bool> {
-    let tuples = storage.list_by_object(target, Some(relation), consistency)?;
+    let tuples = storage.list_by_object(partition_id, target, Some(relation), consistency)?;
     let now = Utc::now();
     for t in &tuples {
         // Skip expired tuples
@@ -311,7 +317,7 @@ fn check_direct(
         }
         // Subject-set match: subject is like `team:eng#member`
         if let Some(ref subject_set) = t.subject.as_subject_set() {
-            if is_subject_set_member(storage, subject, subject_set, consistency, context)? {
+            if is_subject_set_member(partition_id, storage, subject, subject_set, consistency, context)? {
                 return Ok(true);
             }
         }
@@ -322,13 +328,14 @@ fn check_direct(
 /// Check if `subject` is a member of the given subject-set.
 /// Subject-set `team:eng#member` means: does subject have `member` relation on `team:eng`?
 fn is_subject_set_member(
+    partition_id: &PartitionId,
     storage: &dyn StorageBackend,
     subject: &SubjectId,
     subject_set: &SubjectSet,
     consistency: &ConsistencyMode,
     context: Option<&ConditionEvalContext>,
 ) -> AegisResult<bool> {
-    let tuples = storage.list_by_object(&subject_set.object, Some(&subject_set.relation), consistency)?;
+    let tuples = storage.list_by_object(partition_id, &subject_set.object, Some(&subject_set.relation), consistency)?;
     let now = Utc::now();
     Ok(tuples.iter().any(|t| {
         t.subject == *subject

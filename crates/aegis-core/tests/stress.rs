@@ -166,7 +166,7 @@ fn str006_write_queue_depth() {
     }
 
     // Verify revision increased
-    let rev = engine.storage().current_revision().unwrap();
+    let rev = engine.storage().current_revision(&PartitionId::default()).unwrap();
     assert!(
         rev.as_u64() >= 100,
         "expected >= 100 writes, got rev {}",

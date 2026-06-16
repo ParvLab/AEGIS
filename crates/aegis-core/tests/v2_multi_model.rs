@@ -4,7 +4,7 @@ use aegis_core::engine::condition::ConditionEvalContext;
 use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::types::{
-    Relation, RelationshipTuple, ResourceId, Schema, SubjectId,
+    PartitionId, Relation, RelationshipTuple, ResourceId, Schema, SubjectId,
 };
 use std::collections::HashMap;
 
@@ -99,7 +99,7 @@ fn v2_m1_rbac_assign_check_unassign() {
     let token = rbac::assign_role(&engine, &alice, "owner", &repo).unwrap();
     assert!(token.revision.as_u64() > 0);
 
-    let result = rbac::check_role(&engine, &alice, "owner", &repo).unwrap();
+    let result = rbac::check_role(&engine, &PartitionId::default(), &alice, "owner", &repo).unwrap();
     assert!(result.allowed);
 
     let roles = rbac::get_roles(&engine, &alice, &repo).unwrap();
@@ -107,7 +107,7 @@ fn v2_m1_rbac_assign_check_unassign() {
     assert!(roles.contains(&"owner".to_string()));
 
     rbac::unassign_role(&engine, &alice, "owner", &repo).unwrap();
-    let result = rbac::check_role(&engine, &alice, "owner", &repo).unwrap();
+    let result = rbac::check_role(&engine, &PartitionId::default(), &alice, "owner", &repo).unwrap();
     assert!(!result.allowed);
 
     let roles = rbac::get_roles(&engine, &alice, &repo).unwrap();
@@ -153,7 +153,7 @@ fn v2_m1_rbac_role_does_not_imply_different_resource() {
 
     rbac::assign_role(&engine, &alice, "owner", &repo_a).unwrap();
 
-    let result = rbac::check_role(&engine, &alice, "owner", &repo_b).unwrap();
+    let result = rbac::check_role(&engine, &PartitionId::default(), &alice, "owner", &repo_b).unwrap();
     assert!(!result.allowed);
 }
 
@@ -695,11 +695,11 @@ fn v2_5_role_hierarchy_check_role_resolves_inheritance() {
 
     // check_role for "viewer" should return true (editor inherits from viewer,
     // so editor IS considered a viewer too)
-    let r = rbac::check_role(&engine, &eve, "viewer", &repo).unwrap();
+    let r = rbac::check_role(&engine, &PartitionId::default(), &eve, "viewer", &repo).unwrap();
     assert!(r.allowed, "editor should be recognized as having viewer role via inheritance");
 
     // check_role for "admin" should return false (editor does NOT inherit from admin)
-    let r = rbac::check_role(&engine, &eve, "admin", &repo).unwrap();
+    let r = rbac::check_role(&engine, &PartitionId::default(), &eve, "admin", &repo).unwrap();
     assert!(!r.allowed, "editor should not be recognized as admin");
 }
 

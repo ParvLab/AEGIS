@@ -201,7 +201,7 @@ fn v1_m3_transactions() {
 
     let mut txn = engine.transaction().unwrap();
 
-    txn.write(&RelationshipTuple::new(
+    txn.write(&PartitionId::default(), &RelationshipTuple::new(
         SubjectId::new("user:alice").unwrap(),
         Relation::new("owner").unwrap(),
         ResourceId::new("repo:txn-test").unwrap(),
@@ -223,7 +223,7 @@ fn v1_m3_transactions() {
 
     let mut txn2 = engine.transaction().unwrap();
     txn2
-        .write(&RelationshipTuple::new(
+        .write(&PartitionId::default(), &RelationshipTuple::new(
             SubjectId::new("user:bob").unwrap(),
             Relation::new("owner").unwrap(),
             ResourceId::new("repo:txn-test").unwrap(),
@@ -264,6 +264,7 @@ fn v1_m3_backup_restore_roundtrip() {
     let all_tuples = engine
         .storage()
         .query_tuples(
+            &PartitionId::default(),
             &aegis_core::storage::TupleFilter::default(),
             &aegis_core::types::PaginationParams {
                 limit: u64::MAX,
@@ -275,7 +276,7 @@ fn v1_m3_backup_restore_roundtrip() {
         .tuples;
     assert_eq!(all_tuples.len(), 2);
 
-    let rev_before = engine.storage().current_revision().unwrap();
+    let rev_before = engine.storage().current_revision(&PartitionId::default()).unwrap();
 
     let recovered = engine.recover_from_events(None).unwrap();
     assert!(recovered.as_u64() >= rev_before.as_u64());

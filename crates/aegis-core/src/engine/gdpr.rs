@@ -6,7 +6,7 @@
 use crate::engine::GraphEngine;
 use crate::error::AegisResult;
 use crate::types::{
-    AuditEntry, ConsistencyMode, PaginationParams, RelationshipTuple, Revision, SubjectId,
+    AuditEntry, ConsistencyMode, PaginationParams, PartitionId, RelationshipTuple, Revision, SubjectId,
 };
 use chrono::{DateTime, Days, Utc};
 
@@ -46,19 +46,21 @@ pub struct SubjectDataExport {
 /// High-level GDPR compliance operations on the authorization engine.
 pub struct GdprManager<'a> {
     engine: &'a GraphEngine,
+    partition_id: PartitionId,
     config: GdprConfig,
 }
 
 impl<'a> GdprManager<'a> {
-    pub fn new(engine: &'a GraphEngine) -> Self {
+    pub fn new(engine: &'a GraphEngine, partition_id: PartitionId) -> Self {
         Self {
             engine,
+            partition_id,
             config: GdprConfig::default(),
         }
     }
 
-    pub fn new_with_config(engine: &'a GraphEngine, config: GdprConfig) -> Self {
-        Self { engine, config }
+    pub fn new_with_config(engine: &'a GraphEngine, partition_id: PartitionId, config: GdprConfig) -> Self {
+        Self { engine, partition_id, config }
     }
 
     pub fn config(&self) -> &GdprConfig {
@@ -73,8 +75,8 @@ impl<'a> GdprManager<'a> {
     ///
     /// Returns active tuples and audit entries for the given subject.
     pub fn export_subject_data(&self, subject: &SubjectId) -> AegisResult<SubjectDataExport> {
-        let revision = self.engine.storage().current_revision()?;
-        let active_tuples = self.engine.storage().list_by_subject(subject, None, &ConsistencyMode::MinimizeLatency)?;
+        let revision = self.engine.storage().current_revision(&self.partition_id)?;
+        let active_tuples = self.engine.storage().list_by_subject(&self.partition_id, subject, None, &ConsistencyMode::MinimizeLatency)?;
 
         // Query audit entries in pages to avoid OOM, filter by subject
         const PAGE_SIZE: u64 = 1000;
@@ -84,7 +86,7 @@ impl<'a> GdprManager<'a> {
             let page = self
                 .engine
                 .storage()
-                .query_audit(None, None, None, &PaginationParams {
+                .query_audit(&self.partition_id, None, None, None, &PaginationParams {
                     limit: PAGE_SIZE,
                     cursor,
                 })?;
@@ -131,12 +133,12 @@ impl<'a> GdprManager<'a> {
     ///
     /// Removes all tuples and audit entries involving the subject.
     pub fn right_to_erasure(&self, subject: &SubjectId) -> AegisResult<()> {
-        self.engine.storage().delete_subject(subject)?;
+        self.engine.storage().delete_subject(&self.partition_id, subject)?;
         Ok(())
     }
 
     fn delete_events_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
-        self.engine.storage().delete_events_before(cutoff)
+        self.engine.storage().delete_events_before(&self.partition_id, cutoff)
     }
 
     fn delete_soft_deleted_tuples_before(
@@ -145,7 +147,7 @@ impl<'a> GdprManager<'a> {
     ) -> AegisResult<usize> {
         self.engine
             .storage()
-            .delete_soft_deleted_tuples_before(cutoff)
+            .delete_soft_deleted_tuples_before(&self.partition_id, cutoff)
     }
 
     /// Compact the audit log by removing pair-matched add/remove entries.
@@ -154,7 +156,7 @@ impl<'a> GdprManager<'a> {
     /// no intermediate add for the same key — these are semantically no-ops
     /// and safe to delete.
     pub fn compact_events(&self) -> AegisResult<usize> {
-        self.engine.storage().compact_events()
+        self.engine.storage().compact_events(&self.partition_id)
     }
 }
 
@@ -165,7 +167,7 @@ mod tests {
     use crate::storage::StorageBackend;
     use crate::types::*;
 
-    fn make_engine() -> GraphEngine {
+    fn make_engine_and_partition() -> (GraphEngine, PartitionId) {
         let schema = Schema {
             schema_version: 1,
             namespace: "test".to_string(),
@@ -209,12 +211,14 @@ mod tests {
         };
         let mut storage = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
         storage.initialize().unwrap();
-        GraphEngine::new(Box::new(storage), schema)
+        let engine = GraphEngine::new(Box::new(storage), schema);
+        let partition_id = PartitionId::default();
+        (engine, partition_id)
     }
 
     #[test]
     fn test_export_subject_data() {
-        let engine = make_engine();
+        let (engine, partition_id) = make_engine_and_partition();
         let subject = SubjectId::new("user:alice").unwrap();
         let resource = ResourceId::new("repo:fluxbus").unwrap();
 
@@ -226,7 +230,7 @@ mod tests {
             ))
             .unwrap();
 
-        let gdpr = GdprManager::new(&engine);
+        let gdpr = GdprManager::new(&engine, partition_id.clone());
         let export = gdpr.export_subject_data(&subject).unwrap();
         assert_eq!(export.subject, "user:alice");
         assert_eq!(export.active_tuples.len(), 1);
@@ -236,9 +240,9 @@ mod tests {
 
     #[test]
     fn test_export_subject_no_data() {
-        let engine = make_engine();
+        let (engine, partition_id) = make_engine_and_partition();
         let subject = SubjectId::new("user:ghost").unwrap();
-        let gdpr = GdprManager::new(&engine);
+        let gdpr = GdprManager::new(&engine, partition_id.clone());
         let export = gdpr.export_subject_data(&subject).unwrap();
         assert_eq!(export.active_tuples.len(), 0);
         assert_eq!(export.subject, "user:ghost");
@@ -246,7 +250,7 @@ mod tests {
 
     #[test]
     fn test_right_to_erasure() {
-        let engine = make_engine();
+        let (engine, partition_id) = make_engine_and_partition();
         let subject = SubjectId::new("user:alice").unwrap();
         let resource = ResourceId::new("repo:fluxbus").unwrap();
 
@@ -258,12 +262,12 @@ mod tests {
             ))
             .unwrap();
 
-        let gdpr = GdprManager::new(&engine);
+        let gdpr = GdprManager::new(&engine, partition_id.clone());
         gdpr.right_to_erasure(&subject).unwrap();
 
         let tuples = engine
             .storage()
-            .list_by_subject(&subject, None, &ConsistencyMode::MinimizeLatency)
+            .list_by_subject(&partition_id, &subject, None, &ConsistencyMode::MinimizeLatency)
             .unwrap();
         assert_eq!(tuples.len(), 0);
     }
@@ -281,15 +285,15 @@ mod tests {
             event_retention_days: 30,
             tuple_retention_days: 7,
         };
-        let engine = make_engine();
-        let gdpr = GdprManager::new_with_config(&engine, config);
+        let (engine, partition_id) = make_engine_and_partition();
+        let gdpr = GdprManager::new_with_config(&engine, partition_id.clone(), config);
         assert_eq!(gdpr.config().event_retention_days, 30);
         assert_eq!(gdpr.config().tuple_retention_days, 7);
     }
 
     #[test]
     fn test_gdpr_e2e_transfer_ownership() {
-        let engine = make_engine();
+        let (engine, partition_id) = make_engine_and_partition();
         let alice = SubjectId::new("user:alice").unwrap();
         let bob = SubjectId::new("user:bob").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
@@ -303,7 +307,7 @@ mod tests {
             ))
             .unwrap();
 
-        let gdpr = GdprManager::new(&engine);
+        let gdpr = GdprManager::new(&engine, partition_id.clone());
 
         // Export before transfer — alice has 1 tuple
         let export_before = gdpr.export_subject_data(&alice).unwrap();
@@ -320,7 +324,7 @@ mod tests {
         assert_eq!(export_alice.active_tuples.len(), 0);
 
         // Bob now has the tuple
-        let bob_tuples = engine.storage().list_by_subject(&bob, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let bob_tuples = engine.storage().list_by_subject(&partition_id, &bob, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(bob_tuples.len(), 1);
         assert_eq!(bob_tuples[0].object.as_str(), "repo:fluxbus");
         assert_eq!(bob_tuples[0].relation.as_str(), "owner");
@@ -328,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_gdpr_e2e_erase_and_export() {
-        let engine = make_engine();
+        let (engine, partition_id) = make_engine_and_partition();
         let subject = SubjectId::new("user:alice").unwrap();
         let repo_a = ResourceId::new("repo:a").unwrap();
         let repo_b = ResourceId::new("repo:b").unwrap();
@@ -349,7 +353,7 @@ mod tests {
             ))
             .unwrap();
 
-        let gdpr = GdprManager::new(&engine);
+        let gdpr = GdprManager::new(&engine, partition_id.clone());
 
         // Export has 2 tuples
         let export = gdpr.export_subject_data(&subject).unwrap();
@@ -366,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_gdpr_e2e_compact_events() {
-        let engine = make_engine();
+        let (engine, partition_id) = make_engine_and_partition();
         let subject = SubjectId::new("user:alice").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
         let key = crate::types::TupleKey {
@@ -385,7 +389,7 @@ mod tests {
             .unwrap();
         engine.delete(&key).unwrap();
 
-        let gdpr = GdprManager::new(&engine);
+        let gdpr = GdprManager::new(&engine, partition_id.clone());
 
         // Export shows 0 active tuples (add+remove cancel out for state)
         let export = gdpr.export_subject_data(&subject).unwrap();
@@ -405,7 +409,7 @@ mod tests {
 
     #[test]
     fn test_gdpr_e2e_cascade_policy() {
-        let engine = make_engine();
+        let (engine, partition_id) = make_engine_and_partition();
         let subject = SubjectId::new("user:alice").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
 
@@ -423,13 +427,13 @@ mod tests {
             .unwrap();
         assert!(result.revision.as_u64() > 0);
 
-        let tuples = engine.storage().list_by_subject(&subject, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let tuples = engine.storage().list_by_subject(&partition_id, &subject, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(tuples.len(), 0);
     }
 
     #[test]
     fn test_gdpr_e2e_fail_policy() {
-        let engine = make_engine();
+        let (engine, _partition_id) = make_engine_and_partition();
         let subject = SubjectId::new("user:alice").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
 

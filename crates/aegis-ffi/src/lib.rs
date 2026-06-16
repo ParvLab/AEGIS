@@ -942,7 +942,7 @@ pub extern "C" fn aegis_engine_export_subject(
         let subject_str = c_str_to_str(subject)?;
         let subject_id = SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
         let tuples = eng.export_subject(&subject_id).map_err(|e| error_string(&e.to_string()))?;
-        let rev = eng.storage().current_revision().map_err(|e| error_string(&e.to_string()))?;
+        let rev = eng.storage().current_revision(&PartitionId::default()).map_err(|e| error_string(&e.to_string()))?;
         let json = serde_json::to_string(&tuples.iter().map(|t| {
             serde_json::json!({"subject": t.subject.as_str(), "relation": t.relation.as_str(), "object": t.object.as_str()})
         }).collect::<Vec<_>>()).map_err(|e| error_string(&e.to_string()))?;
@@ -1118,7 +1118,7 @@ pub extern "C" fn aegis_engine_query(
             metadata_value: f.metadata_value,
             ..Default::default()
         };
-        let current_rev = eng.storage().current_revision()
+        let current_rev = eng.storage().current_revision(&PartitionId::default())
             .map_err(|e| error_string(&e.to_string()))?;
         let pp = PaginationParams {
             limit,
@@ -1459,7 +1459,7 @@ pub extern "C" fn aegis_transaction_write(
         );
         let mut guard = txn.inner.lock().map_err(|e| error_string(&e.to_string()))?;
         let inner = guard.as_mut().ok_or_else(|| error_string("transaction not initialized"))?;
-        inner.write(&tuple).map_err(|e| error_string(&e.to_string()))?;
+        inner.write(&PartitionId::default(), &tuple).map_err(|e| error_string(&e.to_string()))?;
         Ok(())
     }));
 
@@ -1492,7 +1492,7 @@ pub extern "C" fn aegis_transaction_delete(
         };
         let mut guard = txn.inner.lock().map_err(|e| error_string(&e.to_string()))?;
         let inner = guard.as_mut().ok_or_else(|| error_string("transaction not initialized"))?;
-        inner.delete(&key).map_err(|e| error_string(&e.to_string()))?;
+        inner.delete(&PartitionId::default(), &key).map_err(|e| error_string(&e.to_string()))?;
         Ok(())
     }));
 

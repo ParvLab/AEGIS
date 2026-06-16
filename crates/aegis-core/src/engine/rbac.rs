@@ -101,6 +101,7 @@ pub fn unassign_role(
 /// a subject with `editor` also has `admin` access.
 pub fn check_role(
     engine: &GraphEngine,
+    partition_id: &PartitionId,
     subject: &SubjectId,
     role: &str,
     resource: &ResourceId,
@@ -123,7 +124,7 @@ pub fn check_role(
                 // since engine.check would resolve it as a permission (not what we want).
                 let tuples = engine.list_by_subject(subject, Some(&Relation::new(child_role_name).unwrap()), None)?;
                 if tuples.iter().any(|t| t.object == *resource) {
-                    let rev = engine.storage().current_revision().unwrap_or(Revision::ZERO);
+                    let rev = engine.storage().current_revision(partition_id).unwrap_or(Revision::ZERO);
                     return Ok(CheckResult {
                         allowed: true,
                         revision: rev,

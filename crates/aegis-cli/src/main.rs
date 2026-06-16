@@ -337,7 +337,7 @@ fn main() -> Result<()> {
                 .with_context(|| "invalid relation filter")?;
             let tuples = engine
                 .storage()
-                .list_by_object(&resource_id, relation_filter.as_ref(), &ConsistencyMode::MinimizeLatency)?;
+                .list_by_object(&PartitionId::default(), &resource_id, relation_filter.as_ref(), &ConsistencyMode::MinimizeLatency)?;
             println!("{}", serde_json::to_string(&tuples)?);
         }
         Commands::Explain {
@@ -464,6 +464,7 @@ fn main() -> Result<()> {
                 cursor: None,
             };
             let result = engine.storage().query_tuples(
+                &PartitionId::default(),
                 &filter,
                 &pagination,
                 &ConsistencyMode::MinimizeLatency,
@@ -479,6 +480,7 @@ fn main() -> Result<()> {
             let all_tuples = engine
                 .storage()
                 .query_tuples(
+                    &PartitionId::default(),
                     &TupleFilter::default(),
                     &PaginationParams {
                         limit: u64::MAX,
@@ -501,7 +503,7 @@ fn main() -> Result<()> {
                     cursor: None,
                 },
             )?;
-            let revision = engine.storage().current_revision()?;
+            let revision = engine.storage().current_revision(&PartitionId::default())?;
             let backend_type = engine.storage().backend_type().to_string();
             let exported_at = Utc::now().to_rfc3339();
             let backup = serde_json::json!({
@@ -573,6 +575,7 @@ fn main() -> Result<()> {
                 engine
                     .storage()
                     .query_tuples(
+                        &PartitionId::default(),
                         &TupleFilter::default(),
                         &PaginationParams {
                             limit: u64::MAX,
@@ -645,7 +648,7 @@ fn main() -> Result<()> {
             let engine = mk_engine(db, None)?;
             let to_rev = to_revision.map(|r| Revision::new(r as u64));
             if *dry_run {
-                let current_rev = engine.storage().current_revision()?;
+                let current_rev = engine.storage().current_revision(&PartitionId::default())?;
                 let target_rev = to_rev.unwrap_or(current_rev);
                 println!(
                     "{}",

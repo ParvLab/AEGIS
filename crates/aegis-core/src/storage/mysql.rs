@@ -3,8 +3,8 @@ use crate::storage::traits::{
     BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
 };
 use crate::types::{
-    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, Relation,
-    RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
+    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId,
+    Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
 };
 use chrono::{DateTime, Utc};
 use mysql_async::prelude::Queryable;
@@ -186,6 +186,8 @@ impl MysqlStorage {
             object,
             created_at,
             metadata,
+            valid_until: None,
+            condition: None,
         })
     }
 }
@@ -209,7 +211,7 @@ impl StorageBackend for MysqlStorage {
         BackendType::Mysql
     }
 
-    fn write_tuple(&self, tuple: &RelationshipTuple) -> AegisResult<Revision> {
+    fn write_tuple(&self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<Revision> {
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
             let revision = Self::bump_revision_async(&mut conn).await?;
@@ -222,8 +224,8 @@ impl StorageBackend for MysqlStorage {
 
             conn.exec_drop(
                 "UPDATE _aegis_tuples SET `revision_removed` = ?
-                 WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `revision_removed` IS NULL",
-                (revision.as_u64() as i64, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str()),
+                 WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                (revision.as_u64() as i64, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(), partition_id.as_str()),
             )
             .await
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -247,9 +249,9 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn write_tuples_batch(&self, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
+    fn write_tuples_batch(&self, partition_id: &PartitionId, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
         if tuples.is_empty() {
-            return self.current_revision();
+            return self.current_revision(partition_id);
         }
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
@@ -265,8 +267,8 @@ impl StorageBackend for MysqlStorage {
 
                 conn.exec_drop(
                     "UPDATE _aegis_tuples SET `revision_removed` = ?
-                     WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `revision_removed` IS NULL",
-                    (revision.as_u64() as i64, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str()),
+                     WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                    (revision.as_u64() as i64, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(), partition_id.as_str()),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -291,14 +293,14 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn delete_tuple(&self, key: &TupleKey) -> AegisResult<Revision> {
+    fn delete_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Revision> {
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
             let row: Option<(i64,)> = conn
                 .exec_first(
                     "SELECT COUNT(*) FROM _aegis_tuples
-                     WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `revision_removed` IS NULL",
-                    (key.subject.as_str(), key.relation.as_str(), key.object.as_str()),
+                     WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                    (key.subject.as_str(), key.relation.as_str(), key.object.as_str(), partition_id.as_str()),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -310,8 +312,8 @@ impl StorageBackend for MysqlStorage {
             let revision = Self::bump_revision_async(&mut conn).await?;
             conn.exec_drop(
                 "UPDATE _aegis_tuples SET `revision_removed` = ?
-                 WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `revision_removed` IS NULL",
-                (revision.as_u64() as i64, key.subject.as_str(), key.relation.as_str(), key.object.as_str()),
+                 WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                (revision.as_u64() as i64, key.subject.as_str(), key.relation.as_str(), key.object.as_str(), partition_id.as_str()),
             )
             .await
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -326,7 +328,7 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn delete_subject(&self, subject: &SubjectId) -> AegisResult<Revision> {
+    fn delete_subject(&self, partition_id: &PartitionId, subject: &SubjectId) -> AegisResult<Revision> {
         let subj = subject.as_str().to_string();
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
@@ -334,8 +336,8 @@ impl StorageBackend for MysqlStorage {
             let rows: Vec<(String, String)> = conn
                 .exec(
                     "SELECT `relation`, `object` FROM _aegis_tuples
-                     WHERE `subject` = ? AND `revision_removed` IS NULL",
-                    (&subj,),
+                     WHERE `subject` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                    (&subj, partition_id.as_str()),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -348,8 +350,8 @@ impl StorageBackend for MysqlStorage {
 
             conn.exec_drop(
                 "UPDATE _aegis_tuples SET `revision_removed` = ?
-                 WHERE `subject` = ? AND `revision_removed` IS NULL",
-                (revision.as_u64() as i64, &subj),
+                 WHERE `subject` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                (revision.as_u64() as i64, &subj, partition_id.as_str()),
             )
             .await
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -366,7 +368,7 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn delete_object(&self, object: &ResourceId) -> AegisResult<Revision> {
+    fn delete_object(&self, partition_id: &PartitionId, object: &ResourceId) -> AegisResult<Revision> {
         let obj = object.as_str().to_string();
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
@@ -374,8 +376,8 @@ impl StorageBackend for MysqlStorage {
             let rows: Vec<(String, String)> = conn
                 .exec(
                     "SELECT `subject`, `relation` FROM _aegis_tuples
-                     WHERE `object` = ? AND `revision_removed` IS NULL",
-                    (&obj,),
+                     WHERE `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                    (&obj, partition_id.as_str()),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -388,8 +390,8 @@ impl StorageBackend for MysqlStorage {
 
             conn.exec_drop(
                 "UPDATE _aegis_tuples SET `revision_removed` = ?
-                 WHERE `object` = ? AND `revision_removed` IS NULL",
-                (revision.as_u64() as i64, &obj),
+                 WHERE `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                (revision.as_u64() as i64, &obj, partition_id.as_str()),
             )
             .await
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -406,14 +408,14 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn has_tuple(&self, key: &TupleKey) -> AegisResult<bool> {
+    fn has_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<bool> {
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
             let row: Option<(i64,)> = conn
                 .exec_first(
                     "SELECT COUNT(*) FROM _aegis_tuples
-                     WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `revision_removed` IS NULL",
-                    (key.subject.as_str(), key.relation.as_str(), key.object.as_str()),
+                     WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                    (key.subject.as_str(), key.relation.as_str(), key.object.as_str(), partition_id.as_str()),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -421,14 +423,14 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn read_tuple(&self, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>> {
+    fn read_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>> {
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
             let rows: Vec<(String, String, String, String, Option<String>)> = conn
                 .exec(
                     "SELECT `subject`, `relation`, `object`, `created_at`, `metadata` FROM _aegis_tuples
-                     WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `revision_removed` IS NULL",
-                    (key.subject.as_str(), key.relation.as_str(), key.object.as_str()),
+                     WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                    (key.subject.as_str(), key.relation.as_str(), key.object.as_str(), partition_id.as_str()),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -443,7 +445,7 @@ impl StorageBackend for MysqlStorage {
     }
 
     fn list_by_object(
-        &self, object: &ResourceId, relation: Option<&Relation>, consistency: &ConsistencyMode,
+        &self, partition_id: &PartitionId, object: &ResourceId, relation: Option<&Relation>, consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let obj = object.as_str().to_string();
         let rel = relation.map(|r| r.as_str().to_string());
@@ -462,18 +464,18 @@ impl StorageBackend for MysqlStorage {
                 conn.exec(
                     &format!(
                         "SELECT `subject`, `relation`, `object`, `created_at`, `metadata` FROM _aegis_tuples
-                         WHERE `object` = ? AND `relation` = ? AND {rev_filter}"
+                         WHERE `object` = ? AND `relation` = ? AND `partition_id` = ? AND {rev_filter}"
                     ),
-                    (&obj, r.as_str()),
+                    (&obj, r.as_str(), partition_id.as_str()),
                 )
                 .await
             } else {
                 conn.exec(
                     &format!(
                         "SELECT `subject`, `relation`, `object`, `created_at`, `metadata` FROM _aegis_tuples
-                         WHERE `object` = ? AND {rev_filter}"
+                         WHERE `object` = ? AND `partition_id` = ? AND {rev_filter}"
                     ),
-                    (&obj,),
+                    (&obj, partition_id.as_str()),
                 )
                 .await
             }
@@ -488,7 +490,7 @@ impl StorageBackend for MysqlStorage {
     }
 
     fn list_by_subject(
-        &self, subject: &SubjectId, relation: Option<&Relation>, consistency: &ConsistencyMode,
+        &self, partition_id: &PartitionId, subject: &SubjectId, relation: Option<&Relation>, consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let subj = subject.as_str().to_string();
         let rel = relation.map(|r| r.as_str().to_string());
@@ -507,18 +509,18 @@ impl StorageBackend for MysqlStorage {
                 conn.exec(
                     &format!(
                         "SELECT `subject`, `relation`, `object`, `created_at`, `metadata` FROM _aegis_tuples
-                         WHERE `subject` = ? AND `relation` = ? AND {rev_filter}"
+                         WHERE `subject` = ? AND `relation` = ? AND `partition_id` = ? AND {rev_filter}"
                     ),
-                    (&subj, r.as_str()),
+                    (&subj, r.as_str(), partition_id.as_str()),
                 )
                 .await
             } else {
                 conn.exec(
                     &format!(
                         "SELECT `subject`, `relation`, `object`, `created_at`, `metadata` FROM _aegis_tuples
-                         WHERE `subject` = ? AND {rev_filter}"
+                         WHERE `subject` = ? AND `partition_id` = ? AND {rev_filter}"
                     ),
-                    (&subj,),
+                    (&subj, partition_id.as_str()),
                 )
                 .await
             }
@@ -533,7 +535,7 @@ impl StorageBackend for MysqlStorage {
     }
 
     fn list_by_relation(
-        &self, object: &ResourceId, relation: &Relation,
+        &self, partition_id: &PartitionId, object: &ResourceId, relation: &Relation,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let obj = object.as_str().to_string();
         let rel = relation.as_str().to_string();
@@ -543,8 +545,8 @@ impl StorageBackend for MysqlStorage {
             let rows: Vec<(String, String, String, String, Option<String>)> = conn
                 .exec(
                     "SELECT `subject`, `relation`, `object`, `created_at`, `metadata` FROM _aegis_tuples
-                     WHERE `object` = ? AND `relation` = ? AND `revision_removed` IS NULL",
-                    (&obj, &rel),
+                     WHERE `object` = ? AND `relation` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                    (&obj, &rel, partition_id.as_str()),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -558,7 +560,7 @@ impl StorageBackend for MysqlStorage {
     }
 
     fn query_tuples(
-        &self, filter: &TupleFilter, pagination: &PaginationParams, consistency: &ConsistencyMode,
+        &self, partition_id: &PartitionId, filter: &TupleFilter, pagination: &PaginationParams, consistency: &ConsistencyMode,
     ) -> AegisResult<PaginatedTuples> {
         let subj_type = filter.subject_type.clone();
         let rel = filter.relation.as_ref().map(|r| r.as_str().to_string());
@@ -576,8 +578,8 @@ impl StorageBackend for MysqlStorage {
             let mut conn = self.get_conn().await?;
             let revision = Self::current_revision_async(&mut conn).await?;
 
-            let mut conditions = vec![rev_filter];
-            let mut values: Vec<mysql_async::Value> = Vec::new();
+            let mut conditions = vec![format!("`partition_id` = ?1"), rev_filter];
+            let mut values: Vec<mysql_async::Value> = vec![partition_id.as_str().into()];
 
             if let Some(st) = subj_type {
                 values.push(format!("{st}:%").into());
@@ -636,7 +638,8 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn current_revision(&self) -> AegisResult<Revision> {
+    fn current_revision(&self, partition_id: &PartitionId) -> AegisResult<Revision> {
+        let _ = partition_id;
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
             Self::current_revision_async(&mut conn).await
@@ -644,11 +647,12 @@ impl StorageBackend for MysqlStorage {
     }
 
     fn current_token(&self) -> AegisResult<RevisionToken> {
-        let revision = self.current_revision()?;
+        let revision = self.current_revision(&PartitionId::default())?;
         Ok(RevisionToken::new(revision, self.node_id))
     }
 
-    fn begin_transaction(&self) -> AegisResult<Box<dyn StorageTransaction>> {
+    fn begin_transaction(&self, partition_id: &PartitionId) -> AegisResult<Box<dyn StorageTransaction>> {
+        let _ = partition_id;
         let node_id = self.node_id;
         let handle = self.runtime.handle().clone();
         self.runtime.block_on(async {
@@ -661,7 +665,7 @@ impl StorageBackend for MysqlStorage {
     }
 
     fn query_audit(
-        &self, object: Option<&ResourceId>, from_revision: Option<Revision>,
+        &self, partition_id: &PartitionId, object: Option<&ResourceId>, from_revision: Option<Revision>,
         to_revision: Option<Revision>, pagination: &PaginationParams,
     ) -> AegisResult<Vec<AuditEntry>> {
         let from = from_revision.map(|r| r.as_u64() as i64);
@@ -675,8 +679,8 @@ impl StorageBackend for MysqlStorage {
                 "SELECT `revision`, `action`, `subject`, `relation`, `object`, `timestamp`, `metadata`
                  FROM _aegis_events",
             );
-            let mut conditions: Vec<String> = Vec::new();
-            let mut values: Vec<mysql_async::Value> = Vec::new();
+            let mut conditions: Vec<String> = vec!["`partition_id` = ?1".to_string()];
+            let mut values: Vec<mysql_async::Value> = vec![partition_id.as_str().into()];
 
             if let Some(obj) = object {
                 values.push(obj.as_str().to_string().into());
@@ -691,10 +695,8 @@ impl StorageBackend for MysqlStorage {
                 conditions.push(format!("`revision` <= ?{}", values.len()));
             }
 
-            if !conditions.is_empty() {
-                sql.push_str(" WHERE ");
-                sql.push_str(&conditions.join(" AND "));
-            }
+            sql.push_str(" WHERE ");
+            sql.push_str(&conditions.join(" AND "));
 
             values.push((limit_val as i64).into());
             values.push((offset as i64).into());
@@ -784,14 +786,14 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn delete_events_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+    fn delete_events_before(&self, partition_id: &PartitionId, cutoff: DateTime<Utc>) -> AegisResult<usize> {
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
             let cutoff_str = cutoff.to_rfc3339();
             let result = conn
                 .exec_iter(
-                    "DELETE FROM _aegis_events WHERE `timestamp` < ?",
-                    (&cutoff_str,),
+                    "DELETE FROM _aegis_events WHERE `partition_id` = ? AND `timestamp` < ?",
+                    (partition_id.as_str(), &cutoff_str),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -799,18 +801,20 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn delete_soft_deleted_tuples_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+    fn delete_soft_deleted_tuples_before(&self, partition_id: &PartitionId, cutoff: DateTime<Utc>) -> AegisResult<usize> {
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
             let cutoff_str = cutoff.to_rfc3339();
             let result = conn
                 .exec_iter(
                     "DELETE FROM _aegis_tuples
-                     WHERE `revision_removed` IS NOT NULL
+                     WHERE `partition_id` = ?
+                       AND `revision_removed` IS NOT NULL
                        AND `revision_removed` <= (
-                         SELECT COALESCE(MAX(`revision`), 0) FROM _aegis_events WHERE `timestamp` < ?
+                         SELECT COALESCE(MAX(`revision`), 0) FROM _aegis_events
+                         WHERE `partition_id` = ? AND `timestamp` < ?
                        )",
-                    (&cutoff_str,),
+                    (partition_id.as_str(), partition_id.as_str(), &cutoff_str),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -818,7 +822,7 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
+    fn recover_from_events(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision> {
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
 
@@ -830,8 +834,9 @@ impl StorageBackend for MysqlStorage {
                 .exec(
                     "SELECT `revision`, `action`, `subject`, `relation`, `object`, `metadata`
                      FROM _aegis_events
+                     WHERE `partition_id` = ?
                      ORDER BY `revision` ASC, `event_id` ASC",
-                    (),
+                    (partition_id.as_str(),),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -860,8 +865,8 @@ impl StorageBackend for MysqlStorage {
                     "remove" => {
                         conn.exec_drop(
                             "UPDATE _aegis_tuples SET `revision_removed` = ?
-                             WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `revision_removed` IS NULL",
-                            (*rev, subject.as_str(), relation.as_str(), object.as_str()),
+                             WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+                            (*rev, subject.as_str(), relation.as_str(), object.as_str(), partition_id.as_str()),
                         )
                         .await
                         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -888,14 +893,14 @@ impl StorageBackend for MysqlStorage {
         })
     }
 
-    fn compact_events(&self) -> AegisResult<usize> {
+    fn compact_events(&self, partition_id: &PartitionId) -> AegisResult<usize> {
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
 
             let rows: Vec<(i64, String, String, String, String)> = conn
                 .exec(
-                    "SELECT `event_id`, `action`, `subject`, `relation`, `object` FROM _aegis_events ORDER BY `revision` ASC, `event_id` ASC",
-                    (),
+                    "SELECT `event_id`, `action`, `subject`, `relation`, `object` FROM _aegis_events WHERE `partition_id` = ? ORDER BY `revision` ASC, `event_id` ASC",
+                    (partition_id.as_str(),),
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -925,7 +930,10 @@ impl StorageBackend for MysqlStorage {
 
             let total = to_delete.len();
             for id in &to_delete {
-                conn.exec_drop("DELETE FROM _aegis_events WHERE `event_id` = ?", (*id,))
+                conn.exec_drop(
+                    "DELETE FROM _aegis_events WHERE `event_id` = ? AND `partition_id` = ?",
+                    (*id, partition_id.as_str()),
+                )
                     .await
                     .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             }
@@ -1040,6 +1048,7 @@ impl MysqlTransaction {
 
     async fn write_impl(
         conn: &mut mysql_async::Conn,
+        partition_id: &PartitionId,
         tuple: &RelationshipTuple,
     ) -> AegisResult<()> {
         let revision = Self::bump_revision_async(conn).await?;
@@ -1052,8 +1061,8 @@ impl MysqlTransaction {
 
         conn.exec_drop(
             "UPDATE _aegis_tuples SET `revision_removed` = ?
-             WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `revision_removed` IS NULL",
-            (revision.as_u64() as i64, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str()),
+             WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+            (revision.as_u64() as i64, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(), partition_id.as_str()),
         )
         .await
         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1078,14 +1087,15 @@ impl MysqlTransaction {
 
     async fn delete_impl(
         conn: &mut mysql_async::Conn,
+        partition_id: &PartitionId,
         key: &TupleKey,
     ) -> AegisResult<()> {
         let revision = Self::bump_revision_async(conn).await?;
 
         conn.exec_drop(
             "UPDATE _aegis_tuples SET `revision_removed` = ?
-             WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `revision_removed` IS NULL",
-            (revision.as_u64() as i64, key.subject.as_str(), key.relation.as_str(), key.object.as_str()),
+             WHERE `subject` = ? AND `relation` = ? AND `object` = ? AND `partition_id` = ? AND `revision_removed` IS NULL",
+            (revision.as_u64() as i64, key.subject.as_str(), key.relation.as_str(), key.object.as_str(), partition_id.as_str()),
         )
         .await
         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1101,25 +1111,25 @@ impl MysqlTransaction {
 }
 
 impl StorageTransaction for MysqlTransaction {
-    fn write(&mut self, tuple: &RelationshipTuple) -> AegisResult<()> {
+    fn write(&mut self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<()> {
         let tuple_clone = tuple.clone();
         let mutex = self.take_conn()?;
         let handle = self.runtime.clone();
         let result = handle.block_on(async {
             let mut conn = mutex.lock().await;
-            Self::write_impl(&mut conn, &tuple_clone).await
+            Self::write_impl(&mut conn, partition_id, &tuple_clone).await
         });
         self.conn = Some(mutex);
         result
     }
 
-    fn delete(&mut self, key: &TupleKey) -> AegisResult<()> {
+    fn delete(&mut self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<()> {
         let key_clone = key.clone();
         let mutex = self.take_conn()?;
         let handle = self.runtime.clone();
         let result = handle.block_on(async {
             let mut conn = mutex.lock().await;
-            Self::delete_impl(&mut conn, &key_clone).await
+            Self::delete_impl(&mut conn, partition_id, &key_clone).await
         });
         self.conn = Some(mutex);
         result

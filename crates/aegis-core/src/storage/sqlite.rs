@@ -2,10 +2,10 @@ use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
     BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
 };
-use crate::types::{
-    AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, Relation,
-    RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
-};
+    use crate::types::{
+        AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId, Relation,
+        RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
+    };
 use chrono::{DateTime, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -28,6 +28,7 @@ const TUPLES_TABLE: &str = "
         subject          TEXT NOT NULL,
         relation         TEXT NOT NULL,
         object           TEXT NOT NULL,
+        partition_id     TEXT NOT NULL DEFAULT 'default',
         created_at       TEXT NOT NULL,
         metadata         TEXT,
         valid_until      TEXT,
@@ -45,18 +46,21 @@ const TUPLES_OBJ_REL_IDX: &str =
     "CREATE INDEX IF NOT EXISTS idx_tuples_object_relation ON _aegis_tuples(object, relation)";
 const TUPLES_SUB_REL_IDX: &str =
     "CREATE INDEX IF NOT EXISTS idx_tuples_subject_relation ON _aegis_tuples(subject, relation)";
+const TUPLES_PARTITION_IDX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_tuples_partition ON _aegis_tuples(partition_id)";
 
 const EVENTS_TABLE: &str = "
     CREATE TABLE IF NOT EXISTS _aegis_events (
-        event_id   INTEGER PRIMARY KEY AUTOINCREMENT,
-        revision   INTEGER NOT NULL,
-        action     TEXT NOT NULL,
-        subject    TEXT NOT NULL,
-        relation   TEXT NOT NULL,
-        object     TEXT NOT NULL,
-        metadata   TEXT,
-        timestamp  TEXT NOT NULL,
-        identity   TEXT
+        event_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+        revision      INTEGER NOT NULL,
+        action        TEXT NOT NULL,
+        subject       TEXT NOT NULL,
+        relation      TEXT NOT NULL,
+        object        TEXT NOT NULL,
+        partition_id  TEXT NOT NULL DEFAULT 'default',
+        metadata      TEXT,
+        timestamp     TEXT NOT NULL,
+        identity      TEXT
     )";
 
 const SCHEMA_TABLE: &str = "
@@ -180,6 +184,8 @@ impl SqliteStorage {
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         conn.execute_batch(TUPLES_SUB_REL_IDX)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        conn.execute_batch(TUPLES_PARTITION_IDX)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         conn.execute_batch(EVENTS_TABLE)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         conn.execute_batch(SCHEMA_TABLE)
@@ -285,19 +291,21 @@ impl SqliteStorage {
         subject: &str,
         relation: &str,
         object: &str,
+        partition_id: &str,
         metadata: Option<&str>,
         identity: Option<&str>,
     ) -> AegisResult<()> {
         let now = Utc::now().to_rfc3339();
         conn.execute(
-            "INSERT INTO _aegis_events (revision, action, subject, relation, object, metadata, timestamp, identity)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO _aegis_events (revision, action, subject, relation, object, partition_id, metadata, timestamp, identity)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 revision.as_u64() as i64,
                 action,
                 subject,
                 relation,
                 object,
+                partition_id,
                 metadata,
                 now,
                 identity,
@@ -410,7 +418,7 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn write_tuple(&self, tuple: &RelationshipTuple) -> AegisResult<Revision> {
+    fn write_tuple(&self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             let revision = Self::bump_revision(conn)?;
             let metadata_json = tuple
@@ -422,12 +430,13 @@ impl StorageBackend for SqliteStorage {
 
             conn.execute(
                 "UPDATE _aegis_tuples SET revision_removed = ?1
-                 WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND revision_removed IS NULL",
+                 WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND partition_id = ?5 AND revision_removed IS NULL",
                 params![
                     revision.as_u64() as i64,
                     tuple.subject.as_str(),
                     tuple.relation.as_str(),
                     tuple.object.as_str(),
+                    partition_id.as_str(),
                 ],
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -435,12 +444,13 @@ impl StorageBackend for SqliteStorage {
             let valid_until_str = tuple.valid_until.map(|v| v.to_rfc3339());
             let condition_str = tuple.condition.as_deref();
             conn.execute(
-                "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, valid_until, condition, revision_added, revision_removed)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+                "INSERT INTO _aegis_tuples (subject, relation, object, partition_id, created_at, metadata, valid_until, condition, revision_added, revision_removed)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
                 params![
                     tuple.subject.as_str(),
                     tuple.relation.as_str(),
                     tuple.object.as_str(),
+                    partition_id.as_str(),
                     tuple.created_at.to_rfc3339(),
                     metadata_json,
                     valid_until_str,
@@ -457,6 +467,7 @@ impl StorageBackend for SqliteStorage {
                 tuple.subject.as_str(),
                 tuple.relation.as_str(),
                 tuple.object.as_str(),
+                partition_id.as_str(),
                 metadata_json.as_deref(),
                 None,
             )?;
@@ -465,9 +476,9 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn write_tuples_batch(&self, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
+    fn write_tuples_batch(&self, partition_id: &PartitionId, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
         if tuples.is_empty() {
-            return self.current_revision();
+            return self.current_revision(partition_id);
         }
 
         self.with_write_tx(|conn| {
@@ -483,12 +494,13 @@ impl StorageBackend for SqliteStorage {
 
                 conn.execute(
                     "UPDATE _aegis_tuples SET revision_removed = ?1
-                     WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND revision_removed IS NULL",
+                     WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND partition_id = ?5 AND revision_removed IS NULL",
                     params![
                         revision.as_u64() as i64,
                         tuple.subject.as_str(),
                         tuple.relation.as_str(),
                         tuple.object.as_str(),
+                        partition_id.as_str(),
                     ],
                 )
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -496,12 +508,13 @@ impl StorageBackend for SqliteStorage {
                 let valid_until_str = tuple.valid_until.map(|v| v.to_rfc3339());
                 let condition_str = tuple.condition.as_deref();
                 conn.execute(
-                    "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, valid_until, condition, revision_added, revision_removed)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
+                    "INSERT INTO _aegis_tuples (subject, relation, object, partition_id, created_at, metadata, valid_until, condition, revision_added, revision_removed)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
                     params![
                         tuple.subject.as_str(),
                         tuple.relation.as_str(),
                         tuple.object.as_str(),
+                        partition_id.as_str(),
                         tuple.created_at.to_rfc3339(),
                         metadata_json,
                         valid_until_str,
@@ -518,6 +531,7 @@ impl StorageBackend for SqliteStorage {
                     tuple.subject.as_str(),
                     tuple.relation.as_str(),
                     tuple.object.as_str(),
+                    partition_id.as_str(),
                     metadata_json.as_deref(),
                     None,
                 )?;
@@ -527,13 +541,13 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn delete_tuple(&self, key: &TupleKey) -> AegisResult<Revision> {
+    fn delete_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             let exists: bool = conn
                 .query_row(
                     "SELECT COUNT(*) FROM _aegis_tuples
-                     WHERE subject = ?1 AND relation = ?2 AND object = ?3 AND revision_removed IS NULL",
-                    params![key.subject.as_str(), key.relation.as_str(), key.object.as_str()],
+                     WHERE subject = ?1 AND relation = ?2 AND object = ?3 AND partition_id = ?4 AND revision_removed IS NULL",
+                    params![key.subject.as_str(), key.relation.as_str(), key.object.as_str(), partition_id.as_str()],
                     |row| row.get::<_, i64>(0),
                 )
                 .map(|count| count > 0)
@@ -547,12 +561,13 @@ impl StorageBackend for SqliteStorage {
 
             conn.execute(
                 "UPDATE _aegis_tuples SET revision_removed = ?1
-                 WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND revision_removed IS NULL",
+                 WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND partition_id = ?5 AND revision_removed IS NULL",
                 params![
                     revision.as_u64() as i64,
                     key.subject.as_str(),
                     key.relation.as_str(),
                     key.object.as_str(),
+                    partition_id.as_str(),
                 ],
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -564,6 +579,7 @@ impl StorageBackend for SqliteStorage {
                 key.subject.as_str(),
                 key.relation.as_str(),
                 key.object.as_str(),
+                partition_id.as_str(),
                 None,
                 None,
             )?;
@@ -572,19 +588,19 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn delete_subject(&self, subject: &SubjectId) -> AegisResult<Revision> {
+    fn delete_subject(&self, partition_id: &PartitionId, subject: &SubjectId) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             let revision = Self::bump_revision(conn)?;
 
             let mut stmt = conn
                 .prepare(
                     "SELECT relation, object FROM _aegis_tuples
-                     WHERE subject = ?1 AND revision_removed IS NULL",
+                     WHERE subject = ?1 AND partition_id = ?2 AND revision_removed IS NULL",
                 )
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             let tuples: Vec<(String, String)> = stmt
-                .query_map(params![subject.as_str()], |row| {
+                .query_map(params![subject.as_str(), partition_id.as_str()], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?
@@ -595,8 +611,8 @@ impl StorageBackend for SqliteStorage {
 
             conn.execute(
                 "UPDATE _aegis_tuples SET revision_removed = ?1
-                 WHERE subject = ?2 AND revision_removed IS NULL",
-                params![revision.as_u64() as i64, subject.as_str()],
+                 WHERE subject = ?2 AND partition_id = ?3 AND revision_removed IS NULL",
+                params![revision.as_u64() as i64, subject.as_str(), partition_id.as_str()],
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
@@ -608,6 +624,7 @@ impl StorageBackend for SqliteStorage {
                     subject.as_str(),
                     relation,
                     object,
+                    partition_id.as_str(),
                     None,
                     None,
                 )?;
@@ -617,19 +634,19 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn delete_object(&self, object: &ResourceId) -> AegisResult<Revision> {
+    fn delete_object(&self, partition_id: &PartitionId, object: &ResourceId) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             let revision = Self::bump_revision(conn)?;
 
             let mut stmt = conn
                 .prepare(
                     "SELECT subject, relation FROM _aegis_tuples
-                     WHERE object = ?1 AND revision_removed IS NULL",
+                     WHERE object = ?1 AND partition_id = ?2 AND revision_removed IS NULL",
                 )
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             let tuples: Vec<(String, String)> = stmt
-                .query_map(params![object.as_str()], |row| {
+                .query_map(params![object.as_str(), partition_id.as_str()], |row| {
                     Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
                 })
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?
@@ -640,8 +657,8 @@ impl StorageBackend for SqliteStorage {
 
             conn.execute(
                 "UPDATE _aegis_tuples SET revision_removed = ?1
-                 WHERE object = ?2 AND revision_removed IS NULL",
-                params![revision.as_u64() as i64, object.as_str()],
+                 WHERE object = ?2 AND partition_id = ?3 AND revision_removed IS NULL",
+                params![revision.as_u64() as i64, object.as_str(), partition_id.as_str()],
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
@@ -653,6 +670,7 @@ impl StorageBackend for SqliteStorage {
                     subject,
                     relation,
                     object.as_str(),
+                    partition_id.as_str(),
                     None,
                     None,
                 )?;
@@ -662,32 +680,32 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn has_tuple(&self, key: &TupleKey) -> AegisResult<bool> {
+    fn has_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<bool> {
         let conn = self.conn()?;
         let count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM _aegis_tuples
-                 WHERE subject = ?1 AND relation = ?2 AND object = ?3 AND revision_removed IS NULL",
-                params![key.subject.as_str(), key.relation.as_str(), key.object.as_str()],
+                 WHERE subject = ?1 AND relation = ?2 AND object = ?3 AND partition_id = ?4 AND revision_removed IS NULL",
+                params![key.subject.as_str(), key.relation.as_str(), key.object.as_str(), partition_id.as_str()],
                 |row| row.get(0),
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         Ok(count > 0)
     }
 
-    fn read_tuple(&self, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>> {
+    fn read_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
                 "SELECT subject, relation, object, created_at, metadata, valid_until, condition, revision_added
                  FROM _aegis_tuples
-                 WHERE subject = ?1 AND relation = ?2 AND object = ?3 AND revision_removed IS NULL",
+                 WHERE subject = ?1 AND relation = ?2 AND object = ?3 AND partition_id = ?4 AND revision_removed IS NULL",
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
         let result = stmt
             .query_row(
-                params![key.subject.as_str(), key.relation.as_str(), key.object.as_str()],
+                params![key.subject.as_str(), key.relation.as_str(), key.object.as_str(), partition_id.as_str()],
                 |row| {
                     let subject_str: String = row.get(0)?;
                     let relation_str: String = row.get(1)?;
@@ -729,6 +747,7 @@ impl StorageBackend for SqliteStorage {
 
     fn list_by_object(
         &self,
+        partition_id: &PartitionId,
         object: &ResourceId,
         relation: Option<&Relation>,
         consistency: &ConsistencyMode,
@@ -751,20 +770,24 @@ impl StorageBackend for SqliteStorage {
             (
                 format!(
                     "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
-                     WHERE object = ?1 AND relation = ?2 AND {revision_filter}"
+                     WHERE object = ?1 AND relation = ?2 AND partition_id = ?3 AND {revision_filter}"
                 ),
                 vec![
                     Box::new(object.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(rel.as_str().to_string()),
+                    Box::new(partition_id.as_str().to_string()),
                 ],
             )
         } else {
             (
                 format!(
                     "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
-                     WHERE object = ?1 AND {revision_filter}"
+                     WHERE object = ?1 AND partition_id = ?2 AND {revision_filter}"
                 ),
-                vec![Box::new(object.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>],
+                vec![
+                    Box::new(object.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>,
+                    Box::new(partition_id.as_str().to_string()),
+                ],
             )
         };
 
@@ -817,6 +840,7 @@ impl StorageBackend for SqliteStorage {
 
     fn list_by_subject(
         &self,
+        partition_id: &PartitionId,
         subject: &SubjectId,
         relation: Option<&Relation>,
         consistency: &ConsistencyMode,
@@ -839,20 +863,24 @@ impl StorageBackend for SqliteStorage {
             (
                 format!(
                     "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
-                     WHERE subject = ?1 AND relation = ?2 AND {revision_filter}"
+                     WHERE subject = ?1 AND relation = ?2 AND partition_id = ?3 AND {revision_filter}"
                 ),
                 vec![
                     Box::new(subject.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>,
                     Box::new(rel.as_str().to_string()),
+                    Box::new(partition_id.as_str().to_string()),
                 ],
             )
         } else {
             (
                 format!(
                     "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
-                     WHERE subject = ?1 AND {revision_filter}"
+                     WHERE subject = ?1 AND partition_id = ?2 AND {revision_filter}"
                 ),
-                vec![Box::new(subject.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>],
+                vec![
+                    Box::new(subject.as_str().to_string()) as Box<dyn rusqlite::types::ToSql>,
+                    Box::new(partition_id.as_str().to_string()),
+                ],
             )
         };
 
@@ -905,6 +933,7 @@ impl StorageBackend for SqliteStorage {
 
     fn list_by_relation(
         &self,
+        partition_id: &PartitionId,
         object: &ResourceId,
         relation: &Relation,
     ) -> AegisResult<Vec<RelationshipTuple>> {
@@ -912,13 +941,13 @@ impl StorageBackend for SqliteStorage {
         let mut stmt = conn
             .prepare(
                 "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
-                 WHERE object = ?1 AND relation = ?2 AND revision_removed IS NULL",
+                 WHERE object = ?1 AND relation = ?2 AND partition_id = ?3 AND revision_removed IS NULL",
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
         let rows = stmt
             .query_map(
-                params![object.as_str(), relation.as_str()],
+                params![object.as_str(), relation.as_str(), partition_id.as_str()],
                 |row| {
                     let subject_str: String = row.get(0)?;
                     let relation_str: String = row.get(1)?;
@@ -963,6 +992,7 @@ impl StorageBackend for SqliteStorage {
 
     fn query_tuples(
         &self,
+        partition_id: &PartitionId,
         filter: &TupleFilter,
         pagination: &PaginationParams,
         consistency: &ConsistencyMode,
@@ -982,8 +1012,8 @@ impl StorageBackend for SqliteStorage {
             }
             _ => "revision_removed IS NULL".to_string(),
         };
-        let mut conditions = vec![revision_filter];
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut conditions = vec!["partition_id = ?1".to_string(), revision_filter];
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(partition_id.as_str().to_string())];
 
         if let Some(ref st) = filter.subject_type {
             params_vec.push(Box::new(format!("{st}:%")));
@@ -1083,7 +1113,8 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn current_revision(&self) -> AegisResult<Revision> {
+    fn current_revision(&self, partition_id: &PartitionId) -> AegisResult<Revision> {
+        let _ = partition_id;
         let conn = self.conn()?;
         Self::read_revision(&conn)
     }
@@ -1113,11 +1144,12 @@ impl StorageBackend for SqliteStorage {
     }
 
     fn current_token(&self) -> AegisResult<RevisionToken> {
-        let revision = self.current_revision()?;
+        let revision = self.current_revision(&PartitionId::default())?;
         Ok(RevisionToken::new(revision, self.node_id))
     }
 
-    fn begin_transaction(&self) -> AegisResult<Box<dyn StorageTransaction>> {
+    fn begin_transaction(&self, partition_id: &PartitionId) -> AegisResult<Box<dyn StorageTransaction>> {
+        let _ = partition_id;
         let conn = self.conn()?;
         let tx = SqliteTransaction::new(conn, self.node_id)?;
         Ok(Box::new(tx))
@@ -1125,14 +1157,15 @@ impl StorageBackend for SqliteStorage {
 
     fn query_audit(
         &self,
+        partition_id: &PartitionId,
         object: Option<&ResourceId>,
         from_revision: Option<Revision>,
         to_revision: Option<Revision>,
         pagination: &PaginationParams,
     ) -> AegisResult<Vec<AuditEntry>> {
         let conn = self.conn()?;
-        let mut conditions: Vec<String> = Vec::new();
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        let mut conditions: Vec<String> = vec!["partition_id = ?1".to_string()];
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(partition_id.as_str().to_string())];
 
         if let Some(obj) = object {
             params_vec.push(Box::new(obj.as_str().to_string()));
@@ -1261,13 +1294,13 @@ impl StorageBackend for SqliteStorage {
         std::fs::metadata(&wal_path).ok().map(|m| m.len() as f64 / (1024.0 * 1024.0))
     }
 
-    fn delete_events_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+    fn delete_events_before(&self, partition_id: &PartitionId, cutoff: DateTime<Utc>) -> AegisResult<usize> {
         let conn = self.conn()?;
         let cutoff_str = cutoff.to_rfc3339();
         let count = conn
             .execute(
-                "DELETE FROM _aegis_events WHERE timestamp < ?1",
-                params![cutoff_str],
+                "DELETE FROM _aegis_events WHERE partition_id = ?1 AND timestamp < ?2",
+                params![partition_id.as_str(), cutoff_str],
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         Ok(count)
@@ -1275,6 +1308,7 @@ impl StorageBackend for SqliteStorage {
 
     fn delete_soft_deleted_tuples_before(
         &self,
+        partition_id: &PartitionId,
         cutoff: DateTime<Utc>,
     ) -> AegisResult<usize> {
         let conn = self.conn()?;
@@ -1282,18 +1316,20 @@ impl StorageBackend for SqliteStorage {
         let count = conn
             .execute(
                 "DELETE FROM _aegis_tuples
-                 WHERE revision_removed IS NOT NULL
+                 WHERE partition_id = ?1
+                   AND revision_removed IS NOT NULL
                    AND revision_removed <= (
-                     SELECT COALESCE(MAX(revision), 0) FROM _aegis_events WHERE timestamp < ?1
+                     SELECT COALESCE(MAX(revision), 0) FROM _aegis_events
+                     WHERE partition_id = ?1 AND timestamp < ?2
                    )",
-                params![cutoff_str],
+                params![partition_id.as_str(), cutoff_str],
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         Ok(count)
     }
 
-    fn compact_events(&self) -> AegisResult<usize> {
-        SqliteStorage::compact_events(self)
+    fn compact_events(&self, partition_id: &PartitionId) -> AegisResult<usize> {
+        SqliteStorage::compact_events(self, partition_id)
     }
 
     fn close(&self) -> AegisResult<()> {
@@ -1305,8 +1341,8 @@ impl StorageBackend for SqliteStorage {
         Ok(())
     }
 
-    fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
-        self.recover_from_events_impl(to_revision)
+    fn recover_from_events(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision> {
+        self.recover_from_events_impl(partition_id, to_revision)
     }
 }
 
@@ -1316,7 +1352,7 @@ impl SqliteStorage {
     /// Recover the tuple graph from the event log.
     /// Replays all events in revision order to reconstruct the current state.
     /// After recovery, verifies that the final revision matches.
-    fn recover_from_events_impl(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
+    fn recover_from_events_impl(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             conn.execute("DELETE FROM _aegis_tuples WHERE revision_removed IS NOT NULL OR 1=1", [])
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1325,12 +1361,13 @@ impl SqliteStorage {
                 .prepare(
                     "SELECT revision, action, subject, relation, object, metadata
                      FROM _aegis_events
+                     WHERE partition_id = ?1
                      ORDER BY revision ASC, event_id ASC",
                 )
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             let rows = stmt
-                .query_map([], |row| {
+                .query_map(params![partition_id.as_str()], |row| {
                     let rev: i64 = row.get(0)?;
                     let action: String = row.get(1)?;
                     let subject: String = row.get(2)?;
@@ -1358,17 +1395,17 @@ impl SqliteStorage {
                 match action.as_str() {
                     "add" => {
                         conn.execute(
-                            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, valid_until, revision_added, revision_removed)
-                             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, NULL)",
-                            rusqlite::params![subject, relation, object, now, metadata, rev.as_u64() as i64],
+                            "INSERT INTO _aegis_tuples (subject, relation, object, partition_id, created_at, metadata, valid_until, revision_added, revision_removed)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
+                            rusqlite::params![subject, relation, object, partition_id.as_str(), now, metadata, rev.as_u64() as i64],
                         )
                         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
                     }
                     "remove" => {
                         conn.execute(
                             "UPDATE _aegis_tuples SET revision_removed = ?1
-                             WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND revision_removed IS NULL",
-                            rusqlite::params![rev.as_u64() as i64, subject, relation, object],
+                             WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND partition_id = ?5 AND revision_removed IS NULL",
+                            rusqlite::params![rev.as_u64() as i64, subject, relation, object, partition_id.as_str()],
                         )
                         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
                     }
@@ -1393,7 +1430,7 @@ impl SqliteStorage {
 
     /// Recover to a specific revision (point-in-time recovery).
     pub fn recover_to_revision(&self, target: Revision) -> AegisResult<Revision> {
-        let current = self.current_revision()?;
+        let current = self.current_revision(&PartitionId::default())?;
         if target > current {
             return Err(AegisError::RevisionFromFuture(target.as_u64() as usize));
         }
@@ -1406,13 +1443,13 @@ impl SqliteStorage {
                 .prepare(
                     "SELECT revision, action, subject, relation, object, metadata
                      FROM _aegis_events
-                     WHERE revision <= ?1
+                     WHERE partition_id = ?1 AND revision <= ?2
                      ORDER BY revision ASC, event_id ASC",
                 )
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             let rows = stmt
-                .query_map(rusqlite::params![target.as_u64() as i64], |row| {
+                .query_map(rusqlite::params![PartitionId::default().as_str(), target.as_u64() as i64], |row| {
                     let rev: i64 = row.get(0)?;
                     let action: String = row.get(1)?;
                     let subject: String = row.get(2)?;
@@ -1433,17 +1470,17 @@ impl SqliteStorage {
                 match action.as_str() {
                     "add" => {
                         conn.execute(
-                            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, valid_until, revision_added, revision_removed)
-                             VALUES (?1, ?2, ?3, ?4, ?5, NULL, ?6, NULL)",
-                            rusqlite::params![subject, relation, object, now, metadata, rev.as_u64() as i64],
+                            "INSERT INTO _aegis_tuples (subject, relation, object, partition_id, created_at, metadata, valid_until, revision_added, revision_removed)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, NULL, ?7, NULL)",
+                            rusqlite::params![subject, relation, object, PartitionId::default().as_str(), now, metadata, rev.as_u64() as i64],
                         )
                         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
                     }
                     "remove" => {
                         conn.execute(
                             "UPDATE _aegis_tuples SET revision_removed = ?1
-                             WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND revision_removed IS NULL",
-                            rusqlite::params![rev.as_u64() as i64, subject, relation, object],
+                             WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND partition_id = ?5 AND revision_removed IS NULL",
+                            rusqlite::params![rev.as_u64() as i64, subject, relation, object, PartitionId::default().as_str()],
                         )
                         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
                     }
@@ -1465,17 +1502,19 @@ impl SqliteStorage {
     /// Removes event pairs that are semantically no-ops (add then later remove
     /// with no intermediate add for the same tuple key).
     /// Returns the number of event rows removed.
-    pub fn compact_events(&self) -> AegisResult<usize> {
+    pub fn compact_events(&self, partition_id: &PartitionId) -> AegisResult<usize> {
         let conn = self.conn()?;
 
         let total = conn
             .execute(
-                "DELETE FROM _aegis_events WHERE event_id IN (
+                "DELETE FROM _aegis_events WHERE partition_id = ?1 AND event_id IN (
                     SELECT e1.event_id FROM _aegis_events e1
                     WHERE e1.action = 'add'
+                        AND e1.partition_id = ?1
                         AND EXISTS (
                             SELECT 1 FROM _aegis_events e2
                             WHERE e2.action = 'remove'
+                                AND e2.partition_id = ?1
                                 AND e2.subject = e1.subject
                                 AND e2.relation = e1.relation
                                 AND e2.object = e1.object
@@ -1484,6 +1523,7 @@ impl SqliteStorage {
                                     SELECT 1 FROM _aegis_events e3
                                     WHERE e3.event_id > e1.event_id
                                         AND e3.event_id < e2.event_id
+                                        AND e3.partition_id = ?1
                                         AND e3.subject = e1.subject
                                         AND e3.relation = e1.relation
                                         AND e3.object = e1.object
@@ -1494,22 +1534,25 @@ impl SqliteStorage {
                     SELECT e2.event_id FROM _aegis_events e1
                     INNER JOIN _aegis_events e2
                         ON e2.action = 'remove'
+                        AND e2.partition_id = ?1
                         AND e2.subject = e1.subject
                         AND e2.relation = e1.relation
                         AND e2.object = e1.object
                     WHERE e1.action = 'add'
+                        AND e1.partition_id = ?1
                         AND e1.event_id < e2.event_id
                         AND NOT EXISTS (
                             SELECT 1 FROM _aegis_events e3
                             WHERE e3.event_id > e1.event_id
                                 AND e3.event_id < e2.event_id
+                                AND e3.partition_id = ?1
                                 AND e3.subject = e1.subject
                                 AND e3.relation = e1.relation
                                 AND e3.object = e1.object
                                 AND e3.action = 'add'
                         )
                 )",
-                [],
+                params![partition_id.as_str()],
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
@@ -1554,10 +1597,11 @@ impl SqliteTransaction {
         subject: &str,
         relation: &str,
         object: &str,
+        partition_id: &str,
         metadata: Option<&str>,
     ) -> AegisResult<()> {
         let conn = self.conn()?;
-        SqliteStorage::append_event(conn, revision, action, subject, relation, object, metadata, None)
+        SqliteStorage::append_event(conn, revision, action, subject, relation, object, partition_id, metadata, None)
     }
 }
 
@@ -1587,7 +1631,7 @@ fn validate_savepoint_name(name: &str) -> AegisResult<()> {
 }
 
 impl StorageTransaction for SqliteTransaction {
-    fn write(&mut self, tuple: &RelationshipTuple) -> AegisResult<()> {
+    fn write(&mut self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<()> {
         let conn = self.conn()?;
         let revision = self.bump_revision()?;
         let metadata_json = tuple
@@ -1599,24 +1643,26 @@ impl StorageTransaction for SqliteTransaction {
 
         conn.execute(
             "UPDATE _aegis_tuples SET revision_removed = ?1
-             WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND revision_removed IS NULL",
+             WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND partition_id = ?5 AND revision_removed IS NULL",
             params![
                 revision.as_u64() as i64,
                 tuple.subject.as_str(),
                 tuple.relation.as_str(),
                 tuple.object.as_str(),
+                partition_id.as_str(),
             ],
         )
         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
         let valid_until_str = tuple.valid_until.map(|v| v.to_rfc3339());
         conn.execute(
-            "INSERT INTO _aegis_tuples (subject, relation, object, created_at, metadata, valid_until, revision_added, revision_removed)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, NULL)",
+            "INSERT INTO _aegis_tuples (subject, relation, object, partition_id, created_at, metadata, valid_until, revision_added, revision_removed)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL)",
             params![
                 tuple.subject.as_str(),
                 tuple.relation.as_str(),
                 tuple.object.as_str(),
+                partition_id.as_str(),
                 tuple.created_at.to_rfc3339(),
                 metadata_json,
                 valid_until_str,
@@ -1631,24 +1677,26 @@ impl StorageTransaction for SqliteTransaction {
             tuple.subject.as_str(),
             tuple.relation.as_str(),
             tuple.object.as_str(),
+            partition_id.as_str(),
             metadata_json.as_deref(),
         )?;
 
         Ok(())
     }
 
-    fn delete(&mut self, key: &TupleKey) -> AegisResult<()> {
+    fn delete(&mut self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<()> {
         let conn = self.conn()?;
         let revision = self.bump_revision()?;
 
         conn.execute(
             "UPDATE _aegis_tuples SET revision_removed = ?1
-             WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND revision_removed IS NULL",
+             WHERE subject = ?2 AND relation = ?3 AND object = ?4 AND partition_id = ?5 AND revision_removed IS NULL",
             params![
                 revision.as_u64() as i64,
                 key.subject.as_str(),
                 key.relation.as_str(),
                 key.object.as_str(),
+                partition_id.as_str(),
             ],
         )
         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1659,6 +1707,7 @@ impl StorageTransaction for SqliteTransaction {
             key.subject.as_str(),
             key.relation.as_str(),
             key.object.as_str(),
+            partition_id.as_str(),
             None,
         )?;
 
@@ -1760,10 +1809,10 @@ mod tests {
         let meta = store.initialize().unwrap();
         assert!(meta.healthy);
 
-        let rev = store.write_tuple(&test_tuple()).unwrap();
+        let rev = store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
         assert!(rev.as_u64() > 0);
 
-        let has = store.has_tuple(&test_tuple().key()).unwrap();
+        let has = store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap();
         assert!(has);
     }
 
@@ -1772,9 +1821,9 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&test_tuple()).unwrap();
+        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
 
-        let read = store.read_tuple(&test_tuple().key()).unwrap();
+        let read = store.read_tuple(&PartitionId::default(), &test_tuple().key()).unwrap();
         assert!(read.is_some());
         let t = read.unwrap();
         assert_eq!(t.subject.as_str(), "user:123");
@@ -1787,8 +1836,8 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let r1 = store.write_tuple(&test_tuple()).unwrap();
-        let r2 = store.write_tuple(&tuple("user:456", "viewer", "repo:other")).unwrap();
+        let r1 = store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
+        let r2 = store.write_tuple(&PartitionId::default(), &tuple("user:456", "viewer", "repo:other")).unwrap();
         assert_eq!(r1.as_u64() + 1, r2.as_u64());
     }
 
@@ -1797,8 +1846,8 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&test_tuple()).unwrap();
-        store.write_tuple(&test_tuple()).unwrap(); // same tuple again
+        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
+        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap(); // same tuple again
 
         let count = store
             .conn()
@@ -1819,11 +1868,11 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&test_tuple()).unwrap();
-        assert!(store.has_tuple(&test_tuple().key()).unwrap());
+        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
+        assert!(store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
 
-        store.delete_tuple(&test_tuple().key()).unwrap();
-        assert!(!store.has_tuple(&test_tuple().key()).unwrap());
+        store.delete_tuple(&PartitionId::default(), &test_tuple().key()).unwrap();
+        assert!(!store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
     }
 
     #[test]
@@ -1831,9 +1880,9 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let rev_before = store.current_revision().unwrap();
+        let rev_before = store.current_revision(&PartitionId::default()).unwrap();
         let rev_after = store
-            .delete_tuple(&key("user:999", "editor", "repo:nonexistent"))
+            .delete_tuple(&PartitionId::default(), &key("user:999", "editor", "repo:nonexistent"))
             .unwrap();
         assert_eq!(rev_before, rev_after); // no bump
     }
@@ -1843,24 +1892,24 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&tuple("user:1", "viewer", "repo:b")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "viewer", "repo:b")).unwrap();
 
         assert_eq!(
             store
-                .list_by_subject(&SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_subject(&PartitionId::default(), &SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
                 .unwrap()
                 .len(),
             2
         );
 
         store
-            .delete_subject(&SubjectId::new("user:1").unwrap())
+            .delete_subject(&PartitionId::default(), &SubjectId::new("user:1").unwrap())
             .unwrap();
 
         assert_eq!(
             store
-                .list_by_subject(&SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_subject(&PartitionId::default(), &SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
                 .unwrap()
                 .len(),
             0
@@ -1872,24 +1921,24 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&tuple("user:2", "viewer", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:a")).unwrap();
 
         assert_eq!(
             store
-                .list_by_object(&ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_object(&PartitionId::default(), &ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
                 .unwrap()
                 .len(),
             2
         );
 
         store
-            .delete_object(&ResourceId::new("repo:a").unwrap())
+            .delete_object(&PartitionId::default(), &ResourceId::new("repo:a").unwrap())
             .unwrap();
 
         assert_eq!(
             store
-                .list_by_object(&ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_object(&PartitionId::default(), &ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
                 .unwrap()
                 .len(),
             0
@@ -1903,11 +1952,11 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&tuple("user:2", "viewer", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:a")).unwrap();
 
         let results = store
-            .list_by_object(&ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+            .list_by_object(&PartitionId::default(), &ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
             .unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -1917,11 +1966,12 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&tuple("user:2", "viewer", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:a")).unwrap();
 
         let results = store
             .list_by_object(
+                &PartitionId::default(),
                 &ResourceId::new("repo:a").unwrap(),
                 Some(&Relation::new("editor").unwrap()),
                 &ConsistencyMode::MinimizeLatency,
@@ -1936,11 +1986,11 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&tuple("user:1", "viewer", "repo:b")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "viewer", "repo:b")).unwrap();
 
         let results = store
-            .list_by_subject(&SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+            .list_by_subject(&PartitionId::default(), &SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
             .unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -1950,12 +2000,13 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&tuple("user:2", "editor", "repo:a")).unwrap();
-        store.write_tuple(&tuple("user:3", "viewer", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:2", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:3", "viewer", "repo:a")).unwrap();
 
         let results = store
             .list_by_relation(
+                &PartitionId::default(),
                 &ResourceId::new("repo:a").unwrap(),
                 &Relation::new("editor").unwrap(),
             )
@@ -1972,7 +2023,7 @@ mod tests {
 
         for i in 0..10 {
             store
-                .write_tuple(&tuple(
+                .write_tuple(&PartitionId::default(), &tuple(
                     &format!("user:{i}"),
                     "editor",
                     "repo:fluxbus",
@@ -1982,6 +2033,7 @@ mod tests {
 
         let page1 = store
             .query_tuples(
+                &PartitionId::default(),
                 &TupleFilter::default(),
                 &PaginationParams {
                     limit: 3,
@@ -1995,6 +2047,7 @@ mod tests {
 
         let page2 = store
             .query_tuples(
+                &PartitionId::default(),
                 &TupleFilter::default(),
                 &PaginationParams {
                     limit: 3,
@@ -2007,6 +2060,7 @@ mod tests {
 
         let page3 = store
             .query_tuples(
+                &PartitionId::default(),
                 &TupleFilter::default(),
                 &PaginationParams {
                     limit: 3,
@@ -2019,6 +2073,7 @@ mod tests {
 
         let page4 = store
             .query_tuples(
+                &PartitionId::default(),
                 &TupleFilter::default(),
                 &PaginationParams {
                     limit: 3,
@@ -2036,15 +2091,15 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&tuple("user:2", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:2", "editor", "repo:a")).unwrap();
 
         let filter = TupleFilter {
             subject_type: Some("user".to_string()),
             ..Default::default()
         };
         let results = store
-            .query_tuples(&filter, &PaginationParams::default(), &ConsistencyMode::MinimizeLatency)
+            .query_tuples(&PartitionId::default(), &filter, &PaginationParams::default(), &ConsistencyMode::MinimizeLatency)
             .unwrap();
         assert_eq!(results.tuples.len(), 2);
     }
@@ -2056,13 +2111,13 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        assert_eq!(store.current_revision().unwrap().as_u64(), 0);
+        assert_eq!(store.current_revision(&PartitionId::default()).unwrap().as_u64(), 0);
 
-        store.write_tuple(&test_tuple()).unwrap();
-        assert_eq!(store.current_revision().unwrap().as_u64(), 1);
+        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
+        assert_eq!(store.current_revision(&PartitionId::default()).unwrap().as_u64(), 1);
 
-        store.write_tuple(&tuple("user:456", "viewer", "repo:other")).unwrap();
-        assert_eq!(store.current_revision().unwrap().as_u64(), 2);
+        store.write_tuple(&PartitionId::default(), &tuple("user:456", "viewer", "repo:other")).unwrap();
+        assert_eq!(store.current_revision(&PartitionId::default()).unwrap().as_u64(), 2);
     }
 
     #[test]
@@ -2082,13 +2137,13 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let mut tx = store.begin_transaction().unwrap();
-        tx.write(&test_tuple()).unwrap();
-        tx.write(&tuple("user:456", "viewer", "repo:other")).unwrap();
+        let mut tx = store.begin_transaction(&PartitionId::default()).unwrap();
+        tx.write(&PartitionId::default(), &test_tuple()).unwrap();
+        tx.write(&PartitionId::default(), &tuple("user:456", "viewer", "repo:other")).unwrap();
         let rev = tx.commit().unwrap();
 
         assert!(rev.as_u64() > 0);
-        assert!(store.has_tuple(&test_tuple().key()).unwrap());
+        assert!(store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
     }
 
     #[test]
@@ -2096,14 +2151,14 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let rev_before = store.current_revision().unwrap();
+        let rev_before = store.current_revision(&PartitionId::default()).unwrap();
 
-        let mut tx = store.begin_transaction().unwrap();
-        tx.write(&test_tuple()).unwrap();
+        let mut tx = store.begin_transaction(&PartitionId::default()).unwrap();
+        tx.write(&PartitionId::default(), &test_tuple()).unwrap();
         tx.rollback().unwrap();
 
-        assert_eq!(store.current_revision().unwrap(), rev_before);
-        assert!(!store.has_tuple(&test_tuple().key()).unwrap());
+        assert_eq!(store.current_revision(&PartitionId::default()).unwrap(), rev_before);
+        assert!(!store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
     }
 
     #[test]
@@ -2111,11 +2166,11 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let mut tx = store.begin_transaction().unwrap();
-        tx.write(&test_tuple()).unwrap();
+        let mut tx = store.begin_transaction(&PartitionId::default()).unwrap();
+        tx.write(&PartitionId::default(), &test_tuple()).unwrap();
 
         tx.savepoint("sp1").unwrap();
-        tx.write(&tuple("user:savepoint", "test", "repo:sp")).unwrap();
+        tx.write(&PartitionId::default(), &tuple("user:savepoint", "test", "repo:sp")).unwrap();
 
         // Savepoint tuple should exist (it was written after the savepoint)
         tx.rollback_to_savepoint("sp1").unwrap();
@@ -2125,8 +2180,8 @@ mod tests {
         assert!(rev.as_u64() > 0);
 
         // After commit: only the original tuple exists, savepoint tuple was rolled back
-        assert!(store.has_tuple(&test_tuple().key()).unwrap());
-        assert!(!store.has_tuple(&key("user:savepoint", "test", "repo:sp")).unwrap());
+        assert!(store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
+        assert!(!store.has_tuple(&PartitionId::default(), &key("user:savepoint", "test", "repo:sp")).unwrap());
     }
 
     #[test]
@@ -2134,15 +2189,15 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let rev_before = store.current_revision().unwrap();
+        let rev_before = store.current_revision(&PartitionId::default()).unwrap();
 
         {
-            let mut tx = store.begin_transaction().unwrap();
-            tx.write(&test_tuple()).unwrap();
+            let mut tx = store.begin_transaction(&PartitionId::default()).unwrap();
+            tx.write(&PartitionId::default(), &test_tuple()).unwrap();
             // tx drops without commit
         }
 
-        assert_eq!(store.current_revision().unwrap(), rev_before);
+        assert_eq!(store.current_revision(&PartitionId::default()).unwrap(), rev_before);
     }
 
     // ── Audit ──
@@ -2152,13 +2207,14 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&test_tuple()).unwrap();
+        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
         store
-            .delete_tuple(&test_tuple().key())
+            .delete_tuple(&PartitionId::default(), &test_tuple().key())
             .unwrap();
 
         let audit = store
             .query_audit(
+                &PartitionId::default(),
                 Some(&ResourceId::new("repo:fluxbus").unwrap()),
                 None,
                 None,
@@ -2176,14 +2232,15 @@ mod tests {
         store.initialize().unwrap();
 
         store
-            .write_tuple(&tuple("user:1", "editor", "repo:a"))
+            .write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a"))
             .unwrap();
         let r2 = store
-            .write_tuple(&tuple("user:2", "viewer", "repo:a"))
+            .write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:a"))
             .unwrap();
 
         let audit = store
             .query_audit(
+                &PartitionId::default(),
                 Some(&ResourceId::new("repo:a").unwrap()),
                 Some(r2),
                 Some(r2),
@@ -2210,11 +2267,11 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&test_tuple()).unwrap();
+        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
         store.close().unwrap();
 
         // After close, can still read (pool connections may be live)
-        assert!(store.has_tuple(&test_tuple().key()).unwrap());
+        assert!(store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
     }
 
     // ── Revision Snapshots ──
@@ -2225,12 +2282,12 @@ mod tests {
         store.initialize().unwrap();
 
         // Write tuple at rev 1
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        let rev_before_delete = store.current_revision().unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        let rev_before_delete = store.current_revision(&PartitionId::default()).unwrap();
 
         // Delete and re-write at rev 2+
-        store.write_tuple(&tuple("user:2", "viewer", "repo:a")).unwrap();
-        store.delete_tuple(&key("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:a")).unwrap();
+        store.delete_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a")).unwrap();
 
         // Read at rev 1 should see user:1 only (active at that point)
         let conn = store.conn().unwrap();
@@ -2253,14 +2310,14 @@ mod tests {
             tuple("team:eng", "owner", "workspace:core"),
         ];
 
-        let rev = store.write_tuples_batch(&tuples).unwrap();
+        let rev = store.write_tuples_batch(&PartitionId::default(), &tuples).unwrap();
         assert!(rev.as_u64() > 0);
 
-        assert!(store.has_tuple(&key("user:1", "editor", "repo:a")).unwrap());
-        assert!(store.has_tuple(&key("user:2", "viewer", "repo:b")).unwrap());
+        assert!(store.has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a")).unwrap());
+        assert!(store.has_tuple(&PartitionId::default(), &key("user:2", "viewer", "repo:b")).unwrap());
         assert!(
             store
-                .has_tuple(&key("team:eng", "owner", "workspace:core"))
+                .has_tuple(&PartitionId::default(), &key("team:eng", "owner", "workspace:core"))
                 .unwrap()
         );
     }
@@ -2270,7 +2327,7 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let rev = store.write_tuples_batch(&[]).unwrap();
+        let rev = store.write_tuples_batch(&PartitionId::default(), &[]).unwrap();
         assert_eq!(rev.as_u64(), 0);
     }
 
@@ -2292,9 +2349,9 @@ mod tests {
         )
         .unwrap();
 
-        store.write_tuple(&tuple).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple).unwrap();
 
-        let read = store.read_tuple(&tuple.key()).unwrap().unwrap();
+        let read = store.read_tuple(&PartitionId::default(), &tuple.key()).unwrap().unwrap();
         assert_eq!(read.metadata.unwrap(), meta);
     }
 
@@ -2314,8 +2371,8 @@ mod tests {
         // In in-memory mode, WAL may not be used, but we verify no crash
         let mut store = store;
         store.initialize().unwrap();
-        store.write_tuple(&test_tuple()).unwrap();
-        assert!(store.has_tuple(&test_tuple().key()).unwrap());
+        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
+        assert!(store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
     }
 
     // ── Initialize ──
@@ -2337,13 +2394,13 @@ mod tests {
         let store = storage();
         assert!(
             store
-                .list_by_object(&ResourceId::new("nonexistent").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_object(&PartitionId::default(), &ResourceId::new("nonexistent").unwrap(), None, &ConsistencyMode::MinimizeLatency)
                 .unwrap()
                 .is_empty()
         );
         assert!(
             store
-                .has_tuple(&key("user:1", "editor", "repo:a"))
+                .has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a"))
                 .unwrap()
                 == false
         );
@@ -2356,15 +2413,15 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&tuple("user:2", "viewer", "repo:b")).unwrap();
-        let rev_before = store.current_revision().unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:b")).unwrap();
+        let rev_before = store.current_revision(&PartitionId::default()).unwrap();
 
-        let recovered = store.recover_from_events(None).unwrap();
+        let recovered = store.recover_from_events(&PartitionId::default(), None).unwrap();
         assert_eq!(recovered, rev_before);
 
-        assert!(store.has_tuple(&key("user:1", "editor", "repo:a")).unwrap());
-        assert!(store.has_tuple(&key("user:2", "viewer", "repo:b")).unwrap());
+        assert!(store.has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a")).unwrap());
+        assert!(store.has_tuple(&PartitionId::default(), &key("user:2", "viewer", "repo:b")).unwrap());
     }
 
     #[test]
@@ -2372,14 +2429,14 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&tuple("user:2", "viewer", "repo:b")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:b")).unwrap();
 
         let recovered = store.recover_to_revision(Revision::new(1)).unwrap();
         assert_eq!(recovered.as_u64(), 1);
 
-        assert!(store.has_tuple(&key("user:1", "editor", "repo:a")).unwrap());
-        assert!(!store.has_tuple(&key("user:2", "viewer", "repo:b")).unwrap());
+        assert!(store.has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a")).unwrap());
+        assert!(!store.has_tuple(&PartitionId::default(), &key("user:2", "viewer", "repo:b")).unwrap());
     }
 
     #[test]
@@ -2387,8 +2444,8 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&tuple("user:1", "editor", "repo:a")).unwrap();
-        store.delete_tuple(&key("user:1", "editor", "repo:a")).unwrap();
+        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store.delete_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a")).unwrap();
 
         let before_events = store.conn().unwrap()
             .query_row("SELECT COUNT(*) FROM _aegis_events", [], |row| row.get::<_, i64>(0))
@@ -2396,7 +2453,7 @@ mod tests {
 
         assert_eq!(before_events, 2);
 
-        let removed = store.compact_events().unwrap();
+        let removed = store.compact_events(&PartitionId::default()).unwrap();
         assert_eq!(removed, 2);
 
         let after_events = store.conn().unwrap()
@@ -2410,7 +2467,7 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let recovered = store.recover_from_events(None).unwrap();
+        let recovered = store.recover_from_events(&PartitionId::default(), None).unwrap();
         assert_eq!(recovered.as_u64(), 0);
     }
 
@@ -2420,33 +2477,33 @@ mod tests {
         store.initialize().unwrap();
 
         // Valid names
-        let tx = store.begin_transaction().unwrap();
+        let tx = store.begin_transaction(&PartitionId::default()).unwrap();
         tx.savepoint("sp1").unwrap();
         tx.savepoint("my_savepoint_42").unwrap();
         tx.savepoint("a").unwrap();
         tx.rollback().ok();
 
         // Empty name
-        let tx = store.begin_transaction().unwrap();
+        let tx = store.begin_transaction(&PartitionId::default()).unwrap();
         let err = tx.savepoint("").unwrap_err();
         assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::Empty)), "empty name should fail: {err}");
         tx.rollback().ok();
 
         // Too long name (65 chars)
-        let tx = store.begin_transaction().unwrap();
+        let tx = store.begin_transaction(&PartitionId::default()).unwrap();
         let long_name = "a".repeat(65);
         let err = tx.savepoint(&long_name).unwrap_err();
         assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::TooLong { .. })), "long name should fail: {err}");
         tx.rollback().ok();
 
         // Invalid characters (SQL injection attempt)
-        let tx = store.begin_transaction().unwrap();
+        let tx = store.begin_transaction(&PartitionId::default()).unwrap();
         let err = tx.savepoint("\"; DROP TABLE _aegis_tuples; --").unwrap_err();
         assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))), "injection attempt should fail: {err}");
         tx.rollback().ok();
 
         // Same validation applies to rollback_to_savepoint and release_savepoint
-        let tx = store.begin_transaction().unwrap();
+        let tx = store.begin_transaction(&PartitionId::default()).unwrap();
         tx.savepoint("valid").unwrap();
         let err = tx.rollback_to_savepoint("invalid!").unwrap_err();
         assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))), "rollback_to_savepoint should validate name: {err}");

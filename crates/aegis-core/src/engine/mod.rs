@@ -4,6 +4,7 @@ pub mod condition;
 pub mod gdpr;
 pub mod hierarchy;
 pub mod hooks;
+pub mod partition;
 #[cfg(feature = "hot-reload")]
 pub mod hot_reload;
 pub mod migration;
@@ -16,13 +17,14 @@ pub mod watch;
 use chrono::Utc;
 use crate::engine::cache::{DecisionCache, TraversalCache};
 use crate::engine::migration::MigrationRunner;
+use crate::engine::partition::PartitionManager;
 use crate::engine::ratelimit::{RateLimitOp, TokenBucketRateLimiter};
 use crate::engine::watch::{SharedWatchers, WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::{StorageBackend, StorageTransaction, TupleFilter};
 use crate::types::{
     CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, FailClosedMode, HealthReport,
-    MigrationResult, Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, Schema,
+    MigrationResult, PartitionId, Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, Schema,
     SubjectId, PaginatedTuples, PaginationParams,
 };
 use crate::types::schema::SchemaCompatibilityReport;
@@ -51,6 +53,8 @@ pub struct GraphEngine {
     fail_closed: FailClosedMode,
     closed: std::sync::atomic::AtomicBool,
     watchers: SharedWatchers,
+    partition_manager: PartitionManager,
+    active_partition: RwLock<PartitionId>,
     #[cfg(feature = "hot-reload")]
     shutdown_flag: Arc<AtomicBool>,
     #[cfg(feature = "hot-reload")]
@@ -94,6 +98,8 @@ impl GraphEngine {
             fail_closed: FailClosedMode::DenyOnError,
             closed: std::sync::atomic::AtomicBool::new(false),
             watchers: Arc::new(Mutex::new(HashMap::new())),
+            partition_manager: PartitionManager::new(),
+            active_partition: RwLock::new(PartitionId::default()),
             #[cfg(feature = "hot-reload")]
             shutdown_flag: Arc::new(AtomicBool::new(false)),
             #[cfg(feature = "hot-reload")]
@@ -323,6 +329,19 @@ impl GraphEngine {
         }
     }
 
+    pub fn with_partition(&self, partition_id: PartitionId) -> AegisResult<()> {
+        // Validate partition exists
+        self.partition_manager.get_or_create(&partition_id)?;
+        *self.active_partition.write().map_err(|_| {
+            crate::error::AegisError::Internal("partition lock poisoned".into())
+        })? = partition_id;
+        Ok(())
+    }
+
+    pub fn active_partition_id(&self) -> PartitionId {
+        self.active_partition.read().map(|p| p.clone()).unwrap_or_default()
+    }
+
     fn with_cache<F, T>(&self, f: F) -> Option<T>
     where
         F: FnOnce(&mut DecisionCache) -> T,
@@ -359,7 +378,7 @@ impl GraphEngine {
     /// Startup probe: returns Ok if the engine is initialized and healthy.
     pub fn startup_probe(&self) -> AegisResult<()> {
         self.check_closed()?;
-        self.storage.current_revision()?;
+        self.storage.current_revision(&self.active_partition_id())?;
         self.with_schema(|_| ()).ok_or(AegisError::EngineClosed)?;
         Ok(())
     }
@@ -386,7 +405,7 @@ impl GraphEngine {
 
     /// Health check: returns a report of engine health.
     pub fn health(&self) -> HealthReport {
-        let revision = self.storage.current_revision().ok();
+        let revision = self.storage.current_revision(&self.active_partition_id()).ok();
         let integrity = self.storage.integrity_check().ok();
         let cache_info = self.with_cache(|cache| (cache.hit_rate(), cache.len())).unwrap_or((0.0, 0));
         let schema = self.schema.read().unwrap_or_else(|e| e.into_inner());
@@ -436,7 +455,7 @@ impl GraphEngine {
     /// Returns the latest revision after recovery.
     /// Only meaningful for backends that persist an event log (e.g. SQLite).
     pub fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
-        let rev = self.storage.recover_from_events(to_revision)?;
+        let rev = self.storage.recover_from_events(&self.active_partition_id(), to_revision)?;
         self.emit_log(hooks::LogLevel::Info, "Recovered from event log", &format!("revision={}", rev));
         Ok(rev)
     }
@@ -475,6 +494,7 @@ impl GraphEngine {
             let mut cache_guard = self.traversal_cache.lock().ok();
             let cache_ref = cache_guard.as_deref_mut();
             let result = match traversal::bfs_traversal_with_limits_and_context(
+                &self.active_partition_id(),
                 self.storage.as_ref(),
                 subject,
                 &relation,
@@ -515,6 +535,7 @@ impl GraphEngine {
             (rl.max_traversal_depth(), rl.max_traversal_visits())
         };
 
+        let partition_id = self.active_partition_id();
         let rel_names: Vec<String> = resolved.relations.clone();
         let condition_str = std::sync::Arc::new(resolved.condition);
         let ctx = std::sync::Arc::new(context);
@@ -535,12 +556,14 @@ impl GraphEngine {
                 let cond = std::sync::Arc::clone(&condition_str);
                 let ctx_ref = std::sync::Arc::clone(&ctx);
                 let subj = std::sync::Arc::clone(&subject);
+                let pid = &partition_id;
                 let _handle = s.spawn(move || {
                     if found_ref.load(std::sync::atomic::Ordering::Relaxed) {
                         return;
                     }
                     let mut cache = TraversalCache::new(100);
                     let result = traversal::bfs_traversal_with_limits_and_context(
+                        pid,
                         self.storage.as_ref(),
                         subj.as_ref(),
                         &relation,
@@ -655,8 +678,9 @@ impl GraphEngine {
         if !dry_run && context.is_none() {
             let cache_span = span!(Level::DEBUG, crate::telemetry::spans::CACHE_LOOKUP);
             let _cache_guard = cache_span.enter();
+            let pid = self.active_partition_id();
             let from_cache = self.with_cache(|cache| {
-                cache.get(subject.as_str(), permission, resource.as_str(), revision)
+                cache.get(subject.as_str(), permission, resource.as_str(), pid.as_str(), revision)
             });
             if let Some(Some(allowed)) = from_cache {
                 info!(
@@ -734,6 +758,7 @@ impl GraphEngine {
                             Err(_) => continue,
                         };
                         let traversal_result = traversal::bfs_traversal(
+                            &self.active_partition_id(),
                             self.storage.as_ref(),
                             subject,
                             &relation,
@@ -755,8 +780,9 @@ impl GraphEngine {
 
         if !dry_run && !has_context {
             // Cache the decision
+            let pid = self.active_partition_id();
             self.with_cache(|cache| {
-                cache.insert(subject.as_str(), permission, resource.as_str(), allowed, revision);
+                cache.insert(subject.as_str(), permission, resource.as_str(), pid.as_str(), allowed, revision);
             });
 
             self.hooks.trigger(&hooks::HookEvent::OnCheck {
@@ -834,6 +860,7 @@ impl GraphEngine {
             };
 
             let result = traversal::bfs_traversal(
+                &self.active_partition_id(),
                 self.storage.as_ref(),
                 subject,
                 &relation,
@@ -869,6 +896,7 @@ impl GraphEngine {
                             Err(_) => continue,
                         };
                         let tr = traversal::bfs_traversal(
+                            &self.active_partition_id(),
                             self.storage.as_ref(),
                             subject,
                             &relation,
@@ -943,7 +971,7 @@ impl GraphEngine {
         }
         drop(schema);
 
-        let revision = self.storage.write_tuple(tuple)?;
+        let revision = self.storage.write_tuple(&self.active_partition_id(), tuple)?;
         crate::telemetry::update_revision_current(revision.as_u64());
 
         info!(revision = field::display(&revision), "tuple written");
@@ -980,7 +1008,7 @@ impl GraphEngine {
         let rl_key = format!("delete:{}", key.object.as_str());
         self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
 
-        let revision = self.storage.delete_tuple(key)?;
+        let revision = self.storage.delete_tuple(&self.active_partition_id(), key)?;
         crate::telemetry::update_revision_current(revision.as_u64());
 
         info!(revision = field::display(&revision), "tuple deleted");
@@ -1013,7 +1041,7 @@ impl GraphEngine {
     fn resolve_revision(&self, consistency: Option<ConsistencyMode>) -> AegisResult<Revision> {
         match consistency {
             Some(ConsistencyMode::AtRevision(rev)) => {
-                let current = self.storage.current_revision()?;
+                let current = self.storage.current_revision(&self.active_partition_id())?;
                 if rev > current {
                     return Err(AegisError::RevisionFromFuture(
                         rev.as_u64() as usize,
@@ -1021,7 +1049,7 @@ impl GraphEngine {
                 }
                 Ok(rev)
             }
-            _ => self.storage.current_revision(),
+            _ => self.storage.current_revision(&self.active_partition_id()),
         }
     }
 
@@ -1042,7 +1070,7 @@ impl GraphEngine {
                 relation: tuple.relation.to_string(),
             });
         }
-        let revision = self.storage.current_revision()?;
+        let revision = self.storage.current_revision(&self.active_partition_id())?;
         Ok(RevisionToken::new(revision, self.node_id))
     }
 
@@ -1054,7 +1082,7 @@ impl GraphEngine {
         to_revision: Option<Revision>,
         pagination: &crate::types::PaginationParams,
     ) -> AegisResult<Vec<crate::types::AuditEntry>> {
-        self.storage.query_audit(Some(object), from_revision, to_revision, pagination)
+        self.storage.query_audit(&self.active_partition_id(), Some(object), from_revision, to_revision, pagination)
     }
 
     /// Query the audit log for all objects within an optional revision range.
@@ -1064,12 +1092,12 @@ impl GraphEngine {
         to_revision: Option<Revision>,
         pagination: &crate::types::PaginationParams,
     ) -> AegisResult<Vec<crate::types::AuditEntry>> {
-        self.storage.query_audit(None, from_revision, to_revision, pagination)
+        self.storage.query_audit(&self.active_partition_id(), None, from_revision, to_revision, pagination)
     }
 
     /// Export all tuples for a given subject (GDPR compliance).
     pub fn export_subject(&self, subject: &SubjectId) -> AegisResult<Vec<crate::types::RelationshipTuple>> {
-        self.storage.list_by_subject(subject, None, &ConsistencyMode::MinimizeLatency)
+        self.storage.list_by_subject(&self.active_partition_id(), subject, None, &ConsistencyMode::MinimizeLatency)
     }
 
     /// Delete subject with an ownership policy (GDPR compliance).
@@ -1086,14 +1114,14 @@ impl GraphEngine {
     ) -> AegisResult<RevisionToken> {
         match policy {
             "cascade" => {
-                let revision = self.storage.delete_subject(subject)?;
+                let revision = self.storage.delete_subject(&self.active_partition_id(), subject)?;
                 crate::telemetry::update_revision_current(revision.as_u64());
                 Ok(RevisionToken::new(revision, self.node_id))
             }
             "fail" => {
-                let tuples = self.storage.list_by_subject(subject, None, &ConsistencyMode::MinimizeLatency)?;
+                let tuples = self.storage.list_by_subject(&self.active_partition_id(), subject, None, &ConsistencyMode::MinimizeLatency)?;
                 if tuples.is_empty() {
-                    let revision = self.storage.current_revision()?;
+                    let revision = self.storage.current_revision(&self.active_partition_id())?;
                     crate::telemetry::update_revision_current(revision.as_u64());
                     Ok(RevisionToken::new(revision, self.node_id))
                 } else {
@@ -1108,13 +1136,13 @@ impl GraphEngine {
                         "transfer policy requires a transfer_to_subject".into(),
                     )
                 })?;
-                let tuples = self.storage.list_by_subject(subject, None, &ConsistencyMode::MinimizeLatency)?;
+                let tuples = self.storage.list_by_subject(&self.active_partition_id(), subject, None, &ConsistencyMode::MinimizeLatency)?;
                 if tuples.is_empty() {
-                    let revision = self.storage.current_revision()?;
+                    let revision = self.storage.current_revision(&self.active_partition_id())?;
                     crate::telemetry::update_revision_current(revision.as_u64());
                     return Ok(RevisionToken::new(revision, self.node_id));
                 }
-                let mut txn = self.storage.begin_transaction()?;
+                let mut txn = self.storage.begin_transaction(&self.active_partition_id())?;
                 for tuple in &tuples {
                     let new_tuple = RelationshipTuple {
                         subject: target.clone(),
@@ -1125,8 +1153,8 @@ impl GraphEngine {
                         valid_until: None,
                         condition: None,
                     };
-                    txn.write(&new_tuple)?;
-                    txn.delete(&tuple.key())?;
+                    txn.write(&self.active_partition_id(), &new_tuple)?;
+                    txn.delete(&self.active_partition_id(), &tuple.key())?;
                 }
                 let revision = txn.commit()?;
                 crate::telemetry::update_revision_current(revision.as_u64());
@@ -1165,7 +1193,7 @@ impl GraphEngine {
         }
         drop(schema);
 
-        let revision = self.storage.write_tuples_batch(tuples)?;
+        let revision = self.storage.write_tuples_batch(&self.active_partition_id(), tuples)?;
         crate::telemetry::update_revision_current(revision.as_u64());
         for tuple in tuples {
             self.emit_watch_event(
@@ -1182,7 +1210,7 @@ impl GraphEngine {
 
     /// Begin a storage transaction for atomic multi-operation writes.
     pub fn transaction(&self) -> AegisResult<Box<dyn StorageTransaction>> {
-        self.storage.begin_transaction()
+        self.storage.begin_transaction(&self.active_partition_id())
     }
 
     /// List all tuples for a given object, optionally filtered by relation.
@@ -1193,7 +1221,7 @@ impl GraphEngine {
         consistency: Option<ConsistencyMode>,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let c = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
-        self.storage.list_by_object(object, relation, c)
+        self.storage.list_by_object(&self.active_partition_id(), object, relation, c)
     }
 
     /// List all tuples for a given subject, optionally filtered by relation.
@@ -1204,7 +1232,7 @@ impl GraphEngine {
         consistency: Option<ConsistencyMode>,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let c = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
-        self.storage.list_by_subject(subject, relation, c)
+        self.storage.list_by_subject(&self.active_partition_id(), subject, relation, c)
     }
 
     /// List all tuples matching a relation on an object.
@@ -1213,7 +1241,7 @@ impl GraphEngine {
         object: &ResourceId,
         relation: &Relation,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        self.storage.list_by_relation(object, relation)
+        self.storage.list_by_relation(&self.active_partition_id(), object, relation)
     }
 
     /// Query tuples with filters and pagination.
@@ -1232,7 +1260,7 @@ impl GraphEngine {
         let consistency = consistency.unwrap_or_default();
         let pagination = pagination.clone().capped();
         self.storage
-            .query_tuples(filter, &pagination, &consistency)
+            .query_tuples(&self.active_partition_id(), filter, &pagination, &consistency)
     }
 
     /// Run schema migrations to reach the target version.
@@ -1256,7 +1284,7 @@ impl GraphEngine {
         let _span = span!(Level::INFO, "aegis.delete_object", resource = object.as_str()).entered();
         let rl_key = format!("delete_object:{}", object.as_str());
         self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
-        let revision = self.storage.delete_object(object)?;
+        let revision = self.storage.delete_object(&self.active_partition_id(), object)?;
         crate::telemetry::update_revision_current(revision.as_u64());
         info!(revision = field::display(&revision), "object deleted");
         Ok(RevisionToken::new(revision, self.node_id))
@@ -1264,7 +1292,7 @@ impl GraphEngine {
 
     /// Access GDPR compliance operations.
     pub fn gdpr(&self) -> gdpr::GdprManager<'_> {
-        gdpr::GdprManager::new(self)
+        gdpr::GdprManager::new(self, self.active_partition_id())
     }
 
     /// Access the rate limiter for configuration.
@@ -1676,10 +1704,10 @@ types:
     #[test]
     fn test_empty_transaction() {
         let engine = make_engine();
-        let rev_before = engine.storage().current_revision().unwrap();
+        let rev_before = engine.storage().current_revision(&PartitionId::default()).unwrap();
         let txn = engine.transaction().unwrap();
         let _rev = txn.commit().unwrap();
-        let rev_after = engine.storage().current_revision().unwrap();
+        let rev_after = engine.storage().current_revision(&PartitionId::default()).unwrap();
         assert_eq!(rev_before, rev_after);
     }
 
@@ -1694,10 +1722,10 @@ types:
             Relation::new("owner").unwrap(),
             resource.clone(),
         );
-        txn.write(&tuple).unwrap();
+        txn.write(&PartitionId::default(), &tuple).unwrap();
         let rev = txn.commit().unwrap();
         assert!(rev.as_u64() > 0);
-        let tuples = engine.storage().list_by_object(&resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let tuples = engine.storage().list_by_object(&PartitionId::default(), &resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(tuples.len(), 1);
     }
 
@@ -1786,7 +1814,7 @@ types:
         let tuple = RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone());
         let token = engine.write_dry_run(&tuple).unwrap();
         assert!(token.revision.as_u64() > 0);
-        let tuples = engine.storage().list_by_object(&resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let tuples = engine.storage().list_by_object(&PartitionId::default(), &resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(tuples.len(), 0);
     }
 
@@ -1831,10 +1859,10 @@ types:
         let key = TupleKey { subject: subject.clone(), relation: Relation::new("viewer").unwrap(), object: r2.clone() };
         engine.delete(&key).unwrap();
         for r in &[&r1, &r3] {
-            let tuples = engine.storage().list_by_object(r, None, &ConsistencyMode::MinimizeLatency).unwrap();
+            let tuples = engine.storage().list_by_object(&PartitionId::default(), r, None, &ConsistencyMode::MinimizeLatency).unwrap();
             assert!(!tuples.is_empty(), "tuple for {:?} should still exist", r);
         }
-        let deleted_tuples = engine.storage().list_by_object(&r2, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let deleted_tuples = engine.storage().list_by_object(&PartitionId::default(), &r2, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert!(deleted_tuples.is_empty(), "deleted tuple should not exist");
     }
 
@@ -2038,9 +2066,9 @@ types:
         let subject = SubjectId::new("user:persist").unwrap();
         let resource = ResourceId::new("repo:persist").unwrap();
         engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone())).unwrap();
-        let _rev1 = engine.storage().current_revision().unwrap();
+        let _rev1 = engine.storage().current_revision(&PartitionId::default()).unwrap();
         engine.recover_from_events(None).unwrap();
-        let tuples = engine.storage().list_by_object(&resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let tuples = engine.storage().list_by_object(&PartitionId::default(), &resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
         assert_eq!(tuples.len(), 1);
     }
 
@@ -2260,7 +2288,7 @@ types:
         assert!(token.revision.as_u64() > 0);
 
         // Check role
-        let result = rbac::check_role(&engine, &alice, "admin", &repo).unwrap();
+        let result = rbac::check_role(&engine, &PartitionId::default(), &alice, "admin", &repo).unwrap();
         assert!(result.allowed, "alice should have admin role");
 
         // Get roles
@@ -2270,7 +2298,7 @@ types:
 
         // Unassign role
         let _ = rbac::unassign_role(&engine, &alice, "admin", &repo).unwrap();
-        let result = rbac::check_role(&engine, &alice, "admin", &repo).unwrap();
+        let result = rbac::check_role(&engine, &PartitionId::default(), &alice, "admin", &repo).unwrap();
         assert!(!result.allowed, "alice should no longer have admin role");
     }
 

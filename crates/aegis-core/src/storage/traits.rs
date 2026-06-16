@@ -1,55 +1,63 @@
 use chrono::{DateTime, Utc};
 use crate::error::AegisResult;
 use crate::types::{
-    AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationParams, Relation,
-    RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
+    AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationParams, PartitionId,
+    Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
 };
 
-/// Pluggable storage backend for relationship tuples.
+/// Pluggable storage backend for relationship tuples with partition awareness.
 ///
 /// Each backend (SQLite, PostgreSQL, RocksDB, IndexedDB) implements this trait.
 /// The trait is designed for:
 /// - Single-process single-writer (serialized writes)
 /// - Multiple concurrent readers
 /// - Revision-based snapshot isolation
+///
+/// # Partitioning
+///
+/// Every storage operation takes a `partition_id` parameter that logically
+/// isolates authorization graphs. Partitions share the same storage backend
+/// but operate on independent tuple sets.
 pub trait StorageBackend: Send + Sync {
     /// Initialize the storage backend.
     /// Creates tables, applies migrations, verifies integrity.
     fn initialize(&mut self) -> AegisResult<StorageMeta>;
 
-    /// Write a single relationship tuple.
+    /// Write a single relationship tuple within a partition.
     /// Returns the new revision number.
-    fn write_tuple(&self, tuple: &RelationshipTuple) -> AegisResult<Revision>;
+    fn write_tuple(&self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<Revision>;
 
-    /// Write multiple tuples atomically within a single transaction.
-    fn write_tuples_batch(&self, tuples: &[RelationshipTuple]) -> AegisResult<Revision>;
+    /// Write multiple tuples atomically within a single transaction in a partition.
+    fn write_tuples_batch(&self, partition_id: &PartitionId, tuples: &[RelationshipTuple]) -> AegisResult<Revision>;
 
-    /// Delete a single relationship tuple by key.
-    fn delete_tuple(&self, key: &TupleKey) -> AegisResult<Revision>;
+    /// Delete a single relationship tuple by key within a partition.
+    fn delete_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Revision>;
 
-    /// Delete all tuples for a given subject.
-    fn delete_subject(&self, subject: &SubjectId) -> AegisResult<Revision>;
+    /// Delete all tuples for a given subject within a partition.
+    fn delete_subject(&self, partition_id: &PartitionId, subject: &SubjectId) -> AegisResult<Revision>;
 
-    /// Delete all tuples for a given resource.
-    fn delete_object(&self, object: &ResourceId) -> AegisResult<Revision>;
+    /// Delete all tuples for a given resource within a partition.
+    fn delete_object(&self, partition_id: &PartitionId, object: &ResourceId) -> AegisResult<Revision>;
 
-    /// Check if a tuple exists.
-    fn has_tuple(&self, key: &TupleKey) -> AegisResult<bool>;
+    /// Check if a tuple exists within a partition.
+    fn has_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<bool>;
 
-    /// Read a single tuple by key.
-    fn read_tuple(&self, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>>;
+    /// Read a single tuple by key within a partition.
+    fn read_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>>;
 
-    /// List all tuples for a given object.
+    /// List all tuples for a given object within a partition.
     fn list_by_object(
         &self,
+        partition_id: &PartitionId,
         object: &ResourceId,
         relation: Option<&Relation>,
         consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>>;
 
-    /// List all tuples for a given subject.
+    /// List all tuples for a given subject within a partition.
     fn list_by_subject(
         &self,
+        partition_id: &PartitionId,
         subject: &SubjectId,
         relation: Option<&Relation>,
         consistency: &ConsistencyMode,
@@ -65,6 +73,7 @@ pub trait StorageBackend: Send + Sync {
     /// Backends should override for efficient prefix-based lookups.
     fn list_by_subject_set_of(
         &self,
+        partition_id: &PartitionId,
         object: &ResourceId,
         relation: Option<&Relation>,
         _consistency: &ConsistencyMode,
@@ -73,6 +82,7 @@ pub trait StorageBackend: Send + Sync {
         // Optimized overrides exist for SQLite (LIKE) and other indexed backends.
         let prefix = format!("{}#", object.as_str());
         let all = self.query_tuples(
+            partition_id,
             &TupleFilter {
                 subject_type: Some(prefix),
                 relation: relation.cloned(),
@@ -84,23 +94,25 @@ pub trait StorageBackend: Send + Sync {
         Ok(all.tuples)
     }
 
-    /// List all tuples matching a relation on an object.
+    /// List all tuples matching a relation on an object within a partition.
     fn list_by_relation(
         &self,
+        partition_id: &PartitionId,
         object: &ResourceId,
         relation: &Relation,
     ) -> AegisResult<Vec<RelationshipTuple>>;
 
-    /// Paginated query with filters.
+    /// Paginated query with filters within a partition.
     fn query_tuples(
         &self,
+        partition_id: &PartitionId,
         filter: &TupleFilter,
         pagination: &PaginationParams,
         consistency: &ConsistencyMode,
     ) -> AegisResult<PaginatedTuples>;
 
-    /// Get the current revision number.
-    fn current_revision(&self) -> AegisResult<Revision>;
+    /// Get the current revision number for a partition.
+    fn current_revision(&self, partition_id: &PartitionId) -> AegisResult<Revision>;
 
     /// Read the stored schema version from the backend.
     /// Returns 0 if no schema version has been recorded.
@@ -113,11 +125,12 @@ pub trait StorageBackend: Send + Sync {
     fn current_token(&self) -> AegisResult<RevisionToken>;
 
     /// Begin a transaction. Returns a transaction handle.
-    fn begin_transaction(&self) -> AegisResult<Box<dyn StorageTransaction>>;
+    fn begin_transaction(&self, partition_id: &PartitionId) -> AegisResult<Box<dyn StorageTransaction>>;
 
-    /// Query audit log for a given object (or all objects if None) within a time range.
+    /// Query audit log for a given object (or all objects if None) within a partition.
     fn query_audit(
         &self,
+        partition_id: &PartitionId,
         object: Option<&ResourceId>,
         from_revision: Option<Revision>,
         to_revision: Option<Revision>,
@@ -130,24 +143,24 @@ pub trait StorageBackend: Send + Sync {
     /// Run a storage-level integrity check.
     fn integrity_check(&self) -> AegisResult<IntegrityReport>;
 
-    /// Delete audit events older than the given cutoff timestamp.
+    /// Delete audit events older than the given cutoff timestamp within a partition.
     /// Returns the number of deleted events.
-    fn delete_events_before(&self, _cutoff: DateTime<Utc>) -> AegisResult<usize>;
+    fn delete_events_before(&self, partition_id: &PartitionId, _cutoff: DateTime<Utc>) -> AegisResult<usize>;
 
     /// Compact paired add/remove events to reduce audit log size.
     /// Only meaningful for backends that track individual events (SQLite, PostgreSQL).
     /// Returns the number of removed events.
-    fn compact_events(&self) -> AegisResult<usize>;
+    fn compact_events(&self, partition_id: &PartitionId) -> AegisResult<usize>;
 
     /// Permanently remove soft-deleted tuples whose deletion revision
-    /// corresponds to a timestamp before the given cutoff.
+    /// corresponds to a timestamp before the given cutoff within a partition.
     /// Returns the number of deleted tuples.
-    fn delete_soft_deleted_tuples_before(&self, _cutoff: DateTime<Utc>) -> AegisResult<usize>;
+    fn delete_soft_deleted_tuples_before(&self, partition_id: &PartitionId, _cutoff: DateTime<Utc>) -> AegisResult<usize>;
 
-    /// Recover the current state by replaying all logged events.
+    /// Recover the current state by replaying all logged events within a partition.
     /// This reconstructs the tuple store from scratch using the event log,
     /// returning the latest revision seen.
-    fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision>;
+    fn recover_from_events(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision>;
 
     /// Return a version string for the storage backend (e.g. "3.45.1").
     fn storage_version(&self) -> Option<String> {
@@ -172,13 +185,13 @@ pub trait StorageBackend: Send + Sync {
     fn close(&self) -> AegisResult<()>;
 }
 
-/// A storage transaction supporting atomic multi-tuple writes.
+/// A storage transaction supporting atomic multi-tuple writes within a partition.
 pub trait StorageTransaction: Send {
     /// Write a tuple within this transaction.
-    fn write(&mut self, tuple: &RelationshipTuple) -> AegisResult<()>;
+    fn write(&mut self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<()>;
 
     /// Delete a tuple within this transaction.
-    fn delete(&mut self, key: &TupleKey) -> AegisResult<()>;
+    fn delete(&mut self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<()>;
 
     /// Create a named savepoint within the transaction.
     fn savepoint(&self, name: &str) -> AegisResult<()>;
@@ -230,6 +243,7 @@ impl std::fmt::Display for BackendType {
 /// Filter parameters for querying tuples.
 #[derive(Debug, Clone, Default)]
 pub struct TupleFilter {
+    pub partition_id: Option<String>,
     pub subject_type: Option<String>,
     pub relation: Option<Relation>,
     pub object_type: Option<String>,

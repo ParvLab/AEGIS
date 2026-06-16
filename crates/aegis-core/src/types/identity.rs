@@ -231,14 +231,87 @@ impl SubjectSet {
     pub fn resolve(
         &self,
         storage: &dyn crate::storage::StorageBackend,
+        partition_id: &PartitionId,
         consistency: &crate::types::ConsistencyMode,
     ) -> Result<Vec<SubjectId>, crate::error::AegisError> {
-        let tuples = storage.list_by_object(&self.object, Some(&self.relation), consistency)?;
+        let tuples = storage.list_by_object(partition_id, &self.object, Some(&self.relation), consistency)?;
         Ok(tuples.into_iter().map(|t| t.subject).collect())
     }
 }
 
-/// Validation errors for identity/resource/relation strings
+/// A validated partition identifier string.
+///
+/// Partitions logically isolate authorization graphs within a single engine.
+/// Each partition has its own rate limiter, traversal budget, metrics, and cache namespace.
+/// Partitions are NOT tenants — an application decides what a partition represents
+/// (e.g. tenant_id, org_id, workspace_id, guild_id, or "default").
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct PartitionId(String);
+
+const MAX_PARTITION_LENGTH: usize = 64;
+
+impl PartitionId {
+    pub fn new(raw: impl Into<String>) -> Result<Self, ValidationError> {
+        let s = raw.into();
+        Self::validate(&s)?;
+        Ok(Self(s))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+
+    fn validate(s: &str) -> Result<(), ValidationError> {
+        if s.is_empty() {
+            return Err(ValidationError::Empty);
+        }
+        if s.len() > MAX_PARTITION_LENGTH {
+            return Err(ValidationError::TooLong {
+                max: MAX_PARTITION_LENGTH,
+                actual: s.len(),
+            });
+        }
+        if !s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(ValidationError::InvalidCharacters(s.to_string()));
+        }
+        Ok(())
+    }
+}
+
+impl Default for PartitionId {
+    fn default() -> Self {
+        Self("default".to_string())
+    }
+}
+
+impl fmt::Display for PartitionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl TryFrom<String> for PartitionId {
+    type Error = ValidationError;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl TryFrom<&str> for PartitionId {
+    type Error = ValidationError;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+/// Validation errors for identity/resource/relation/partition strings
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum ValidationError {
     #[error("value cannot be empty")]
@@ -332,5 +405,42 @@ mod tests {
     fn try_from_string_resource() {
         let id: ResourceId = "workspace:core".to_string().try_into().unwrap();
         assert_eq!(id.as_str(), "workspace:core");
+    }
+
+    #[test]
+    fn valid_partition_id() {
+        let pid = PartitionId::new("acme").unwrap();
+        assert_eq!(pid.as_str(), "acme");
+    }
+
+    #[test]
+    fn valid_partition_id_with_special_chars() {
+        let pid = PartitionId::new("tenant-42_prod").unwrap();
+        assert_eq!(pid.as_str(), "tenant-42_prod");
+    }
+
+    #[test]
+    fn empty_partition_id_rejected() {
+        let err = PartitionId::new("").unwrap_err();
+        assert!(matches!(err, ValidationError::Empty));
+    }
+
+    #[test]
+    fn partition_id_too_long() {
+        let long = "a".repeat(65);
+        let err = PartitionId::new(long).unwrap_err();
+        assert!(matches!(err, ValidationError::TooLong { .. }));
+    }
+
+    #[test]
+    fn partition_id_colon_rejected() {
+        let err = PartitionId::new("tenant:acme").unwrap_err();
+        assert!(matches!(err, ValidationError::InvalidCharacters(_)));
+    }
+
+    #[test]
+    fn partition_id_default() {
+        let pid = PartitionId::default();
+        assert_eq!(pid.as_str(), "default");
     }
 }

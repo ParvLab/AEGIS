@@ -15,13 +15,13 @@ struct CacheEntry {
 
 /// Simple decision cache with revision-based and TTL-based invalidation.
 ///
-/// Cache key: `(subject, permission, resource)`
+/// Cache key: `(subject, permission, resource, partition_id)`
 /// On each lookup, compares the entry's revision against current revision.
 /// If stale (entry.revision < current_revision), evicts and returns None.
 /// If TTL expired, evicts and returns None.
 pub struct DecisionCache {
-    entries: HashMap<(String, String, String), CacheEntry>,
-    access_order: VecDeque<(String, String, String)>,
+    entries: HashMap<(String, String, String, String), CacheEntry>,
+    access_order: VecDeque<(String, String, String, String)>,
     capacity: usize,
     ttl: Duration,
     hits: u64,
@@ -53,12 +53,14 @@ impl DecisionCache {
         subject: &str,
         permission: &str,
         resource: &str,
+        partition_id: &str,
         current_revision: Revision,
     ) -> Option<bool> {
         let key = (
             subject.to_string(),
             permission.to_string(),
             resource.to_string(),
+            partition_id.to_string(),
         );
 
         let is_valid = self.entries.get(&key).map_or(false, |entry| {
@@ -91,6 +93,7 @@ impl DecisionCache {
         subject: &str,
         permission: &str,
         resource: &str,
+        partition_id: &str,
         allowed: bool,
         revision: Revision,
     ) {
@@ -98,6 +101,7 @@ impl DecisionCache {
             subject.to_string(),
             permission.to_string(),
             resource.to_string(),
+            partition_id.to_string(),
         );
 
         // Remove existing entry from access order so it gets re-inserted at MRU
@@ -119,6 +123,12 @@ impl DecisionCache {
                 created_at: Instant::now(),
             },
         );
+    }
+
+    /// Remove all entries for a given partition.
+    pub fn remove(&mut self, partition_id: &str) {
+        self.entries.retain(|k, _| k.3 != partition_id);
+        self.access_order.retain(|k| k.3 != partition_id);
     }
 
     /// Invalidate all entries with revisions older than a threshold.
@@ -241,10 +251,10 @@ mod tests {
     #[test]
     fn test_cache_hit() {
         let mut cache = DecisionCache::new(100);
-        cache.insert("user:1", "read", "repo:a", true, Revision::new(5));
+        cache.insert("user:1", "read", "repo:a", "default", true, Revision::new(5));
 
         assert_eq!(
-            cache.get("user:1", "read", "repo:a", Revision::new(5)),
+            cache.get("user:1", "read", "repo:a", "default", Revision::new(5)),
             Some(true)
         );
         assert_eq!(cache.hit_rate(), 1.0);
@@ -254,7 +264,7 @@ mod tests {
     fn test_cache_miss() {
         let mut cache = DecisionCache::new(100);
         assert_eq!(
-            cache.get("user:1", "read", "repo:a", Revision::new(5)),
+            cache.get("user:1", "read", "repo:a", "default", Revision::new(5)),
             None
         );
     }
@@ -262,11 +272,11 @@ mod tests {
     #[test]
     fn test_cache_stale_eviction() {
         let mut cache = DecisionCache::new(100);
-        cache.insert("user:1", "read", "repo:a", true, Revision::new(5));
+        cache.insert("user:1", "read", "repo:a", "default", true, Revision::new(5));
 
         // Revision 10 > 5 → entry is stale
         assert_eq!(
-            cache.get("user:1", "read", "repo:a", Revision::new(10)),
+            cache.get("user:1", "read", "repo:a", "default", Revision::new(10)),
             None
         );
     }
@@ -274,9 +284,9 @@ mod tests {
     #[test]
     fn test_cache_capacity() {
         let mut cache = DecisionCache::new(2);
-        cache.insert("user:1", "read", "repo:a", true, Revision::new(1));
-        cache.insert("user:2", "read", "repo:b", true, Revision::new(2));
-        cache.insert("user:3", "read", "repo:c", true, Revision::new(3));
+        cache.insert("user:1", "read", "repo:a", "default", true, Revision::new(1));
+        cache.insert("user:2", "read", "repo:b", "default", true, Revision::new(2));
+        cache.insert("user:3", "read", "repo:c", "default", true, Revision::new(3));
 
         // At most 2 entries should remain (one evicted due to capacity)
         assert!(cache.len() <= 2);
@@ -285,7 +295,7 @@ mod tests {
     #[test]
     fn test_cache_clear() {
         let mut cache = DecisionCache::new(100);
-        cache.insert("user:1", "read", "repo:a", true, Revision::new(1));
+        cache.insert("user:1", "read", "repo:a", "default", true, Revision::new(1));
         cache.clear();
         assert!(cache.is_empty());
         assert_eq!(cache.hit_rate(), 0.0);
@@ -314,23 +324,23 @@ mod tests {
         let mut cache = DecisionCache::new(3);
 
         // Fill cache to capacity
-        cache.insert("user:1", "read", "repo:a", true, Revision::new(1));
-        cache.insert("user:2", "read", "repo:b", true, Revision::new(2));
-        cache.insert("user:3", "read", "repo:c", true, Revision::new(3));
+        cache.insert("user:1", "read", "repo:a", "default", true, Revision::new(1));
+        cache.insert("user:2", "read", "repo:b", "default", true, Revision::new(2));
+        cache.insert("user:3", "read", "repo:c", "default", true, Revision::new(3));
 
         // Access user:1 and user:2 to make them MRU
-        assert_eq!(cache.get("user:1", "read", "repo:a", Revision::new(1)), Some(true));
-        assert_eq!(cache.get("user:2", "read", "repo:b", Revision::new(2)), Some(true));
+        assert_eq!(cache.get("user:1", "read", "repo:a", "default", Revision::new(1)), Some(true));
+        assert_eq!(cache.get("user:2", "read", "repo:b", "default", Revision::new(2)), Some(true));
 
         // Insert 4th entry — should evict LRU entry (user:3)
-        cache.insert("user:4", "read", "repo:d", true, Revision::new(4));
+        cache.insert("user:4", "read", "repo:d", "default", true, Revision::new(4));
 
         // user:3 should be evicted
-        assert_eq!(cache.get("user:3", "read", "repo:c", Revision::new(3)), None);
+        assert_eq!(cache.get("user:3", "read", "repo:c", "default", Revision::new(3)), None);
         // user:1 and user:2 should still be present
-        assert_eq!(cache.get("user:1", "read", "repo:a", Revision::new(1)), Some(true));
-        assert_eq!(cache.get("user:2", "read", "repo:b", Revision::new(2)), Some(true));
+        assert_eq!(cache.get("user:1", "read", "repo:a", "default", Revision::new(1)), Some(true));
+        assert_eq!(cache.get("user:2", "read", "repo:b", "default", Revision::new(2)), Some(true));
         // user:4 should be present
-        assert_eq!(cache.get("user:4", "read", "repo:d", Revision::new(4)), Some(true));
+        assert_eq!(cache.get("user:4", "read", "repo:d", "default", Revision::new(4)), Some(true));
     }
 }

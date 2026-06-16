@@ -28,6 +28,8 @@ pub(crate) static METRIC_GRAPH_TUPLE_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "telemetry")]
 pub(crate) static METRIC_GRAPH_TENANT_COUNT: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "telemetry")]
+pub(crate) static METRIC_GRAPH_PARTITION_COUNT: AtomicU64 = AtomicU64::new(0);
+#[cfg(feature = "telemetry")]
 pub(crate) static METRIC_STORAGE_CONNECTIONS_ACTIVE: AtomicU64 = AtomicU64::new(0);
 
 /// Guard that flushes telemetry on drop.
