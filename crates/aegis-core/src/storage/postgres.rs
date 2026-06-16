@@ -865,7 +865,7 @@ impl StorageBackend for PostgresStorage {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
             let mut sql = String::from(
-                "SELECT revision, action, subject, relation, object, timestamp, metadata
+                "SELECT revision, action, subject, relation, object, timestamp, metadata, identity
                  FROM _aegis_events",
             );
             let mut params: Vec<Box<dyn tokio_postgres::types::ToSql + Sync>> = Vec::new();
@@ -923,6 +923,7 @@ impl StorageBackend for PostgresStorage {
                     let meta_val: Option<serde_json::Value> = row.get("metadata");
                     let metadata =
                         meta_val.and_then(|v| serde_json::from_value::<HashMap<String, String>>(v).ok());
+                    let identity: Option<String> = row.get("identity");
                     let action = if action_str == "add" {
                         TupleMutation::Add
                     } else {
@@ -936,6 +937,7 @@ impl StorageBackend for PostgresStorage {
                         object: obj,
                         timestamp: ts,
                         metadata,
+                        identity,
                     }
                 })
                 .collect();

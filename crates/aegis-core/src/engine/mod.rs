@@ -66,6 +66,7 @@ pub struct GraphEngine {
     api_key_hash: Option<u64>,
     parallel_eval: AtomicBool,
     engine_start: std::time::Instant,
+    actor: Mutex<Option<String>>,
 }
 
 impl GraphEngine {
@@ -111,7 +112,25 @@ impl GraphEngine {
             api_key_hash: None,
             parallel_eval: AtomicBool::new(true),
             engine_start: std::time::Instant::now(),
+            actor: Mutex::new(None),
         }
+    }
+
+    /// Set the actor identity for this engine instance.
+    /// The actor identity is recorded in audit events for traceability.
+    pub fn with_actor(self, actor: &str) -> Self {
+        *self.actor.lock().unwrap() = Some(actor.to_string());
+        self
+    }
+
+    /// Set or clear the actor identity on an already-constructed engine.
+    pub fn set_actor(&self, actor: Option<&str>) {
+        *self.actor.lock().unwrap() = actor.map(|a| a.to_string());
+    }
+
+    /// Return the currently configured actor identity, if any.
+    pub fn active_actor(&self) -> Option<String> {
+        self.actor.lock().unwrap().clone()
     }
 
     /// Set a custom TTL for the decision cache.

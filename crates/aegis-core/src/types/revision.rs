@@ -167,6 +167,7 @@ pub struct AuditEntry {
     pub object: String,
     pub timestamp: DateTime<Utc>,
     pub metadata: Option<std::collections::HashMap<String, String>>,
+    pub identity: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

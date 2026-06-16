@@ -1194,7 +1194,7 @@ impl StorageBackend for SqliteStorage {
         let limit = pagination.limit;
 
         let sql = format!(
-            "SELECT revision, action, subject, relation, object, timestamp, metadata
+            "SELECT revision, action, subject, relation, object, timestamp, metadata, identity
              FROM _aegis_events
              WHERE {where_clause}
              ORDER BY revision ASC
@@ -1222,6 +1222,7 @@ impl StorageBackend for SqliteStorage {
                 let object: String = row.get(4)?;
                 let timestamp_str: String = row.get(5)?;
                 let metadata_json: Option<String> = row.get(6)?;
+                let identity: Option<String> = row.get(7)?;
 
                 let timestamp: DateTime<Utc> = timestamp_str.parse().unwrap_or_else(|_| Utc::now());
                 let metadata = metadata_json
@@ -1240,6 +1241,7 @@ impl StorageBackend for SqliteStorage {
                     object,
                     timestamp,
                     metadata,
+                    identity,
                 })
             })
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;

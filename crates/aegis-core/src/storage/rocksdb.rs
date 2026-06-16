@@ -844,6 +844,11 @@ impl StorageBackend for RocksDbStorage {
                 let metadata: Option<HashMap<String, String>> = event.get("metadata")
                     .and_then(|m| serde_json::from_value(m.clone()).ok());
 
+                let identity: Option<String> = event.get("identity")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.to_string());
+
                 results.push(AuditEntry {
                     revision: Revision::new(rev),
                     action,
@@ -852,6 +857,7 @@ impl StorageBackend for RocksDbStorage {
                     object: event_obj.to_string(),
                     timestamp,
                     metadata,
+                    identity,
                 });
             }
         }
