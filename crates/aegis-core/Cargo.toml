@@ -6,15 +6,17 @@ license.workspace = true
 repository.workspace = true
 description = "Aegis embedded authorization runtime core library"
 
+
+
 [dependencies]
 serde.workspace = true
 serde_yml.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 chrono.workspace = true
-rusqlite.workspace = true
-r2d2.workspace = true
-r2d2_sqlite.workspace = true
+rusqlite = { workspace = true, optional = true }
+r2d2 = { workspace = true, optional = true }
+r2d2_sqlite = { workspace = true, optional = true }
 serde_json.workspace = true
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["digest"] }
@@ -35,7 +37,11 @@ opentelemetry = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 opentelemetry-otlp = { workspace = true, optional = true }
 tracing-opentelemetry = { workspace = true, optional = true }
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 libc = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
 
 [dev-dependencies]
 criterion = "0.5"
@@ -52,10 +58,13 @@ harness = false
 path = "benches/cache.rs"
 
 [features]
+default = ["sqlite"]
+sqlite = ["dep:rusqlite", "dep:r2d2", "dep:r2d2_sqlite"]
 hot-reload = []
 postgres = ["tokio-postgres", "deadpool-postgres", "tokio", "tokio-postgres-rustls", "rustls", "webpki-roots"]
 mysql = ["dep:mysql_async", "tokio"]
 rocksdb = ["dep:rocksdb"]
 telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tracing-subscriber"]
-test-utils = []
+test-utils = ["sqlite"]
+wasm = []
 

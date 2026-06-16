@@ -296,6 +296,7 @@ pub enum BackendType {
     Mysql,
     RocksDB,
     IndexedDB,
+    InMemory,
 }
 
 impl std::fmt::Display for BackendType {
@@ -306,6 +307,7 @@ impl std::fmt::Display for BackendType {
             Self::Mysql => write!(f, "mysql"),
             Self::RocksDB => write!(f, "rocksdb"),
             Self::IndexedDB => write!(f, "indexeddb"),
+            Self::InMemory => write!(f, "in-memory"),
         }
     }
 }

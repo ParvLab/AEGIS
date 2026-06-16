@@ -38,12 +38,12 @@ Legend:
 - `DN` = done
 
 | Version | Status | Overall | M1 | M2 | M3 | M4 | Target Window |
-|---|---|---:|---|---|---|---|---|
+|---|---:|---|---|---|---|---|---:|
 | V1 Embedded Core Foundation | DN | 100% | DN | DN | DN | DN | Q1-Q2 |
 | V2 Multi-Model Authorization | DN | 100% | DN | DN | DN | DN | Q3 |
 | V3 SDK and Developer Platform Completion | NS | 0% | NS | NS | NS | NS | Q4-Q5 |
-| V4 Enterprise Reliability and Governance | NS | 0% | NS | NS | NS | NS | Q6-Q7 |
-| V5 Browser, Edge, and Offline Runtime | NS | 0% | NS | NS | NS | NS | Q8-Q9 |
+| V4 Enterprise Reliability and Governance | DN | 100% | DN | DN | DN | DN | Q6-Q7 |
+| V5 Browser, Edge, and Offline Runtime | IP | 15% | DN | NS | NS | NS | Q8-Q9 |
 | V6 Policy Intelligence and Ecosystem | NS | 0% | NS | NS | NS | NS | Q10-Q11 |
 
 ## Program Tracking Model

@@ -20,7 +20,7 @@ serde = { version = "1", features = ["derive"] }
 serde_yml = "0.0"
 subtle = "2"
 thiserror = "2"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "serde", "js"] }
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.39", features = ["bundled"] }
 r2d2 = "0.8"

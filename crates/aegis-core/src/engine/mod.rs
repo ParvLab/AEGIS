@@ -79,7 +79,7 @@ impl GraphEngine {
     /// Create a new graph engine with the given storage and schema.
     pub fn new(storage: Box<dyn StorageBackend>, schema: Schema) -> Self {
         // Detect file descriptor limits at startup (Unix only)
-        #[cfg(unix)]
+        #[cfg(all(unix, not(target_arch = "wasm32")))]
         {
             let mut rlim = std::mem::MaybeUninit::<libc::rlimit>::uninit();
             if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, rlim.as_mut_ptr()) == 0 } {
