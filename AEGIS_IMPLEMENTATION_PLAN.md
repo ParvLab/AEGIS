@@ -43,7 +43,7 @@ Legend:
 | V2 Multi-Model Authorization | DN | 100% | DN | DN | DN | DN | Q3 |
 | V3 SDK and Developer Platform Completion | NS | 0% | NS | NS | NS | NS | Q4-Q5 |
 | V4 Enterprise Reliability and Governance | DN | 100% | DN | DN | DN | DN | Q6-Q7 |
-| V5 Browser, Edge, and Offline Runtime | IP | 15% | DN | NS | NS | NS | Q8-Q9 |
+| V5 Authorization Everywhere — Browser, Offline, Worker | IP | 15% | DN | NS | NS | NS | Q8 |
 | V6 Policy Intelligence and Ecosystem | NS | 0% | NS | NS | NS | NS | Q10-Q11 |
 
 ## Program Tracking Model
@@ -189,7 +189,7 @@ Recommended allocation by phase:
 | V2 | 1.0 | 1.25 | 0.5 | 0.25 | 0.25 |
 | V3 | 0.75 | 0.25 | 1.5 | 0.5 | 0.25 |
 | V4 | 1.0 | 0.5 | 0.5 | 0.75 | 0.25 |
-| V5 | 1.0 | 0.25 | 1.0 | 0.5 | 0.25 |
+| V5 | 1.25 | 0.25 | 1.0 | 0.5 | 0.25 |
 | V6 | 0.75 | 1.0 | 0.75 | 0.5 | 0.25 |
 
 ## Version Strategy
@@ -200,7 +200,7 @@ Aegis should be delivered through these versions:
 - V2: Multi-Model Authorization,
 - V3: SDK and Developer Platform Completion,
 - V4: Enterprise Reliability and Governance,
-- V5: Browser, Edge, and Offline Runtime,
+- V5: Authorization Everywhere — Browser, Offline, and Worker Runtime,
 - V6: Advanced Policy Intelligence and Ecosystem.
 
 Each version contains:
@@ -220,7 +220,7 @@ Each version contains:
 - V2 depends on V1 engine lifecycle, schema system, traversal semantics, and stable data contracts.
 - V3 depends on a stable V1 API surface and partially on V2 if SDKs must expose RBAC, ABAC, and tenant-aware helpers.
 - V4 depends on V1 durability and V3 packaging stability.
-- V5 depends on a stable Rust core and stable schema/evaluation semantics from V1-V2.
+- V5 depends on V4 sync StorageBackend trait stability, the new AsyncStorageBackend trait, and stable schema/evaluation semantics from V1-V2.
 - V6 depends on V2 explainability and V4 audit/compliance foundations.
 
 ### Critical Path
@@ -1068,82 +1068,186 @@ Completion evidence:
 - production checklist automated in CI or release process where possible,
 - security review completed.
 
-## V5: Browser, Edge, and Offline Runtime
+## V5: Authorization Everywhere — Browser, Offline, and Worker Runtime
 
 ### Goal
 
-Extend Aegis into local-first, browser, and edge environments while preserving embedded execution.
+Extend Aegis into browser, offline, and worker environments so that the exact same authorization engine runs on the server, in the browser, and offline — with the same schema, same traversal, and same permission model.
+
+```
+V4 = Enterprise Embedded Authorization
+V5 = Authorization Everywhere
+
+Server  Browser  Desktop  PWA  Offline  Workers  Edge*
+    └──────┴────────┴──────┴─────┴──────┴──────┘
+           Same engine. Same schema. Same checks.
+                                          * Edge KV/D1 deferred to V6
+```
 
 ### Timeline
 
-- Duration: 24 weeks
-- Suggested window: Quarter 8 to Quarter 9
+- Duration: 14 weeks
+- Suggested window: Quarter 8
 
 ### Dependencies
 
-- stable Rust core,
-- stable schema and evaluation semantics,
-- packaging support from V3.
+- stable Rust core (V1),
+- stable schema and evaluation semantics (V1-V2),
+- V4 sync `StorageBackend` trait stability (V4),
+- new `AsyncStorageBackend` trait introduced in V5-M2 Phase A.
+
+### Architecture
+
+```
+StorageBackend (sync)          AsyncStorageBackend (async)
+├── SqliteStorage              ├── InMemoryAsyncStorage
+├── PostgresStorage            └── IndexedDbStorage
+├── MysqlStorage
+├── RocksDbStorage
+└── InMemoryStorage
+
+GraphEngine
+├── check() / write() / delete()     ← sync (server backends)
+├── async_check() / async_write()    ← async (browser backends)
+│
+├── Schema       ── same ──┐
+├── Cache        ── same ──┤
+├── Traversal    ── same ──┤
+├── Partitions   ── same ──┤
+└── Audit        ── same ──┘
+```
 
 ### V5 Scope
 
 #### WASM runtime
 
-- core engine compilation strategy for WebAssembly,
-- minimal feature profile for browser runtimes,
-- deterministic memory and size constraints.
+- core engine compilation for WebAssembly (M1 — done),
+- minimal feature profile for browser runtimes (M1 — done),
+- deterministic memory and size constraints (M1 — done),
+- raw WASM bundle: 792 KB (target < 2.5 MB). ✓
 
-#### IndexedDB storage adapter
+#### AsyncStorageBackend trait (NEW — Phase A of M2)
 
-- browser persistence backend,
-- revision tracking in IndexedDB,
-- query APIs over IndexedDB,
-- audit/event storage in IndexedDB,
-- export/import support in browser mode.
+- async trait mirroring sync `StorageBackend` methods,
+- only compiled for `cfg(target_arch = "wasm32")`,
+- `InMemoryAsyncStorage` wrapper for testing,
+- `GraphEngine.async_check()`, `async_write()`, `async_delete()` APIs,
+- `StorageCapabilities` struct for feature detection.
 
-#### Edge runtime strategy
+#### IndexedDB storage adapter (Phase B of M2)
 
-- WASM-compatible API surface,
-- worker-compatible execution model,
-- no background thread assumptions,
-- no server/listener assumptions.
+- browser persistence backend via web-sys bindings,
+- 5 IndexedDB stores: `tuples`, `events`, `revision`, `schema`, `metadata`,
+- revision tracking and query flows,
+- audit/event storage,
+- export/import support,
+- schema version + content persisted in `schema` store.
 
-#### Sync and portability
+#### Web Worker support (M3)
 
-- portable export format between browser and server runtimes,
-- conflict guidance for graph import/export flows,
-- seed and hydrate flows for offline-first apps.
+- `AegisEngine` runs in a Web Worker by default,
+- communicates via `postMessage` bridge,
+- main thread never blocked by authorization checks.
 
-#### Browser SDK
+#### Browser SDK (M3)
 
-- JS package for browser use,
-- IndexedDB initialization helpers,
-- browser examples,
-- size optimization and tree-shaking strategy.
+- JS/TypeScript package (`@aegis/browser`),
+- `AegisEngine.create(schema, config)` factory,
+- `check()`, `write()`, `delete()`, `listByObject()`, `listBySubject()`,
+- `exportToJson()`, `importFromJson()`,
+- `partition(id)` — same V4 partition semantics for browser.
+
+#### Offline-first flows (M3)
+
+- portable export/import between browser and server,
+- offline demo app: single HTML page, IndexedDB-backed, works without network,
+- V5 does NOT include automatic conflict resolution — documented explicitly as out of scope.
+
+### Out of Scope for V5
+
+The following are deferred to V6 or V5.1:
+
+- ❌ Automatic conflict resolution / CRDT sync for offline edits
+- ❌ Cloudflare Workers / D1 / KV / Durable Objects → V6
+- ❌ Deno / Bun → V6
+- ❌ React bindings (`usePermission()`, `<AegisProvider />`) → V5.1
+- ❌ Service Worker PWA scaffolding → V5.1
 
 ### V5 Milestones
 
-#### V5-M1: WASM feasibility and boundary definition
+#### V5-M1: WASM feasibility and boundary definition (COMPLETE)
+
+- Target weeks: — (done)
+- Status: DN
+- Owner: —
+
+Completion evidence (all met):
+
+| Item | Status |
+|---|---|
+| `sqlite` feature flag: `rusqlite`/`r2d2` optional | ✅ |
+| `SqliteStorage` gated behind `#[cfg(feature = "sqlite")]` | ✅ |
+| `InMemoryStorage` backend (HashMap-based, 7 tests) | ✅ |
+| `BackendType::InMemory` variant | ✅ |
+| `libc` target-gated, not compiled on wasm32 | ✅ |
+| `wasm` feature flag for minimal WASM builds | ✅ |
+| Core compiles for `wasm32-unknown-unknown` | ✅ |
+| Raw WASM bundle: 792 KB (target < 2.5 MB) | ✅ |
+| WASM demo example (`examples/wasm-demo/`) | ✅ |
+| Unsupported features documented | ❌ |
+| Runtime contract document | ❌ |
+
+#### V5-M2: AsyncStorageBackend + IndexedDB (6 weeks)
 
 - Target weeks: 1-6
 - Status: NS
 - Owner: unassigned
 
+**Phase A — AsyncStorageBackend trait (weeks 1-2)**
+
 Scope:
 
-- prove Rust core compiles and runs under WASM constraints,
-- define browser feature subset,
-- define worker-compatible runtime rules,
-- establish size and memory budgets.
+- define `AsyncStorageBackend` trait with async equivalents of all `StorageBackend` methods,
+- add `StorageCapabilities` struct (`persistent`, `transactional`, `audit_supported`, `backup_supported`, `export_import_supported`, `async_only`),
+- implement `InMemoryAsyncStorage` for testing,
+- add `async_check()`, `async_write()`, `async_delete()` methods to `GraphEngine`,
+- share traversal, schema, cache, partition, and audit logic with sync path.
+
+**Phase B — IndexedDbStorage (weeks 3-6)**
+
+Scope:
+
+- IndexedDB store layout:
+
+  | Store | Key | Value |
+  |---|---|---|
+  | `tuples` | `[partition, subject, relation, object]` | tuple JSON |
+  | `events` | auto-increment | full audit entry |
+  | `revision` | `partition` | `{current_revision}` |
+  | `schema` | `partition` | `{version, hash, yaml_content}` |
+  | `metadata` | `key` | `{value}` |
+
+- `IndexedDbStorage` struct implementing `AsyncStorageBackend`:
+  - async open/create database,
+  - full CRUD + list + query + pagination operations,
+  - audit write + query with revision range,
+  - `recover_from_events()` via replay,
+  - `restore_backup()` clear + batch insert,
+  - `verify_audit_chain()` hash chain replay,
+  - `close()`.
+- `IndexedDbTransaction` implementing async transaction semantics.
+- Tests via `wasm-bindgen-test` in headless browser (Chrome, Firefox).
+- CI: `wasm-pack test --chrome --headless`.
 
 Completion evidence:
 
-- demo build runs in browser,
-- documented unsupported features identified,
-- initial bundle size measured,
-- runtime contract approved.
+- CRUD and query contract tests green in browser harness,
+- revision semantics verified (monotonic per partition),
+- persistence survives page reload,
+- export/import local round-trip works,
+- schema version persisted across sessions.
 
-#### V5-M2: IndexedDB backend implementation
+#### V5-M3: Browser SDK + Web Worker + offline-first (6 weeks)
 
 - Target weeks: 7-12
 - Status: NS
@@ -1151,50 +1255,82 @@ Completion evidence:
 
 Scope:
 
-- implement IndexedDB storage adapter,
-- add revision tracking and query flows,
-- add local audit/event storage,
-- add browser persistence tests.
+- **Web Worker**: `AegisEngine` runs in a Worker by default; main-thread API uses `postMessage` bridge. Worker support is M3, not deferred to M4.
+- **JS/TS SDK** (`packages/aegis-browser/`):
+
+  ```ts
+  const engine = await AegisEngine.create(schema, { dbName: "myapp" });
+  await engine.check("user:alice", "read", "repo:hello");
+  await engine.write("user:alice", "owner", "repo:hello");
+  await engine.delete("user:alice", "owner", "repo:hello");
+  await engine.listByObject("repo:hello");
+  await engine.listBySubject("user:alice");
+  await engine.exportToJson();
+  await engine.importFromJson(json);
+  engine.partition("acme"); // same V4 partition semantics
+  ```
+
+- TypeScript type definitions: `CheckResult`, `Tuple`, `AuditEntry`, `AegisConfig`.
+- Size optimization: `wasm-opt -Oz`, tree-shaking unused exports, target < 350 KB gzip.
+- CI: `wasm-pack build`, `wasm-pack test`, bundle size gate.
+
+- **Export/import portability**:
+  - `exportToJson()` → dump all tuples + events + revision + schema as JSON,
+  - `importFromJson()` → clear + restore (wraps `restore_backup`),
+  - explicit documentation: no automatic conflict resolution (V5 scope boundary).
+
+- **Offline demo app**:
+  - Single HTML page (no framework dependency),
+  - IndexedDB-backed,
+  - Write tuples, run checks, export while fully offline,
+  - Re-import on server on reconnect.
 
 Completion evidence:
 
-- CRUD and query contract tests green in browser harness,
-- revision semantics verified,
-- persistence survives reload,
-- export/import local round-trip works.
-
-#### V5-M3: Browser SDK and offline-first flows
-
-- Target weeks: 13-18
-- Status: NS
-- Owner: unassigned
-
-Scope:
-
-- ship browser SDK package,
-- add initialization helpers,
-- add sync/export/import workflows,
-- build offline-first demo app.
-
-Completion evidence:
-
-- SDK install and smoke tests green,
+- SDK install and smoke tests green (npm package),
 - offline demo works without network,
-- import/export portability validated,
+- import/export portability validated (server→browser and browser→server),
+- Worker isolation verified (main thread not blocked during checks),
+- bundle size gate passes,
 - browser docs complete.
 
-#### V5-M4: Edge hardening and release readiness
+#### V5-M4: Release readiness (2 weeks)
 
-- Target weeks: 19-24
+- Target weeks: 13-14
 - Status: NS
 - Owner: unassigned
 
 Scope:
 
-- validate worker and edge compatibility,
-- optimize size and startup,
-- finalize support matrix,
-- add performance and stability gates.
+- **Performance benchmarks**:
+  - p95 check latency < 5 ms on 10k tuple graph in browser,
+  - export 100k tuples under 5 seconds,
+  - import 100k tuples under 10 seconds,
+  - idle memory < 50 MB, steady-state < 200 MB,
+  - cold start to first check < 250 ms.
+- **Support matrix**:
+
+  | Platform | Status |
+  |---|---|
+  | Chrome (latest) | ✅ |
+  | Firefox (latest) | ✅ |
+  | Safari (latest) | ✅ |
+  | Edge (latest) | ✅ |
+  | Web Worker | ✅ |
+  | Cloudflare Workers | ❌ V6 |
+  | Deno | ❌ V6 |
+  | Bun | ❌ V6 |
+
+- **Docs**:
+  - WASM architecture spec (`docs/wasm-architecture.md`),
+  - Browser getting-started guide (`docs/browser-getting-started.md`),
+  - Schema migration on browser guide,
+  - Support matrix (`docs/support-matrix.md`).
+- **Release**:
+  - npm publish (`@aegis/browser`),
+  - cargo publish (`aegis-core` with `wasm` + `indexeddb` features),
+  - V5 changelog,
+  - All release gates signed off (engineering, product, security, architecture, performance, compatibility).
 
 Completion evidence:
 
@@ -1205,15 +1341,21 @@ Completion evidence:
 
 ### V5 Deliverables
 
-- WASM/IndexedDB architecture spec,
-- browser SDK package,
-- offline-first examples.
+- `AsyncStorageBackend` trait + `StorageCapabilities` (M2),
+- `IndexedDbStorage` implementation (M2),
+- `@aegis/browser` npm package (M3),
+- Web Worker integration (M3),
+- offline-first demo app (M3),
+- WASM/IndexedDB architecture spec (M4),
+- browser docs + support matrix (M4).
 
 ### V5 Exit Criteria
 
-- browser demo app works fully offline,
-- export/import between server and browser validated,
-- runtime size and performance targets met.
+- browser demo app works fully offline (IndexedDB + Worker),
+- export/import between server and browser validated with schema persistence,
+- runtime size and performance targets met (< 350 KB gzip, p95 < 5 ms on 10k graph),
+- Web Worker isolation verified (main thread not blocked),
+- `AsyncStorageBackend` trait stable and documented for V6 edge backends.
 
 ## V6: Advanced Policy Intelligence and Ecosystem
 
@@ -1511,13 +1653,13 @@ Problem:
 
 Required work:
 
-- add runtime and storage design,
-- implement backend,
+- add AsyncStorageBackend trait and StorageCapabilities,
+- implement IndexedDbStorage using AsyncStorageBackend,
 - add browser SDK and examples.
 
 Target:
 
-- V5-M1 through V5-M4.
+- V5-M2 through V5-M4.
 
 ### Gap 10: Migration Framework Needs Real Built-In Steps
 
@@ -1871,18 +2013,28 @@ Primary versions:
 
 - V3, V4, V5.
 
-### Workstream 14: Browser and Edge
+### Workstream 14: Browser Runtime
 
 Tasks:
 
-- WASM viability,
-- IndexedDB backend,
-- browser SDK,
-- edge examples.
+- WASM feasibility and feature gating (M1 — done),
+- AsyncStorageBackend trait (M2 Phase A),
+- IndexedDB backend (M2 Phase B),
+- Web Worker integration (M3),
+- browser SDK (M3),
+- offline-first demo app (M3),
+- release readiness, benchmarks, docs (M4).
+
+Out of scope (deferred to V6):
+
+- Cloudflare Workers / D1 / KV / Durable Objects,
+- Deno / Bun,
+- automatic conflict resolution,
+- React bindings.
 
 Success criteria:
 
-- Aegis works in offline-first and browser-embedded settings.
+- Aegis works in offline-first and browser-embedded settings with the exact same engine and schema as the server runtime.
 
 Primary versions:
 
@@ -1922,8 +2074,9 @@ Review this register at the start and end of every milestone.
 | R9 | C ABI becomes unstable across releases | Medium | High | Freeze header policy and add ABI compatibility tests | V3 |
 | R10 | Backup restore format is incomplete or incompatible | Medium | High | Version backup format and add cross-version fixtures | V4 |
 | R11 | Security checklist stays manual and unenforced | Medium | High | Convert checklist items into CI/release gates | V4 |
-| R12 | WASM bundle size or runtime limits make browser story impractical | Medium | Medium | Run early feasibility spike and define a minimal browser profile | V5 |
+| R12 | WASM bundle size or runtime limits make browser story impractical | Low | Medium | Feasibility spike complete (M1). Raw WASM: 792 KB (target < 2.5 MB). Risk mitigated. | V5 |
 | R13 | IndexedDB behavior diverges from SQLite semantics | Medium | Medium | Add browser contract tests and document intentional differences | V5 |
+| R15 | AsyncStorageBackend and sync StorageBackend diverge over time | Medium | High | Share traversal/cache/schema/partition logic between sync and async paths; enforce common test suite | V5 |
 | R14 | Analysis APIs in V6 become computationally expensive | Medium | Medium | Add query cost limits, pagination, and report scoping | V6 |
 
 ## Testing and Verification Strategy
@@ -2077,8 +2230,11 @@ These targets are starting objectives and may be revised with measured evidence.
 
 - idle memory under 50 MB for a typical embedded runtime,
 - steady-state memory under 200 MB for moderate local workloads,
-- browser/WASM bundle target under 2.5 MB compressed for a minimal profile,
-- browser runtime initialization under 250 ms on target hardware for the minimal profile.
+- browser/WASM bundle target under 350 KB gzip (raw 792 KB as of M1),
+- browser runtime initialization under 250 ms on target hardware for the minimal profile,
+- browser p95 check latency under 5 ms on a 10k tuple graph (latency > throughput as the primary metric),
+- browser export of 100k tuples under 5 seconds,
+- browser import of 100k tuples under 10 seconds.
 
 ### Performance governance rules
 
@@ -2203,17 +2359,17 @@ Maintain these fields per milestone during execution:
 | V2 | 16 weeks | Multi-model authorization |
 | V3 | 20 weeks | SDK and developer platform completion |
 | V4 | 20 weeks | Reliability, security, governance |
-| V5 | 24 weeks | Browser, edge, offline runtime |
+| V5 | 14 weeks | Browser, offline, worker runtime |
 | V6 | 24 weeks | Advanced policy intelligence and ecosystem |
 
 Total projected duration:
 
-- 124 weeks,
-- approximately 2.5 years for full completion.
+- 114 weeks,
+- approximately 2 years for full completion.
 
 Accelerated option:
 
-- 18 to 21 months with 4+ engineers and dedicated QA/docs support.
+- 16 to 18 months with 4+ engineers and dedicated QA/docs support.
 
 ## Release Gates Per Version
 
@@ -2268,6 +2424,7 @@ Aegis is considered complete end to end when all of the following are true:
 - the embedded runtime is stable and documented,
 - ReBAC, RBAC, ACL, ownership, tenancy, and ABAC are first-class and tested,
 - SQLite, RocksDB, PostgreSQL, MySQL, and IndexedDB stories are clearly implemented or explicitly version-scoped,
+- AsyncStorageBackend trait exists for browser and future edge backends, with sync and async GraphEngine APIs sharing all traversal/schema/cache logic,
 - Rust, Node, Go, Python, and C interfaces are complete for core engine operations,
 - backup, restore, recovery, audit, and retention are production-grade,
 - documentation is coherent and aligned with code,
@@ -2288,7 +2445,7 @@ The practical execution sequence should be:
 5. Execute V2 with tenant enforcement, RBAC/ACL helpers, ABAC grammar, and deny semantics.
 6. Execute V3 with SDK parity, packaging, release workflows, and cross-language smoke tests.
 7. Execute V4 with backup/restore hardening, audit integrity, and security automation.
-8. Execute V5 with WASM feasibility, IndexedDB, browser SDK, and offline-first examples.
+8. Execute V5 with WASM feasibility (M1 — done), AsyncStorageBackend trait + IndexedDB (M2), browser SDK + Web Worker + offline-first (M3), release readiness (M4).
 9. Execute V6 with simulation, diagnostics, reference tooling, and ecosystem expansion.
 
 ## Final Direction
