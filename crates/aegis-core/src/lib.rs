@@ -18,6 +18,7 @@ pub mod telemetry;
 #[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
 pub mod types;
+pub mod util;
 
 /// Re-export the most commonly used types at the crate root.
 pub use crate::engine::gdpr::{GdprConfig, GdprManager, SubjectDataExport};
@@ -27,9 +28,9 @@ pub use crate::engine::watch::{WatchEvent, WatchEventType, WatchFilter, WatchSub
 pub use crate::engine::GraphEngine;
 pub use crate::error::{AegisError, AegisResult};
 pub use crate::types::{
-    AuditEntry, CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, FailClosedMode,
-    HealthReport, PaginatedTuples, PaginationParams, Relation, RelationshipTuple, ResourceId,
-    Revision, RevisionToken, SubjectId, TupleKey, WriteResult,
+    AccessReviewEntry, AuditEntry, CheckResult, ConsistencyMode, ExplainResult, ExplainTrace,
+    FailClosedMode, HealthReport, PaginatedTuples, PaginationParams, Relation, RelationshipTuple,
+    ResourceId, Revision, RevisionToken, SubjectId, TupleKey, WriteResult,
 };
 
 /// Library version constant.

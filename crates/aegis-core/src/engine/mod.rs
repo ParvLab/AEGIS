@@ -23,9 +23,9 @@ use crate::engine::watch::{SharedWatchers, WatchEvent, WatchEventType, WatchFilt
 use crate::error::{AegisError, AegisResult};
 use crate::storage::{StorageBackend, StorageTransaction, TupleFilter};
 use crate::types::{
-    CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, FailClosedMode, HealthReport,
-    MigrationResult, PartitionId, Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, Schema,
-    SubjectId, PaginatedTuples, PaginationParams,
+    AccessReviewEntry, CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, FailClosedMode,
+    HealthReport, MigrationResult, PartitionId, Relation, RelationshipTuple, ResourceId, Revision,
+    RevisionToken, Schema, SubjectId, PaginatedTuples, PaginationParams,
 };
 use crate::types::schema::SchemaCompatibilityReport;
 #[cfg(feature = "hot-reload")]
@@ -35,7 +35,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 #[cfg(feature = "hot-reload")]
 use std::thread::JoinHandle;
-use std::hash::{Hash, Hasher};
+use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 use tracing::{error, field, info, span, Level};
 
 /// The core authorization engine.
@@ -64,9 +65,14 @@ pub struct GraphEngine {
     rate_limiter: Mutex<TokenBucketRateLimiter>,
     telemetry_enabled: std::sync::atomic::AtomicBool,
     api_key_hash: Option<u64>,
+    api_key_verified: AtomicBool,
     parallel_eval: AtomicBool,
     engine_start: std::time::Instant,
     actor: Mutex<Option<String>>,
+    signing_key_bytes: Option<[u8; 32]>,
+    last_integrity_check: std::sync::Mutex<Option<std::time::Instant>>,
+    integrity_check_interval: std::sync::RwLock<Option<std::time::Duration>>,
+    wal_checkpoint_threshold: Option<f64>,
 }
 
 impl GraphEngine {
@@ -110,9 +116,14 @@ impl GraphEngine {
             rate_limiter: Mutex::new(TokenBucketRateLimiter::new(ratelimit::RateLimitConfig::default())),
             telemetry_enabled: std::sync::atomic::AtomicBool::new(false),
             api_key_hash: None,
+            api_key_verified: AtomicBool::new(false),
             parallel_eval: AtomicBool::new(true),
             engine_start: std::time::Instant::now(),
             actor: Mutex::new(None),
+            signing_key_bytes: None,
+            last_integrity_check: std::sync::Mutex::new(None),
+            integrity_check_interval: std::sync::RwLock::new(None),
+            wal_checkpoint_threshold: None,
         }
     }
 
@@ -120,6 +131,13 @@ impl GraphEngine {
     /// The actor identity is recorded in audit events for traceability.
     pub fn with_actor(self, actor: &str) -> Self {
         *self.actor.lock().unwrap() = Some(actor.to_string());
+        self
+    }
+
+    /// Configure a signing key for cryptographically signed GDPR export packages.
+    pub fn with_signing_key(mut self, key: &[u8]) -> Self {
+        let bytes: [u8; 32] = key.try_into().expect("signing key must be 32 bytes");
+        self.signing_key_bytes = Some(bytes);
         self
     }
 
@@ -140,38 +158,48 @@ impl GraphEngine {
     }
 
     /// Set an API key required for write/delete operations.
-    /// Stores a hash of the key (not plaintext).
-    pub fn with_api_key(mut self, api_key: String) -> Self {
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        api_key.as_bytes().hash(&mut hasher);
-        self.api_key_hash = Some(hasher.finish());
+    /// Stores a SHA-256 hash of the key (not plaintext).
+    pub fn with_api_key(mut self, api_key: &str) -> Self {
+        let mut hasher = Sha256::new();
+        hasher.update(api_key.as_bytes());
+        let result = hasher.finalize();
+        self.api_key_hash = Some(u64::from_le_bytes(result[..8].try_into().unwrap()));
         self
     }
 
     /// Verify an API key against the configured key (if any).
-    /// Returns Ok(()) if no API key is configured or if it matches.
-    pub fn verify_api_key(&self, key: Option<&str>) -> AegisResult<()> {
-        if let Some(ref configured_hash) = self.api_key_hash {
-            match key {
-                Some(k) => {
-                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-                    k.as_bytes().hash(&mut hasher);
-                    let incoming = hasher.finish();
-                    if *configured_hash == incoming {
-                        Ok(())
-                    } else {
-                        Err(AegisError::OperationNotPermitted(
-                            "invalid or missing API key".to_string(),
-                        ))
-                    }
-                }
-                _ => Err(AegisError::OperationNotPermitted(
-                    "invalid or missing API key".to_string(),
-                )),
+    /// Returns `true` if no API key is configured or if it matches.
+    pub fn verify_api_key(&self, api_key: &str) -> bool {
+        let Some(configured_hash) = self.api_key_hash else { return true; };
+        let mut hasher = Sha256::new();
+        hasher.update(api_key.as_bytes());
+        let result = hasher.finalize();
+        let incoming = u64::from_le_bytes(result[..8].try_into().unwrap());
+        configured_hash.to_le_bytes().ct_eq(&incoming.to_le_bytes()).into()
+    }
+
+    /// Authenticate the engine with an API key for subsequent write/delete operations.
+    /// Returns `Ok(true)` if the key is valid, `Ok(false)` if no key is configured.
+    pub fn authenticate(&self, api_key: &str) -> AegisResult<bool> {
+        match self.api_key_hash {
+            Some(hash) => {
+                let mut hasher = Sha256::new();
+                hasher.update(api_key.as_bytes());
+                let result = hasher.finalize();
+                let incoming = u64::from_le_bytes(result[..8].try_into().unwrap());
+                let ok: bool = hash.to_le_bytes().ct_eq(&incoming.to_le_bytes()).into();
+                self.api_key_verified.store(ok, Ordering::SeqCst);
+                Ok(ok)
             }
-        } else {
-            Ok(())
+            None => Ok(true),
         }
+    }
+
+    fn check_authenticated(&self) -> AegisResult<()> {
+        if self.api_key_hash.is_some() && !self.api_key_verified.load(Ordering::SeqCst) {
+            return Err(AegisError::PermissionDenied);
+        }
+        Ok(())
     }
 
     /// Mark telemetry as enabled (called after init_otel).
@@ -445,6 +473,11 @@ impl GraphEngine {
 
         let uptime_ms = self.engine_start.elapsed().as_millis() as u64;
 
+        let last_check = self.last_integrity_check.lock().unwrap().map(|t| {
+            let elapsed = t.elapsed();
+            format!("{}s ago", elapsed.as_secs())
+        });
+
         HealthReport {
             healthy: revision.is_some() && integrity.as_ref().map(|i| i.passed).unwrap_or(false),
             revision: revision.unwrap_or(Revision::ZERO),
@@ -467,6 +500,7 @@ impl GraphEngine {
             storage_version: self.storage.storage_version(),
             connections: self.storage.connection_stats(),
             wal_size_mb: self.storage.wal_size_mb(),
+            last_integrity_check: last_check,
         }
     }
 
@@ -970,6 +1004,8 @@ impl GraphEngine {
         .entered();
 
         self.check_closed()?;
+        self.check_authenticated()?;
+        self.maybe_checkpoint_wal();
 
         // Rate limit check
         let rl_key = format!("write:{}", tuple.object.as_str());
@@ -990,6 +1026,7 @@ impl GraphEngine {
         }
         drop(schema);
 
+        self.storage.set_actor_identity(self.active_actor());
         let revision = self.storage.write_tuple(&self.active_partition_id(), tuple)?;
         crate::telemetry::update_revision_current(revision.as_u64());
 
@@ -1022,11 +1059,14 @@ impl GraphEngine {
         .entered();
 
         self.check_closed()?;
+        self.check_authenticated()?;
+        self.maybe_checkpoint_wal();
 
         // Rate limit check
         let rl_key = format!("delete:{}", key.object.as_str());
         self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
 
+        self.storage.set_actor_identity(self.active_actor());
         let revision = self.storage.delete_tuple(&self.active_partition_id(), key)?;
         crate::telemetry::update_revision_current(revision.as_u64());
 
@@ -1119,6 +1159,12 @@ impl GraphEngine {
         self.storage.list_by_subject(&self.active_partition_id(), subject, None, &ConsistencyMode::MinimizeLatency)
     }
 
+    /// Export signed subject data (GDPR Article 15 with cryptographic signature).
+    pub fn export_signed_subject_data(&self, subject: &SubjectId) -> AegisResult<gdpr::SignedExport> {
+        let gdpr = self.gdpr();
+        gdpr.sign_export(&gdpr.export_subject_data(subject)?)
+    }
+
     /// Delete subject with an ownership policy (GDPR compliance).
     ///
     /// Policies:
@@ -1131,6 +1177,9 @@ impl GraphEngine {
         policy: &str,
         transfer_to_subject: Option<&SubjectId>,
     ) -> AegisResult<RevisionToken> {
+        self.check_closed()?;
+        self.check_authenticated()?;
+        self.storage.set_actor_identity(self.active_actor());
         match policy {
             "cascade" => {
                 let revision = self.storage.delete_subject(&self.active_partition_id(), subject)?;
@@ -1185,6 +1234,12 @@ impl GraphEngine {
         }
     }
 
+    /// Verify the hash-chained audit log integrity.
+    /// Returns `Ok(None)` if the chain is valid, or `Ok(Some(reason))` on first mismatch.
+    pub fn verify_audit_chain(&self) -> AegisResult<Option<String>> {
+        self.storage.verify_audit_chain(&self.active_partition_id())
+    }
+
     /// Write multiple tuples atomically within a single transaction.
     pub fn write_batch(
         &self,
@@ -1192,6 +1247,8 @@ impl GraphEngine {
     ) -> AegisResult<RevisionToken> {
         let _span = span!(Level::INFO, "aegis.write_batch", count = tuples.len()).entered();
         self.check_closed()?;
+        self.check_authenticated()?;
+        self.maybe_checkpoint_wal();
         let rl_key = "write_batch";
         self.rate_limiter.lock().unwrap().check(rl_key, RateLimitOp::Write)?;
 
@@ -1212,6 +1269,7 @@ impl GraphEngine {
         }
         drop(schema);
 
+        self.storage.set_actor_identity(self.active_actor());
         let revision = self.storage.write_tuples_batch(&self.active_partition_id(), tuples)?;
         crate::telemetry::update_revision_current(revision.as_u64());
         for tuple in tuples {
@@ -1229,7 +1287,11 @@ impl GraphEngine {
 
     /// Begin a storage transaction for atomic multi-operation writes.
     pub fn transaction(&self) -> AegisResult<Box<dyn StorageTransaction>> {
-        self.storage.begin_transaction(&self.active_partition_id())
+        let mut txn = self.storage.begin_transaction(&self.active_partition_id())?;
+        if let Some(actor) = self.active_actor() {
+            txn.set_actor_identity(Some(actor));
+        }
+        Ok(txn)
     }
 
     /// List all tuples for a given object, optionally filtered by relation.
@@ -1300,9 +1362,12 @@ impl GraphEngine {
 
     /// Delete all tuples for a given resource.
     pub fn delete_object(&self, object: &ResourceId) -> AegisResult<RevisionToken> {
+        self.check_closed()?;
+        self.check_authenticated()?;
         let _span = span!(Level::INFO, "aegis.delete_object", resource = object.as_str()).entered();
         let rl_key = format!("delete_object:{}", object.as_str());
         self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
+        self.storage.set_actor_identity(self.active_actor());
         let revision = self.storage.delete_object(&self.active_partition_id(), object)?;
         crate::telemetry::update_revision_current(revision.as_u64());
         info!(revision = field::display(&revision), "object deleted");
@@ -1311,7 +1376,12 @@ impl GraphEngine {
 
     /// Access GDPR compliance operations.
     pub fn gdpr(&self) -> gdpr::GdprManager<'_> {
-        gdpr::GdprManager::new(self, self.active_partition_id())
+        let mgr = gdpr::GdprManager::new(self, self.active_partition_id());
+        if let Some(bytes) = self.signing_key_bytes {
+            mgr.with_signing_key(&bytes)
+        } else {
+            mgr
+        }
     }
 
     /// Access the rate limiter for configuration.
@@ -1322,6 +1392,106 @@ impl GraphEngine {
     /// Replace the rate limiter with a new configuration.
     pub fn set_rate_limiter(&self, limiter: TokenBucketRateLimiter) {
         *self.rate_limiter.lock().unwrap() = limiter;
+    }
+
+    /// Export all permissions for a given subject across all resources.
+    pub fn access_review_for_subject(&self, subject: &SubjectId) -> AegisResult<Vec<AccessReviewEntry>> {
+        let tuples = self.storage.list_by_subject(
+            &self.active_partition_id(),
+            subject,
+            None,
+            &ConsistencyMode::MinimizeLatency,
+        )?;
+        let schema = self.schema.read().unwrap();
+        let mut entries = Vec::new();
+        for tuple in &tuples {
+            let resource_type = resource_type_name(tuple.object.as_str());
+            if let Some(type_def) = schema.types.get(&resource_type) {
+                for (perm_name, perm_def) in &type_def.permissions {
+                    if perm_def.union_of.contains(&tuple.relation.to_string()) {
+                        entries.push(AccessReviewEntry {
+                            subject: tuple.subject.to_string(),
+                            relation: perm_name.clone(),
+                            resource: tuple.object.to_string(),
+                            via: vec![format!("{}#{}", tuple.subject, tuple.relation)],
+                            expires_at: tuple.valid_until,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Export all subjects with access to a given resource.
+    pub fn access_review_for_resource(&self, resource: &ResourceId) -> AegisResult<Vec<AccessReviewEntry>> {
+        let tuples = self.storage.list_by_object(
+            &self.active_partition_id(),
+            resource,
+            None,
+            &ConsistencyMode::MinimizeLatency,
+        )?;
+        let schema = self.schema.read().unwrap();
+        let resource_type = resource_type_name(resource.as_str());
+        let mut entries = Vec::new();
+        if let Some(type_def) = schema.types.get(&resource_type) {
+            for tuple in &tuples {
+                for (perm_name, perm_def) in &type_def.permissions {
+                    if perm_def.union_of.contains(&tuple.relation.to_string()) {
+                        entries.push(AccessReviewEntry {
+                            subject: tuple.subject.to_string(),
+                            relation: perm_name.clone(),
+                            resource: tuple.object.to_string(),
+                            via: vec![format!("{}#{}", tuple.subject, tuple.relation)],
+                            expires_at: tuple.valid_until,
+                        });
+                    }
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    /// Schedule periodic integrity checks at the given interval.
+    pub fn schedule_integrity_check(&self, interval: std::time::Duration) -> AegisResult<()> {
+        *self.integrity_check_interval.write().unwrap() = Some(interval);
+        Ok(())
+    }
+
+    /// Returns the time of the last integrity check, if any.
+    pub fn last_integrity_check(&self) -> Option<std::time::Instant> {
+        *self.last_integrity_check.lock().unwrap()
+    }
+
+    /// Run integrity check if the configured interval has elapsed since the last check.
+    pub fn ensure_integrity_check(&self) -> AegisResult<()> {
+        let interval = *self.integrity_check_interval.read().unwrap();
+        let Some(interval) = interval else { return Ok(()); };
+        let mut last = self.last_integrity_check.lock().unwrap();
+        if last.map_or(true, |t| t.elapsed() >= interval) {
+            let report = self.storage.integrity_check()?;
+            if !report.passed {
+                tracing::error!("integrity check failed: {:?}", report.details);
+            }
+            *last = Some(std::time::Instant::now());
+        }
+        Ok(())
+    }
+
+    /// Set a WAL size threshold. If WAL exceeds this, auto-checkpoint is triggered.
+    pub fn with_wal_checkpoint_threshold(mut self, threshold_mb: f64) -> Self {
+        self.wal_checkpoint_threshold = Some(threshold_mb);
+        self
+    }
+
+    fn maybe_checkpoint_wal(&self) {
+        let Some(threshold) = self.wal_checkpoint_threshold else { return; };
+        if let Some(wal_size) = self.storage.wal_size_mb() {
+            if wal_size > threshold {
+                let _ = self.storage.close();
+                tracing::info!("WAL auto-checkpoint triggered ({} MB > {} MB)", wal_size, threshold);
+            }
+        }
     }
 }
 
@@ -1926,6 +2096,92 @@ types:
         assert_eq!(entries[0].object, "repo:audit");
     }
 
+    #[test]
+    fn test_actor_identity_recorded_in_audit() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:with_actor").unwrap();
+        let resource = ResourceId::new("repo:with_actor").unwrap();
+
+        // Set actor identity before write
+        engine.set_actor(Some("service-user"));
+        let token = engine.write(&RelationshipTuple::new(
+            subject.clone(),
+            Relation::new("owner").unwrap(),
+            resource.clone(),
+        )).unwrap();
+
+        // Verify active_actor returns the identity
+        assert_eq!(engine.active_actor(), Some("service-user".to_string()));
+
+        // Verify identity appears in audit
+        let entries = engine.query_audit(&resource, None, None, &PaginationParams { limit: 10, cursor: None }).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].identity, Some("service-user".to_string()));
+        assert_eq!(entries[0].revision, token.revision);
+
+        // Clear actor and write again
+        engine.set_actor(None);
+        let subject2 = SubjectId::new("user:no_actor").unwrap();
+        let _ = engine.write(&RelationshipTuple::new(
+            subject2.clone(),
+            Relation::new("viewer").unwrap(),
+            resource.clone(),
+        )).unwrap();
+
+        let entries2 = engine.query_audit(&resource, None, None, &PaginationParams { limit: 10, cursor: None }).unwrap();
+        assert_eq!(entries2.len(), 2);
+        // Second entry should have None identity
+        assert_eq!(entries2[1].identity, None);
+    }
+
+    #[test]
+    fn test_actor_identity_in_delete_audit() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:del_actor").unwrap();
+        let resource = ResourceId::new("repo:del_actor").unwrap();
+
+        engine.write(&RelationshipTuple::new(
+            subject.clone(),
+            Relation::new("owner").unwrap(),
+            resource.clone(),
+        )).unwrap();
+
+        // Set identity and delete
+        engine.set_actor(Some("cleanup-service"));
+        let key = TupleKey {
+            subject: subject.clone(),
+            relation: Relation::new("owner").unwrap(),
+            object: resource.clone(),
+        };
+        let _ = engine.delete(&key).unwrap();
+
+        let entries = engine.query_audit(&resource, None, None, &PaginationParams { limit: 10, cursor: None }).unwrap();
+        assert_eq!(entries.len(), 2);
+        // Write entry (no identity) then delete entry (with identity)
+        assert_eq!(entries[0].identity, None);
+        assert_eq!(entries[1].identity, Some("cleanup-service".to_string()));
+        assert_eq!(entries[1].action, TupleMutation::Remove);
+    }
+
+    #[test]
+    fn test_actor_identity_in_transaction_audit() {
+        let engine = make_engine();
+        let resource = ResourceId::new("repo:txn_actor").unwrap();
+
+        engine.set_actor(Some("txn-actor"));
+        let mut txn = engine.transaction().unwrap();
+        txn.write(&PartitionId::default(), &RelationshipTuple::new(
+            SubjectId::new("user:txn1").unwrap(),
+            Relation::new("owner").unwrap(),
+            resource.clone(),
+        )).unwrap();
+        txn.commit().unwrap();
+
+        let entries = engine.query_audit(&resource, None, None, &PaginationParams { limit: 10, cursor: None }).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].identity, Some("txn-actor".to_string()));
+    }
+
     // ── S5.8: Error Handling ──
 
     #[test]
@@ -2408,6 +2664,31 @@ types:
 
         let roles = rbac::get_roles(&engine, &alice, &team).unwrap();
         assert!(roles.is_empty(), "no roles assigned yet");
+    }
+
+    #[test]
+    fn test_no_secrets_in_logs() {
+        let engine = make_engine();
+        let logged = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let logged_clone = logged.clone();
+
+        engine.set_logger(move |_level, msg, _context| {
+            logged_clone.lock().unwrap().push(msg.to_string());
+        });
+
+        // Perform a write - ensure no raw secrets appear in logs
+        let tuple = crate::types::RelationshipTuple::new(
+            crate::types::SubjectId::new("user:test").unwrap(),
+            crate::types::Relation::new("viewer").unwrap(),
+            crate::types::ResourceId::new("repo:test").unwrap(),
+        );
+        engine.write(&tuple).unwrap();
+
+        let logs = logged.lock().unwrap();
+        let joined = logs.join(" ");
+        assert!(!joined.contains("secret"), "Logs should not contain secrets: {joined}");
+        assert!(!joined.contains("password"), "Logs should not contain passwords: {joined}");
+        assert!(!joined.contains("api_key"), "Logs should not contain api_key: {joined}");
     }
 
     #[test]

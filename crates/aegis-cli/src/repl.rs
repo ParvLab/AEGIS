@@ -15,6 +15,7 @@ use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::{StorageBackend, TupleFilter};
 use aegis_core::types::*;
+use sha2::{Digest, Sha256};
 
 #[cfg(feature = "rocksdb")]
 use aegis_core::storage::RocksDbStorage;
@@ -767,8 +768,8 @@ fn cmd_backup(state: &ReplState, args: &[&str]) -> Result<()> {
     let backend_type = state.engine.storage().backend_type().to_string();
     let exported_at = chrono::Utc::now().to_rfc3339();
 
-    let backup = serde_json::json!({
-        "version": 2,
+    let mut backup = serde_json::json!({
+        "version": 3,
         "schema_yaml": "",
         "tuples": all_tuples,
         "events": events,
@@ -778,6 +779,16 @@ fn cmd_backup(state: &ReplState, args: &[&str]) -> Result<()> {
             "exported_at": exported_at,
         },
     });
+
+    let canonical = serde_json::to_string(&backup)?;
+    let mut hasher = Sha256::new();
+    hasher.update(canonical.as_bytes());
+    let hash = hasher.finalize();
+    let checksum = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    backup.as_object_mut().unwrap().insert(
+        "checksum".to_string(),
+        serde_json::Value::String(format!("sha256:{}", checksum)),
+    );
 
     let output = serde_json::to_string_pretty(&backup)?;
     std::fs::write(path, output)
@@ -801,7 +812,25 @@ fn cmd_restore(state: &ReplState, args: &[&str]) -> Result<()> {
     let path = args[0];
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read backup from {path}"))?;
-    let backup: serde_json::Value = serde_json::from_str(&content)?;
+    let mut backup: serde_json::Value = serde_json::from_str(&content)?;
+    let stored_checksum = backup.get("checksum")
+        .and_then(|v| v.as_str())
+        .map(|s| s.strip_prefix("sha256:").unwrap_or(s))
+        .unwrap_or("")
+        .to_string();
+    if let Some(obj) = backup.as_object_mut() {
+        obj.remove("checksum");
+    }
+    if !stored_checksum.is_empty() {
+        let canonical = serde_json::to_string(&backup)?;
+        let mut hasher = Sha256::new();
+        hasher.update(canonical.as_bytes());
+        let hash = hasher.finalize();
+        let computed = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+        if stored_checksum != computed {
+            anyhow::bail!("checksum mismatch: backup may be corrupted");
+        }
+    }
     let version = backup.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
 
     if version >= 2 {
@@ -814,28 +843,22 @@ fn cmd_restore(state: &ReplState, args: &[&str]) -> Result<()> {
         }
     }
 
-    let tuples: Vec<TupleImport> = serde_json::from_value(
+    let tuples: Vec<RelationshipTuple> = serde_json::from_value(
         backup.get("tuples").cloned().unwrap_or(serde_json::Value::Null),
     )
     .context("invalid backup format: missing or invalid 'tuples' field")?;
-
-    let mut count = 0usize;
-    for chunk in tuples.chunks(100) {
-        let batch: Vec<RelationshipTuple> = chunk
-            .iter()
-            .map(|t| {
-                let subject_id = SubjectId::new(&t.subject)
-                    .with_context(|| format!("invalid subject: {}", t.subject))?;
-                let relation_val = Relation::new(&t.relation)
-                    .with_context(|| format!("invalid relation: {}", t.relation))?;
-                let object_id = ResourceId::new(&t.object)
-                    .with_context(|| format!("invalid object: {}", t.object))?;
-                Ok(RelationshipTuple::new(subject_id, relation_val, object_id))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        state.engine.write_batch(&batch)?;
-        count += batch.len();
-    }
+    let events: Vec<AuditEntry> = serde_json::from_value(
+        backup.get("events").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+    )
+    .context("invalid backup format: missing or invalid 'events' field")?;
+    let revision = backup
+        .get("metadata")
+        .and_then(|m| m.get("revision"))
+        .and_then(|r| r.as_u64())
+        .map(Revision::new)
+        .unwrap_or(Revision::ZERO);
+    let count = tuples.len();
+    state.engine.storage().restore_backup(&PartitionId::default(), &tuples, &events, revision)?;
 
     if state.json_mode {
         println!(r#"{{"status":"ok","restored":{count}}}"#);

@@ -15,3 +15,4 @@ pub use rocksdb::RocksDbStorage;
 #[cfg(feature = "mysql")]
 pub use mysql::MysqlStorage;
 pub use traits::*;
+pub use traits::compute_event_hash;

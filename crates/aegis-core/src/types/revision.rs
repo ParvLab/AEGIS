@@ -142,6 +142,18 @@ pub struct HealthReport {
     pub storage_version: Option<String>,
     pub connections: ConnectionStats,
     pub wal_size_mb: Option<f64>,
+    /// ISO 8601 timestamp or elapsed description of last integrity check.
+    pub last_integrity_check: Option<String>,
+}
+
+/// Access review entry: describes how a subject relates to a resource.
+#[derive(Debug, Clone, Serialize)]
+pub struct AccessReviewEntry {
+    pub subject: String,
+    pub relation: String,
+    pub resource: String,
+    pub via: Vec<String>,
+    pub expires_at: Option<chrono::DateTime<Utc>>,
 }
 
 /// Configuration for fail-closed vs fail-open behavior.

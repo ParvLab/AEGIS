@@ -47,6 +47,7 @@ pub struct RocksDbStorage {
     db: DB,
     node_id: Uuid,
     revision_mutex: std::sync::Mutex<()>,
+    actor_identity: std::sync::Mutex<Option<String>>,
 }
 
 impl RocksDbStorage {
@@ -97,6 +98,7 @@ impl RocksDbStorage {
             db,
             node_id,
             revision_mutex: std::sync::Mutex::new(()),
+            actor_identity: std::sync::Mutex::new(None),
         })
     }
 
@@ -150,6 +152,27 @@ impl RocksDbStorage {
         Ok(Revision::new(new_rev))
     }
 
+    fn last_event_hash(&self, partition_id: &PartitionId) -> AegisResult<String> {
+        let cf = self.db.cf_handle(CF_EVENTS)
+            .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
+        let pid_prefix = format!("{}:", partition_id.as_str()).into_bytes();
+        // Seek to the end of the partition's event range
+        let mut iter = self.db.prefix_iterator_cf(&cf, &pid_prefix);
+        let mut last_hash = String::new();
+        for item in &mut iter {
+            let (key, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            if !key.starts_with(&pid_prefix) {
+                break;
+            }
+            if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&value) {
+                if let Some(h) = event["event_hash"].as_str() {
+                    last_hash = h.to_string();
+                }
+            }
+        }
+        Ok(last_hash)
+    }
+
     fn append_event(
         &self,
         partition_id: &PartitionId,
@@ -159,9 +182,24 @@ impl RocksDbStorage {
         relation: &str,
         object: &str,
         metadata: Option<&str>,
+        identity: Option<&str>,
     ) -> AegisResult<()> {
         let cf = self.db.cf_handle(CF_EVENTS)
             .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
+        let now = Utc::now().to_rfc3339();
+        let previous_hash = self.last_event_hash(partition_id)?;
+        let event_hash = crate::storage::compute_event_hash(
+            &previous_hash,
+            revision.as_u64() as i64,
+            action,
+            subject,
+            relation,
+            object,
+            partition_id.as_str(),
+            metadata,
+            &now,
+            identity,
+        );
         let event = serde_json::json!({
             "revision": revision.as_u64(),
             "action": action,
@@ -169,7 +207,10 @@ impl RocksDbStorage {
             "relation": relation,
             "object": object,
             "metadata": metadata,
-            "timestamp": Utc::now().to_rfc3339(),
+            "timestamp": now,
+            "previous_hash": previous_hash,
+            "event_hash": event_hash,
+            "identity": identity,
         });
         let event_id = Uuid::new_v4();
         let key = event_key(partition_id.as_str(), revision, event_id);
@@ -222,6 +263,13 @@ impl StorageBackend for RocksDbStorage {
         BackendType::RocksDB
     }
 
+    fn set_actor_identity(&self, identity: Option<String>) -> Option<String> {
+        let mut guard = self.actor_identity.lock().unwrap();
+        let prev = guard.take();
+        *guard = identity;
+        prev
+    }
+
     fn initialize(&mut self) -> AegisResult<StorageMeta> {
         let rev = self.read_revision()?;
         Ok(StorageMeta {
@@ -248,6 +296,7 @@ impl StorageBackend for RocksDbStorage {
             .transpose()
             .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 
+        let identity = self.actor_identity.lock().unwrap().clone();
         self.append_event(
             partition_id,
             revision,
@@ -256,6 +305,7 @@ impl StorageBackend for RocksDbStorage {
             tuple.relation.as_str(),
             tuple.object.as_str(),
             metadata_json.as_deref(),
+            identity.as_deref(),
         )?;
 
         Ok(revision)
@@ -276,6 +326,8 @@ impl StorageBackend for RocksDbStorage {
             .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
 
         let mut batch = rocksdb::WriteBatch::default();
+        let now = Utc::now().to_rfc3339();
+        let mut previous_hash = self.last_event_hash(partition_id)?;
         for tuple in tuples {
             let pk = tuple_key(partition_id.as_str(), tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
             let idx_key = object_idx_key(partition_id.as_str(), tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
@@ -293,6 +345,19 @@ impl StorageBackend for RocksDbStorage {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+            let identity = self.actor_identity.lock().unwrap().clone();
+            let event_hash = crate::storage::compute_event_hash(
+                &previous_hash,
+                revision.as_u64() as i64,
+                "add",
+                tuple.subject.as_str(),
+                tuple.relation.as_str(),
+                tuple.object.as_str(),
+                partition_id.as_str(),
+                metadata_str.as_deref(),
+                &now,
+                identity.as_deref(),
+            );
             let event = serde_json::json!({
                 "revision": revision.as_u64(),
                 "action": "add",
@@ -300,8 +365,12 @@ impl StorageBackend for RocksDbStorage {
                 "relation": tuple.relation.as_str(),
                 "object": tuple.object.as_str(),
                 "metadata": metadata_str,
-                "timestamp": Utc::now().to_rfc3339(),
+                "timestamp": now,
+                "previous_hash": previous_hash,
+                "event_hash": event_hash,
+                "identity": identity,
             });
+            previous_hash = event_hash;
             let event_id = Uuid::new_v4();
             batch.put_cf(&cf_events, event_key(partition_id.as_str(), revision, event_id), serde_json::to_string(&event).map_err(|e| AegisError::StorageQuery(e.to_string()))?.as_bytes());
         }
@@ -320,6 +389,7 @@ impl StorageBackend for RocksDbStorage {
         let revision = self.bump_revision()?;
         self.delete_tuple_key(partition_id, key, revision)?;
 
+        let identity = self.actor_identity.lock().unwrap().clone();
         self.append_event(
             partition_id,
             revision,
@@ -328,6 +398,7 @@ impl StorageBackend for RocksDbStorage {
             key.relation.as_str(),
             key.object.as_str(),
             None,
+            identity.as_deref(),
         )?;
 
         Ok(revision)
@@ -380,7 +451,22 @@ impl StorageBackend for RocksDbStorage {
             }
         }
 
+        let now = Utc::now().to_rfc3339();
+        let mut previous_hash = self.last_event_hash(partition_id)?;
+        let identity = self.actor_identity.lock().unwrap().clone();
         for tuple in &tuples {
+            let event_hash = crate::storage::compute_event_hash(
+                &previous_hash,
+                revision.as_u64() as i64,
+                "remove",
+                tuple.subject.as_str(),
+                tuple.relation.as_str(),
+                tuple.object.as_str(),
+                partition_id.as_str(),
+                None,
+                &now,
+                identity.as_deref(),
+            );
             let event = serde_json::json!({
                 "revision": revision.as_u64(),
                 "action": "remove",
@@ -388,8 +474,12 @@ impl StorageBackend for RocksDbStorage {
                 "relation": tuple.relation.as_str(),
                 "object": tuple.object.as_str(),
                 "metadata": None::<String>,
-                "timestamp": Utc::now().to_rfc3339(),
+                "timestamp": now,
+                "previous_hash": previous_hash,
+                "event_hash": event_hash,
+                "identity": identity,
             });
+            previous_hash = event_hash;
             let event_id = Uuid::new_v4();
             let json_bytes = serde_json::to_string(&event)
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?
@@ -420,12 +510,27 @@ impl StorageBackend for RocksDbStorage {
 
         let mut batch = rocksdb::WriteBatch::default();
 
+        let now = Utc::now().to_rfc3339();
+        let mut previous_hash = self.last_event_hash(partition_id)?;
+        let identity = self.actor_identity.lock().unwrap().clone();
         for tuple in &tuples {
             let pk = tuple_key(partition_id.as_str(), tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
             let idx_key = object_idx_key(partition_id.as_str(), tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
             batch.delete_cf(&cf_tuples, &pk);
             batch.delete_cf(&cf_idx, &idx_key);
 
+            let event_hash = crate::storage::compute_event_hash(
+                &previous_hash,
+                revision.as_u64() as i64,
+                "remove",
+                tuple.subject.as_str(),
+                tuple.relation.as_str(),
+                tuple.object.as_str(),
+                partition_id.as_str(),
+                None,
+                &now,
+                identity.as_deref(),
+            );
             let event = serde_json::json!({
                 "revision": revision.as_u64(),
                 "action": "remove",
@@ -433,8 +538,12 @@ impl StorageBackend for RocksDbStorage {
                 "relation": tuple.relation.as_str(),
                 "object": tuple.object.as_str(),
                 "metadata": None::<String>,
-                "timestamp": Utc::now().to_rfc3339(),
+                "timestamp": now,
+                "previous_hash": previous_hash,
+                "event_hash": event_hash,
+                "identity": identity,
             });
+            previous_hash = event_hash;
             let event_id = Uuid::new_v4();
             let json_bytes = serde_json::to_string(&event)
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?
@@ -755,6 +864,7 @@ impl StorageBackend for RocksDbStorage {
         let cf_meta = self.db.cf_handle(CF_META)
             .ok_or_else(|| AegisError::StorageConnection("missing meta cf".into()))?;
 
+        let identity = self.actor_identity.lock().unwrap().clone();
         Ok(Box::new(RocksDbTransaction {
             db: self.db.clone(),
             partition_id: partition_id.as_str().to_string(),
@@ -765,6 +875,7 @@ impl StorageBackend for RocksDbStorage {
             cf_meta,
             node_id: self.node_id,
             revision_mutex: std::sync::Arc::new(std::sync::Mutex::new(())),
+            actor_identity: identity,
             pending_events: Vec::new(),
         }))
     }
@@ -1103,6 +1214,143 @@ impl StorageBackend for RocksDbStorage {
         // RocksDB flushes on drop
         Ok(())
     }
+
+    fn verify_audit_chain(&self, partition_id: &PartitionId) -> AegisResult<Option<String>> {
+        let cf = self.db.cf_handle(CF_EVENTS)
+            .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
+        let pid_prefix = format!("{}:", partition_id.as_str()).into_bytes();
+        let iter = self.db.prefix_iterator_cf(&cf, &pid_prefix);
+
+        let mut last_event_hash = String::new();
+        for item in iter {
+            let (key, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            if !key.starts_with(&pid_prefix) {
+                break;
+            }
+            if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&value) {
+                let rev = event["revision"].as_i64().unwrap_or(0);
+                let action = event["action"].as_str().unwrap_or("");
+                let subject = event["subject"].as_str().unwrap_or("");
+                let relation = event["relation"].as_str().unwrap_or("");
+                let object = event["object"].as_str().unwrap_or("");
+                let metadata = event["metadata"].as_str().or_else(|| {
+                    // metadata can be JSON null or absent
+                    None
+                });
+                let timestamp = event["timestamp"].as_str().unwrap_or("");
+                let identity = event["identity"].as_str();
+                let prev_hash = event["previous_hash"].as_str().unwrap_or("");
+                let event_hash = event["event_hash"].as_str().unwrap_or("");
+
+                if prev_hash != last_event_hash {
+                    return Ok(Some(format!(
+                        "Chain break: expected previous_hash='{}', got '{}'",
+                        last_event_hash, prev_hash
+                    )));
+                }
+
+                let expected = crate::storage::compute_event_hash(
+                    &last_event_hash,
+                    rev,
+                    action,
+                    subject,
+                    relation,
+                    object,
+                    partition_id.as_str(),
+                    metadata,
+                    timestamp,
+                    identity,
+                );
+
+                if expected != event_hash {
+                    return Ok(Some(format!(
+                        "Hash mismatch: expected '{}', got '{}'",
+                        expected, event_hash
+                    )));
+                }
+
+                last_event_hash = event_hash.to_string();
+            }
+        }
+
+        Ok(None)
+    }
+
+    fn restore_backup(
+        &self,
+        partition_id: &PartitionId,
+        tuples: &[RelationshipTuple],
+        events: &[AuditEntry],
+        revision: Revision,
+    ) -> AegisResult<()> {
+        let cf_meta = self.db.cf_handle(CF_META)
+            .ok_or_else(|| AegisError::StorageConnection("missing meta cf".into()))?;
+        let cf_tuples = self.db.cf_handle(CF_TUPLES)
+            .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
+        let cf_idx = self.db.cf_handle(CF_IDX_OBJECT)
+            .ok_or_else(|| AegisError::StorageConnection("missing idx_object cf".into()))?;
+        let cf_events = self.db.cf_handle(CF_EVENTS)
+            .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
+
+        let mut batch = rocksdb::WriteBatch::default();
+
+        // Clear existing data (iterate and delete)
+        let iter = self.db.iterator_cf(&cf_tuples, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, _) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            batch.delete_cf(&cf_tuples, &key);
+        }
+        let iter = self.db.iterator_cf(&cf_idx, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, _) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            batch.delete_cf(&cf_idx, &key);
+        }
+        let iter = self.db.iterator_cf(&cf_events, rocksdb::IteratorMode::Start);
+        for item in iter {
+            let (key, _) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            batch.delete_cf(&cf_events, &key);
+        }
+
+        for tuple in tuples {
+            let pk = tuple_key(partition_id.as_str(), tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
+            let idx_key = object_idx_key(partition_id.as_str(), tuple.object.as_str(), tuple.relation.as_str(), tuple.subject.as_str());
+            let val = serde_json::to_string(tuple)
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            batch.put_cf(&cf_tuples, &pk, val.as_bytes());
+            batch.put_cf(&cf_idx, &idx_key, &[]);
+        }
+
+        for event in events {
+            let action_str = match event.action {
+                TupleMutation::Add => "add",
+                TupleMutation::Remove => "remove",
+            };
+            let event_json = serde_json::json!({
+                "revision": event.revision.as_u64(),
+                "action": action_str,
+                "subject": event.subject,
+                "relation": event.relation,
+                "object": event.object,
+                "metadata": event.metadata,
+                "timestamp": event.timestamp.to_rfc3339(),
+                "previous_hash": "",
+                "event_hash": "",
+                "identity": event.identity,
+            });
+            let event_id = Uuid::new_v4();
+            let key = event_key(partition_id.as_str(), event.revision, event_id);
+            let event_bytes = serde_json::to_string(&event_json)
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            batch.put_cf(&cf_events, &key, event_bytes.as_bytes());
+        }
+
+        // Set revision
+        batch.put_cf(&cf_meta, META_REVISION.as_bytes(), &revision.as_u64().to_le_bytes());
+
+        self.db.write(batch)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
 }
 
 /// A RocksDB transaction using WriteBatch for atomicity.
@@ -1116,13 +1364,28 @@ pub struct RocksDbTransaction {
     cf_meta: rocksdb::ColumnFamily,
     node_id: Uuid,
     revision_mutex: std::sync::Arc<std::sync::Mutex<()>>,
+    actor_identity: Option<String>,
     /// Staged events — written in `commit()` with the final revision.
     pending_events: Vec<(String, String, String, String, Option<String>)>,
 }
 
 impl RocksDbTransaction {
     fn write_pending_events(&self, revision: Revision) -> AegisResult<()> {
+        let now = Utc::now().to_rfc3339();
+        let mut previous_hash = self.get_last_event_hash()?;
         for (action, subject, relation, object, metadata) in &self.pending_events {
+            let event_hash = crate::storage::compute_event_hash(
+                &previous_hash,
+                revision.as_u64() as i64,
+                action,
+                subject,
+                relation,
+                object,
+                &self.partition_id,
+                metadata.as_deref(),
+                &now,
+                self.actor_identity.as_deref(),
+            );
             let event = serde_json::json!({
                 "revision": revision.as_u64(),
                 "action": action,
@@ -1130,8 +1393,12 @@ impl RocksDbTransaction {
                 "relation": relation,
                 "object": object,
                 "metadata": metadata,
-                "timestamp": Utc::now().to_rfc3339(),
+                "timestamp": now,
+                "previous_hash": previous_hash,
+                "event_hash": event_hash,
+                "identity": self.actor_identity,
             });
+            previous_hash = event_hash;
             let event_id = Uuid::new_v4();
             let key = event_key(&self.partition_id, revision, event_id);
             let val = serde_json::to_string(&event)
@@ -1163,9 +1430,33 @@ impl RocksDbTransaction {
         self.batch.delete_cf(&self.cf_idx, &idx_key);
         Ok(())
     }
+
+    fn get_last_event_hash(&self) -> AegisResult<String> {
+        let pid_prefix = format!("{}:", self.partition_id).into_bytes();
+        let mut iter = self.db.prefix_iterator_cf(&self.cf_events, &pid_prefix);
+        let mut last_hash = String::new();
+        for item in &mut iter {
+            let (key, value) = item.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            if !key.starts_with(&pid_prefix) {
+                break;
+            }
+            if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&value) {
+                if let Some(h) = event["event_hash"].as_str() {
+                    last_hash = h.to_string();
+                }
+            }
+        }
+        Ok(last_hash)
+    }
 }
 
 impl StorageTransaction for RocksDbTransaction {
+    fn set_actor_identity(&mut self, identity: Option<String>) -> Option<String> {
+        let prev = self.actor_identity.take();
+        self.actor_identity = identity;
+        prev
+    }
+
     fn write(&mut self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<()> {
         let val = serde_json::to_string(tuple)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;

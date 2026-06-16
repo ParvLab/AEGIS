@@ -106,6 +106,7 @@ export interface AuditEntry {
   relation: string;
   object: string;
   timestamp: string;
+  identity?: string;
 }
 
 export interface WatchEvent {

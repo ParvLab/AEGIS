@@ -1,0 +1,22 @@
+name: Fuzzing
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # weekly on Monday
+  workflow_dispatch:
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked 2>/dev/null || true
+
+      - name: Fuzz tuple input
+        run: cargo fuzz run tuple_input -- -max_total_time=120 || true
+
+      - name: Fuzz schema parser
+        run: cargo fuzz run schema_parser -- -max_total_time=120 || true

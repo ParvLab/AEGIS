@@ -227,6 +227,8 @@ struct PyAuditEntry {
     object: String,
     #[pyo3(get)]
     timestamp: String,
+    #[pyo3(get)]
+    identity: Option<String>,
 }
 
 #[pymethods]
@@ -641,6 +643,7 @@ impl PyAegis {
             relation: e.relation.clone(),
             object: e.object.clone(),
             timestamp: e.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            identity: e.identity.clone(),
         }).collect())
     }
 
@@ -660,6 +663,7 @@ impl PyAegis {
             relation: e.relation.clone(),
             object: e.object.clone(),
             timestamp: e.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            identity: e.identity.clone(),
         }).collect())
     }
 
@@ -695,6 +699,15 @@ impl PyAegis {
         if let Some(v) = max_keys { cfg.max_keys = v; }
         self.engine.set_rate_limiter(TokenBucketRateLimiter::new(cfg));
         Ok(())
+    }
+
+    #[pyo3(signature = (actor=None))]
+    fn set_actor(&self, actor: Option<String>) {
+        self.engine.set_actor(actor.as_deref());
+    }
+
+    fn active_actor(&self) -> Option<String> {
+        self.engine.active_actor()
     }
 
     fn set_logger(&self, callback: PyObject) -> PyResult<()> {

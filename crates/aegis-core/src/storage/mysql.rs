@@ -1,10 +1,11 @@
 use crate::error::{AegisError, AegisResult};
+use crate::util::redact::Redacted;
 use crate::storage::traits::{
     BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
 };
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId,
-    Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
+    Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
 };
 use chrono::{DateTime, Utc};
 use mysql_async::prelude::Queryable;
@@ -17,9 +18,13 @@ pub struct MysqlConfig {
     pub host: String,
     pub port: u16,
     pub user: String,
-    pub password: String,
+    pub password: Redacted<String>,
     pub database: String,
     pub pool_size: usize,
+    pub use_tls: bool,
+    pub tls_ca_path: Option<String>,
+    pub tls_client_cert_path: Option<String>,
+    pub tls_client_key_path: Option<String>,
 }
 
 impl Default for MysqlConfig {
@@ -28,9 +33,13 @@ impl Default for MysqlConfig {
             host: "127.0.0.1".to_string(),
             port: 3306,
             user: "root".to_string(),
-            password: String::new(),
+            password: Redacted::new(String::new()),
             database: "aegis".to_string(),
             pool_size: 10,
+            use_tls: false,
+            tls_ca_path: None,
+            tls_client_cert_path: None,
+            tls_client_key_path: None,
         }
     }
 }
@@ -40,6 +49,7 @@ pub struct MysqlStorage {
     pool: mysql_async::Pool,
     node_id: Uuid,
     runtime: tokio::runtime::Runtime,
+    actor_identity: std::sync::Mutex<Option<String>>,
 }
 
 impl MysqlStorage {
@@ -47,10 +57,22 @@ impl MysqlStorage {
         let runtime = tokio::runtime::Runtime::new()
             .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
 
-        let url = format!(
-            "mysql://{}:{}@{}:{}/{}",
-            config.user, config.password, config.host, config.port, config.database
+        let scheme = if config.use_tls { "mysqls" } else { "mysql" };
+        let mut url = format!(
+            "{scheme}://{}:{}@{}:{}/{}",
+            config.user, config.password.clone().into_inner(), config.host, config.port, config.database
         );
+        if config.use_tls {
+            let ssl_ca = config.tls_ca_path.as_ref().map(|p| format!("ssl-ca={}", p));
+            let ssl_cert = config.tls_client_cert_path.as_ref().map(|p| format!("ssl-cert={}", p));
+            let ssl_key = config.tls_client_key_path.as_ref().map(|p| format!("ssl-key={}", p));
+            let params: Vec<&str> = [ssl_ca.as_deref(), ssl_cert.as_deref(), ssl_key.as_deref()]
+                .into_iter().filter_map(|x| x).collect();
+            if !params.is_empty() {
+                url.push('?');
+                url.push_str(&params.join("&"));
+            }
+        }
         let opts = mysql_async::Opts::from_url(&url)
             .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
         let pool = mysql_async::Pool::new(opts);
@@ -59,6 +81,7 @@ impl MysqlStorage {
             pool,
             node_id: Uuid::new_v4(),
             runtime,
+            actor_identity: std::sync::Mutex::new(None),
         })
     }
 
@@ -95,18 +118,22 @@ impl MysqlStorage {
             "CREATE INDEX IF NOT EXISTS idx_tuples_subject_relation
              ON _aegis_tuples(`subject`(255), `relation`(255))",
             "CREATE TABLE IF NOT EXISTS _aegis_events (
-                `event_id`  BIGINT AUTO_INCREMENT PRIMARY KEY,
-                `revision`  BIGINT NOT NULL,
-                `action`    VARCHAR(16) NOT NULL,
-                `subject`   VARCHAR(512) NOT NULL,
-                `relation`  VARCHAR(255) NOT NULL,
-                `object`    VARCHAR(512) NOT NULL,
-                `metadata`  TEXT,
-                `timestamp` VARCHAR(64) NOT NULL,
-                `identity`  VARCHAR(255)
+                `event_id`      BIGINT AUTO_INCREMENT PRIMARY KEY,
+                `revision`      BIGINT NOT NULL,
+                `action`        VARCHAR(16) NOT NULL,
+                `subject`       VARCHAR(512) NOT NULL,
+                `relation`      VARCHAR(255) NOT NULL,
+                `object`        VARCHAR(512) NOT NULL,
+                `metadata`      TEXT,
+                `timestamp`     VARCHAR(64) NOT NULL,
+                `identity`      VARCHAR(255),
+                `previous_hash` TEXT NOT NULL,
+                `event_hash`    TEXT NOT NULL
             )",
             "CREATE INDEX IF NOT EXISTS idx_events_revision
              ON _aegis_events(`revision`)",
+            "CREATE INDEX IF NOT EXISTS idx_events_event_hash
+             ON _aegis_events(`event_hash`(255))",
             "CREATE TABLE IF NOT EXISTS _aegis_schema (
                 `version`    INTEGER NOT NULL,
                 `applied_at` VARCHAR(64) NOT NULL,
@@ -118,6 +145,19 @@ impl MysqlStorage {
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         }
+        // V3: Add audit hash columns (no-op if columns already exist)
+        let _ = conn
+            .exec_drop(
+                "ALTER TABLE _aegis_events ADD COLUMN `previous_hash` TEXT NOT NULL DEFAULT ''",
+                (),
+            )
+            .await;
+        let _ = conn
+            .exec_drop(
+                "ALTER TABLE _aegis_events ADD COLUMN `event_hash` TEXT NOT NULL DEFAULT ''",
+                (),
+            )
+            .await;
         Ok(())
     }
 
@@ -154,10 +194,31 @@ impl MysqlStorage {
         identity: Option<&str>,
     ) -> AegisResult<()> {
         let now = Utc::now().to_rfc3339();
+        let previous_hash: String = conn
+            .exec_first(
+                "SELECT COALESCE((SELECT `event_hash` FROM _aegis_events ORDER BY `event_id` DESC LIMIT 1), '')",
+                (),
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+            .map(|r: (String,)| r.0)
+            .unwrap_or_default();
+        let event_hash = crate::storage::compute_event_hash(
+            &previous_hash,
+            revision.as_u64() as i64,
+            action,
+            subject,
+            relation,
+            object,
+            "", // MySQL doesn't have partition_id in events; will be fixed below
+            metadata,
+            &now,
+            identity,
+        );
         conn.exec_drop(
-            "INSERT INTO _aegis_events (`revision`, `action`, `subject`, `relation`, `object`, `metadata`, `timestamp`, `identity`)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (revision.as_u64() as i64, action, subject, relation, object, metadata, &now, identity),
+            "INSERT INTO _aegis_events (`revision`, `action`, `subject`, `relation`, `object`, `metadata`, `timestamp`, `identity`, `previous_hash`, `event_hash`)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (revision.as_u64() as i64, action, subject, relation, object, metadata, &now, identity, &previous_hash, &event_hash),
         )
         .await
         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -193,6 +254,13 @@ impl MysqlStorage {
 }
 
 impl StorageBackend for MysqlStorage {
+    fn set_actor_identity(&self, identity: Option<String>) -> Option<String> {
+        let mut guard = self.actor_identity.lock().unwrap();
+        let prev = guard.take();
+        *guard = identity;
+        prev
+    }
+
     fn initialize(&mut self) -> AegisResult<StorageMeta> {
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
@@ -238,10 +306,11 @@ impl StorageBackend for MysqlStorage {
             .await
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+            let identity = self.actor_identity.lock().unwrap().clone();
             Self::append_event_async(
                 &mut conn, revision, "add", tuple.subject.as_str(),
                 tuple.relation.as_str(), tuple.object.as_str(),
-                metadata_json.as_deref(), None,
+                metadata_json.as_deref(), identity.as_deref(),
             )
             .await?;
 
@@ -281,10 +350,11 @@ impl StorageBackend for MysqlStorage {
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+                let identity = self.actor_identity.lock().unwrap().clone();
                 Self::append_event_async(
                     &mut conn, revision, "add", tuple.subject.as_str(),
                     tuple.relation.as_str(), tuple.object.as_str(),
-                    metadata_json.as_deref(), None,
+                    metadata_json.as_deref(), identity.as_deref(),
                 )
                 .await?;
             }
@@ -318,9 +388,10 @@ impl StorageBackend for MysqlStorage {
             .await
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+            let identity = self.actor_identity.lock().unwrap().clone();
             Self::append_event_async(
                 &mut conn, revision, "remove", key.subject.as_str(),
-                key.relation.as_str(), key.object.as_str(), None, None,
+                key.relation.as_str(), key.object.as_str(), None, identity.as_deref(),
             )
             .await?;
 
@@ -356,10 +427,11 @@ impl StorageBackend for MysqlStorage {
             .await
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+            let identity = self.actor_identity.lock().unwrap().clone();
             for (relation, object) in &rows {
                 Self::append_event_async(
                     &mut conn, revision, "remove", subject.as_str(),
-                    relation, object, None, None,
+                    relation, object, None, identity.as_deref(),
                 )
                 .await?;
             }
@@ -396,10 +468,11 @@ impl StorageBackend for MysqlStorage {
             .await
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+            let identity = self.actor_identity.lock().unwrap().clone();
             for (subject, relation) in &rows {
                 Self::append_event_async(
                     &mut conn, revision, "remove", subject,
-                    relation, object.as_str(), None, None,
+                    relation, object.as_str(), None, identity.as_deref(),
                 )
                 .await?;
             }
@@ -655,12 +728,13 @@ impl StorageBackend for MysqlStorage {
         let _ = partition_id;
         let node_id = self.node_id;
         let handle = self.runtime.handle().clone();
+        let identity = self.actor_identity.lock().unwrap().clone();
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
             conn.exec_drop("BEGIN", ())
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
-            Ok(Box::new(MysqlTransaction::new(conn, handle, node_id)) as Box<dyn StorageTransaction>)
+            Ok(Box::new(MysqlTransaction::new(conn, handle, node_id, identity)) as Box<dyn StorageTransaction>)
         })
     }
 
@@ -948,6 +1022,128 @@ impl StorageBackend for MysqlStorage {
             .block_on(self.pool.clone().disconnect())
             .map_err(|e| AegisError::StorageConnection(e.to_string()))
     }
+
+    fn verify_audit_chain(&self, partition_id: &PartitionId) -> AegisResult<Option<String>> {
+        let _ = partition_id;
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            let rows: Vec<(i64, i64, String, String, String, String, Option<String>, String, Option<String>, String, String)> = conn
+                .exec(
+                    "SELECT `event_id`, `revision`, `action`, `subject`, `relation`, `object`, `metadata`, `timestamp`, `identity`, `previous_hash`, `event_hash`
+                     FROM _aegis_events
+                     ORDER BY `event_id` ASC",
+                    (),
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let mut last_event_hash = String::new();
+            for (event_id, revision, action, subject, relation, object, metadata, timestamp, identity, prev_hash, event_hash) in &rows {
+                if *prev_hash != last_event_hash {
+                    return Ok(Some(format!(
+                        "Chain break at event_id={}: expected previous_hash='{}', got '{}'",
+                        event_id, last_event_hash, prev_hash
+                    )));
+                }
+
+                let expected = crate::storage::compute_event_hash(
+                    &last_event_hash,
+                    *revision,
+                    action,
+                    subject,
+                    relation,
+                    object,
+                    "",
+                    metadata.as_deref(),
+                    timestamp,
+                    identity.as_deref(),
+                );
+
+                if expected != *event_hash {
+                    return Ok(Some(format!(
+                        "Hash mismatch at event_id={}: expected '{}', got '{}'",
+                        event_id, expected, event_hash
+                    )));
+                }
+
+                last_event_hash = event_hash.clone();
+            }
+
+            Ok(None)
+        })
+    }
+
+    fn restore_backup(
+        &self,
+        partition_id: &PartitionId,
+        tuples: &[RelationshipTuple],
+        events: &[AuditEntry],
+        revision: Revision,
+    ) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+
+            conn.exec_drop("DELETE FROM _aegis_tuples WHERE `partition_id` = ?", (partition_id.as_str(),))
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            conn.exec_drop("DELETE FROM _aegis_events WHERE `partition_id` = ?", (partition_id.as_str(),))
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            for tuple in tuples {
+                let metadata_json = tuple.metadata
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+                let rev: i64 = revision.as_u64() as i64;
+                conn.exec_drop(
+                    "INSERT INTO _aegis_tuples (`partition_id`, `subject`, `relation`, `object`, `created_at`, `metadata`, `revision_added`)
+                     VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (partition_id.as_str(), tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(), tuple.created_at.to_rfc3339(), metadata_json, rev),
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            }
+
+            for event in events {
+                let action_str = match event.action {
+                    TupleMutation::Add => "add",
+                    TupleMutation::Remove => "remove",
+                };
+                let metadata_json = event.metadata
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+                conn.exec_drop(
+                    "INSERT INTO _aegis_events (`revision`, `action`, `subject`, `relation`, `object`, `metadata`, `timestamp`, `identity`, `previous_hash`, `event_hash`)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '')",
+                    (
+                        event.revision.as_u64() as i64,
+                        action_str,
+                        &event.subject,
+                        &event.relation,
+                        &event.object,
+                        metadata_json,
+                        event.timestamp.to_rfc3339(),
+                        &event.identity,
+                    ),
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            }
+
+            conn.exec_drop(
+                "UPDATE _aegis_meta SET `value` = ? WHERE `key` = 'revision'",
+                (revision.as_u64() as i64,),
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            Ok(())
+        })
+    }
 }
 
 /// A MySQL transaction wrapping a pooled connection.
@@ -955,6 +1151,7 @@ pub struct MysqlTransaction {
     conn: Option<tokio::sync::Mutex<mysql_async::Conn>>,
     runtime: tokio::runtime::Handle,
     _node_id: Uuid,
+    actor_identity: Option<String>,
 }
 
 impl MysqlTransaction {
@@ -962,11 +1159,13 @@ impl MysqlTransaction {
         conn: mysql_async::Conn,
         runtime: tokio::runtime::Handle,
         _node_id: Uuid,
+        actor_identity: Option<String>,
     ) -> Self {
         Self {
             conn: Some(tokio::sync::Mutex::new(conn)),
             runtime,
             _node_id,
+            actor_identity,
         }
     }
 
@@ -1012,12 +1211,34 @@ impl MysqlTransaction {
         relation: &str,
         object: &str,
         metadata: Option<&str>,
+        identity: Option<&str>,
     ) -> AegisResult<()> {
         let now = Utc::now().to_rfc3339();
+        let previous_hash: String = conn
+            .exec_first(
+                "SELECT COALESCE((SELECT `event_hash` FROM _aegis_events ORDER BY `event_id` DESC LIMIT 1), '')",
+                (),
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+            .map(|r: (String,)| r.0)
+            .unwrap_or_default();
+        let event_hash = crate::storage::compute_event_hash(
+            &previous_hash,
+            revision.as_u64() as i64,
+            action,
+            subject,
+            relation,
+            object,
+            "",
+            metadata,
+            &now,
+            identity,
+        );
         conn.exec_drop(
-            "INSERT INTO _aegis_events (`revision`, `action`, `subject`, `relation`, `object`, `metadata`, `timestamp`, `identity`)
-             VALUES (?, ?, ?, ?, ?, ?, ?, NULL)",
-            (revision.as_u64() as i64, action, subject, relation, object, metadata, &now),
+            "INSERT INTO _aegis_events (`revision`, `action`, `subject`, `relation`, `object`, `metadata`, `timestamp`, `identity`, `previous_hash`, `event_hash`)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (revision.as_u64() as i64, action, subject, relation, object, metadata, &now, identity, &previous_hash, &event_hash),
         )
         .await
         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1051,6 +1272,7 @@ impl MysqlTransaction {
         conn: &mut mysql_async::Conn,
         partition_id: &PartitionId,
         tuple: &RelationshipTuple,
+        identity: Option<&str>,
     ) -> AegisResult<()> {
         let revision = Self::bump_revision_async(conn).await?;
         let metadata_json = tuple
@@ -1079,7 +1301,7 @@ impl MysqlTransaction {
         Self::append_event_async(
             conn, revision, "add", tuple.subject.as_str(),
             tuple.relation.as_str(), tuple.object.as_str(),
-            metadata_json.as_deref(),
+            metadata_json.as_deref(), identity,
         )
         .await?;
 
@@ -1090,6 +1312,7 @@ impl MysqlTransaction {
         conn: &mut mysql_async::Conn,
         partition_id: &PartitionId,
         key: &TupleKey,
+        identity: Option<&str>,
     ) -> AegisResult<()> {
         let revision = Self::bump_revision_async(conn).await?;
 
@@ -1103,7 +1326,7 @@ impl MysqlTransaction {
 
         Self::append_event_async(
             conn, revision, "remove", key.subject.as_str(),
-            key.relation.as_str(), key.object.as_str(), None,
+            key.relation.as_str(), key.object.as_str(), None, identity,
         )
         .await?;
 
@@ -1112,13 +1335,20 @@ impl MysqlTransaction {
 }
 
 impl StorageTransaction for MysqlTransaction {
+    fn set_actor_identity(&mut self, identity: Option<String>) -> Option<String> {
+        let prev = self.actor_identity.take();
+        self.actor_identity = identity;
+        prev
+    }
+
     fn write(&mut self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<()> {
         let tuple_clone = tuple.clone();
         let mutex = self.take_conn()?;
         let handle = self.runtime.clone();
+        let identity = self.actor_identity.clone();
         let result = handle.block_on(async {
             let mut conn = mutex.lock().await;
-            Self::write_impl(&mut conn, partition_id, &tuple_clone).await
+            Self::write_impl(&mut conn, partition_id, &tuple_clone, identity.as_deref()).await
         });
         self.conn = Some(mutex);
         result
@@ -1128,9 +1358,10 @@ impl StorageTransaction for MysqlTransaction {
         let key_clone = key.clone();
         let mutex = self.take_conn()?;
         let handle = self.runtime.clone();
+        let identity = self.actor_identity.clone();
         let result = handle.block_on(async {
             let mut conn = mutex.lock().await;
-            Self::delete_impl(&mut conn, partition_id, &key_clone).await
+            Self::delete_impl(&mut conn, partition_id, &key_clone, identity.as_deref()).await
         });
         self.conn = Some(mutex);
         result

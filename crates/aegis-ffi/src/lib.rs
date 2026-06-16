@@ -1029,6 +1029,7 @@ pub extern "C" fn aegis_engine_query_audit(
                 "relation": e.relation,
                 "object": e.object,
                 "timestamp": e.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+                "identity": e.identity,
             })
         }).collect::<Vec<_>>()).map_err(|e| error_string(&e.to_string()))?;
         Ok(AegisAuditResult { entries_json: error_string(&json), error: std::ptr::null_mut() })
@@ -1251,6 +1252,48 @@ pub extern "C" fn aegis_engine_set_rate_limiter(
         Ok(Ok(ptr)) => ptr,
         Ok(Err(err)) => err,
         Err(_) => error_string("panic during set_rate_limiter"),
+    }
+}
+
+// ── Actor identity ──
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_set_actor(
+    engine: *mut AegisEngine,
+    actor: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_ptr(engine) {
+        Ok(e) => e,
+        Err(err) => return err,
+    };
+
+    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<*mut libc::c_char, *mut libc::c_char> {
+        if actor.is_null() {
+            eng.set_actor(None);
+        } else {
+            let s = c_str_to_str(actor)?;
+            eng.set_actor(Some(&s));
+        }
+        Ok(std::ptr::null_mut())
+    })) {
+        Ok(Ok(ptr)) => ptr,
+        Ok(Err(err)) => err,
+        Err(_) => error_string("panic during set_actor"),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_active_actor(
+    engine: *const AegisEngine,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(err) => return err,
+    };
+
+    match eng.active_actor() {
+        Some(s) => error_string(&s),
+        None => std::ptr::null_mut(),
     }
 }
 
@@ -1653,6 +1696,15 @@ pub extern "C" fn aegis_free_string(s: *mut libc::c_char) {
 // ── Helpers ──
 
 fn engine_from_ptr(ptr: *mut AegisEngine) -> Result<&'static GraphEngine, *mut libc::c_char> {
+    if ptr.is_null() {
+        Err(error_string("engine is null"))
+    } else {
+        let engine = unsafe { &*ptr };
+        Ok(&engine.inner)
+    }
+}
+
+fn engine_from_const_ptr(ptr: *const AegisEngine) -> Result<&'static GraphEngine, *mut libc::c_char> {
     if ptr.is_null() {
         Err(error_string("engine is null"))
     } else {

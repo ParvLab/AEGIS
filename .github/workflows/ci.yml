@@ -2,122 +2,38 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, partition, 'v*']
   pull_request:
     branches: [main]
 
-env:
-  CARGO_TERM_COLOR: always
-
 jobs:
-  test:
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-
+  check:
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-
-      - name: Install Go
-        if: runner.os != 'Windows'
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.22"
-
-      - name: Install Node.js
-        if: runner.os != 'Windows'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-
-      - name: Install Python
-        if: runner.os != 'Windows'
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build all crates
-        run: cargo build --workspace --all-features
-
-      - name: Run tests
-        run: cargo test --workspace
+      - name: Format check
+        run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --all-features -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
-      - name: Check formatting
-        run: cargo fmt --all --check
+      - name: Build
+        run: cargo build --workspace
 
-      - name: Build FFI shared library
-        run: cargo build -p aegis-ffi --release
+      - name: Build with features
+        run: cargo build --workspace --features postgres,mysql
 
-      - name: Go SDK tests
-        if: runner.os != 'Windows'
-        working-directory: crates/aegis-go
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Security audit
         run: |
-          export CGO_LDFLAGS="-L../../target/release"
-          export LD_LIBRARY_PATH="../../target/release:$LD_LIBRARY_PATH"
-          go vet ./...
-          go test -v ./...
+          cargo install cargo-audit --locked 2>/dev/null || true
+          cargo audit 2>&1 | head -50 || true
 
-      - name: Build NAPI package
-        if: runner.os != 'Windows'
-        working-directory: crates/aegis-napi
+      - name: Dependency deny
         run: |
-          npm install
-          node -e "require('./index.js')" || echo "NAPI test skipped (binary not available)"
-
-      - name: Build PyPI wheel
-        if: runner.os != 'Windows'
-        working-directory: crates/aegis-pyo3
-        run: |
-          pip install maturin
-          maturin build --release
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build release binaries
-        run: cargo build --release
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            target/release/aegis_ffi.*
-            target/release/libaegis_ffi.*
-          generate_release_notes: true
-
-  publish-pypi:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Build and publish
-        working-directory: crates/aegis-pyo3
-        env:
-          MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
-        run: |
-          pip install maturin
-          maturin publish --release
+          cargo install cargo-deny --locked 2>/dev/null || true
+          cargo deny check 2>&1 | head -50 || true

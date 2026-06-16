@@ -4,7 +4,7 @@ use crate::storage::traits::{
 };
     use crate::types::{
         AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId, Relation,
-        RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
+        RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
     };
 use chrono::{DateTime, Utc};
 use r2d2::Pool;
@@ -60,8 +60,13 @@ const EVENTS_TABLE: &str = "
         partition_id  TEXT NOT NULL DEFAULT 'default',
         metadata      TEXT,
         timestamp     TEXT NOT NULL,
-        identity      TEXT
+        identity      TEXT,
+        previous_hash TEXT NOT NULL DEFAULT '',
+        event_hash    TEXT NOT NULL DEFAULT ''
     )";
+
+const EVENTS_HASH_IDX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_events_event_hash ON _aegis_events(event_hash)";
 
 const SCHEMA_TABLE: &str = "
     CREATE TABLE IF NOT EXISTS _aegis_schema (
@@ -133,6 +138,7 @@ pub struct SqliteStorage {
     pool: Pool<SqliteConnectionManager>,
     config: SqliteConfig,
     node_id: Uuid,
+    actor_identity: std::sync::Mutex<Option<String>>,
 }
 
 impl SqliteStorage {
@@ -160,6 +166,7 @@ impl SqliteStorage {
             pool,
             config,
             node_id,
+            actor_identity: std::sync::Mutex::new(None),
         };
 
         // Configure all initial connections
@@ -188,11 +195,16 @@ impl SqliteStorage {
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         conn.execute_batch(EVENTS_TABLE)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        conn.execute_batch(EVENTS_HASH_IDX)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         conn.execute_batch(SCHEMA_TABLE)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         // V2: Add valid_until and condition columns (no-op if columns already exist)
         let _ = conn.execute_batch("ALTER TABLE _aegis_tuples ADD COLUMN valid_until TEXT");
         let _ = conn.execute_batch("ALTER TABLE _aegis_tuples ADD COLUMN condition TEXT");
+        // V3: Add audit hash columns (no-op if columns already exist)
+        let _ = conn.execute_batch("ALTER TABLE _aegis_events ADD COLUMN previous_hash TEXT NOT NULL DEFAULT ''");
+        let _ = conn.execute_batch("ALTER TABLE _aegis_events ADD COLUMN event_hash TEXT NOT NULL DEFAULT ''");
         Ok(())
     }
 
@@ -283,7 +295,7 @@ impl SqliteStorage {
         Ok(Revision::new(rev as u64))
     }
 
-    /// Append an event to the event log.
+    /// Append an event to the event log, computing hash-chained integrity fields.
     fn append_event(
         conn: &Connection,
         revision: Revision,
@@ -296,9 +308,28 @@ impl SqliteStorage {
         identity: Option<&str>,
     ) -> AegisResult<()> {
         let now = Utc::now().to_rfc3339();
+        let previous_hash: String = conn
+            .query_row(
+                "SELECT COALESCE((SELECT event_hash FROM _aegis_events ORDER BY event_id DESC LIMIT 1), '')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+        let event_hash = crate::storage::compute_event_hash(
+            &previous_hash,
+            revision.as_u64() as i64,
+            action,
+            subject,
+            relation,
+            object,
+            partition_id,
+            metadata,
+            &now,
+            identity,
+        );
         conn.execute(
-            "INSERT INTO _aegis_events (revision, action, subject, relation, object, partition_id, metadata, timestamp, identity)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            "INSERT INTO _aegis_events (revision, action, subject, relation, object, partition_id, metadata, timestamp, identity, previous_hash, event_hash)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 revision.as_u64() as i64,
                 action,
@@ -309,6 +340,8 @@ impl SqliteStorage {
                 metadata,
                 now,
                 identity,
+                previous_hash,
+                event_hash,
             ],
         )
         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -400,6 +433,13 @@ impl StorageBackend for SqliteStorage {
         BackendType::Sqlite
     }
 
+    fn set_actor_identity(&self, identity: Option<String>) -> Option<String> {
+        let mut guard = self.actor_identity.lock().unwrap();
+        let prev = guard.take();
+        *guard = identity;
+        prev
+    }
+
     fn initialize(&mut self) -> AegisResult<StorageMeta> {
         let conn = self.conn()?;
         let current_revision = Self::read_revision(&conn)?;
@@ -460,6 +500,7 @@ impl StorageBackend for SqliteStorage {
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+            let identity = self.actor_identity.lock().unwrap().clone();
             Self::append_event(
                 conn,
                 revision,
@@ -469,7 +510,7 @@ impl StorageBackend for SqliteStorage {
                 tuple.object.as_str(),
                 partition_id.as_str(),
                 metadata_json.as_deref(),
-                None,
+                identity.as_deref(),
             )?;
 
             Ok(revision)
@@ -524,6 +565,7 @@ impl StorageBackend for SqliteStorage {
                 )
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+                let identity = self.actor_identity.lock().unwrap().clone();
                 Self::append_event(
                     conn,
                     revision,
@@ -533,7 +575,7 @@ impl StorageBackend for SqliteStorage {
                     tuple.object.as_str(),
                     partition_id.as_str(),
                     metadata_json.as_deref(),
-                    None,
+                    identity.as_deref(),
                 )?;
             }
 
@@ -572,6 +614,7 @@ impl StorageBackend for SqliteStorage {
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+            let identity = self.actor_identity.lock().unwrap().clone();
             Self::append_event(
                 conn,
                 revision,
@@ -581,7 +624,7 @@ impl StorageBackend for SqliteStorage {
                 key.object.as_str(),
                 partition_id.as_str(),
                 None,
-                None,
+                identity.as_deref(),
             )?;
 
             Ok(revision)
@@ -616,6 +659,7 @@ impl StorageBackend for SqliteStorage {
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+            let identity = self.actor_identity.lock().unwrap().clone();
             for (relation, object) in &tuples {
                 Self::append_event(
                     conn,
@@ -626,7 +670,7 @@ impl StorageBackend for SqliteStorage {
                     object,
                     partition_id.as_str(),
                     None,
-                    None,
+                    identity.as_deref(),
                 )?;
             }
 
@@ -662,6 +706,7 @@ impl StorageBackend for SqliteStorage {
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
+            let identity = self.actor_identity.lock().unwrap().clone();
             for (subject, relation) in &tuples {
                 Self::append_event(
                     conn,
@@ -672,7 +717,7 @@ impl StorageBackend for SqliteStorage {
                     object.as_str(),
                     partition_id.as_str(),
                     None,
-                    None,
+                    identity.as_deref(),
                 )?;
             }
 
@@ -1151,7 +1196,8 @@ impl StorageBackend for SqliteStorage {
     fn begin_transaction(&self, partition_id: &PartitionId) -> AegisResult<Box<dyn StorageTransaction>> {
         let _ = partition_id;
         let conn = self.conn()?;
-        let tx = SqliteTransaction::new(conn, self.node_id)?;
+        let identity = self.actor_identity.lock().unwrap().clone();
+        let tx = SqliteTransaction::new(conn, self.node_id, identity)?;
         Ok(Box::new(tx))
     }
 
@@ -1343,8 +1389,152 @@ impl StorageBackend for SqliteStorage {
         Ok(())
     }
 
+    fn restore_backup(
+        &self,
+        partition_id: &PartitionId,
+        tuples: &[RelationshipTuple],
+        events: &[AuditEntry],
+        revision: Revision,
+    ) -> AegisResult<()> {
+        self.with_write_tx(|conn| {
+            conn.execute("DELETE FROM _aegis_tuples", [])
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            conn.execute("DELETE FROM _aegis_events", [])
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            for tuple in tuples {
+                let metadata_json = tuple.metadata
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+                let valid_until_str = tuple.valid_until.map(|v| v.to_rfc3339());
+                let condition_str = tuple.condition.as_deref();
+                conn.execute(
+                    "INSERT INTO _aegis_tuples (subject, relation, object, partition_id, created_at, metadata, valid_until, condition, revision_added, revision_removed)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)",
+                    params![
+                        tuple.subject.as_str(),
+                        tuple.relation.as_str(),
+                        tuple.object.as_str(),
+                        partition_id.as_str(),
+                        tuple.created_at.to_rfc3339(),
+                        metadata_json,
+                        valid_until_str,
+                        condition_str,
+                        revision.as_u64() as i64,
+                    ],
+                )
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            }
+
+            for event in events {
+                let action_str = match event.action {
+                    TupleMutation::Add => "add",
+                    TupleMutation::Remove => "remove",
+                };
+                let metadata_json = event.metadata
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+                conn.execute(
+                    "INSERT INTO _aegis_events (revision, action, subject, relation, object, partition_id, metadata, timestamp, identity, previous_hash, event_hash)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '', '')",
+                    params![
+                        event.revision.as_u64() as i64,
+                        action_str,
+                        event.subject,
+                        event.relation,
+                        event.object,
+                        partition_id.as_str(),
+                        metadata_json,
+                        event.timestamp.to_rfc3339(),
+                        event.identity,
+                    ],
+                )
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            }
+
+            conn.execute(
+                "UPDATE _aegis_meta SET value = ?1 WHERE key = 'revision'",
+                params![revision.as_u64() as i64],
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            Ok(())
+        })
+    }
+
     fn recover_from_events(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision> {
         self.recover_from_events_impl(partition_id, to_revision)
+    }
+
+    fn verify_audit_chain(&self, partition_id: &PartitionId) -> AegisResult<Option<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT event_id, revision, action, subject, relation, object, partition_id, metadata, timestamp, identity, previous_hash, event_hash
+                 FROM _aegis_events
+                 WHERE partition_id = ?1
+                 ORDER BY event_id ASC",
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        let rows = stmt
+            .query_map(params![partition_id.as_str()], |row| {
+                let event_id: i64 = row.get(0)?;
+                let revision: i64 = row.get(1)?;
+                let action: String = row.get(2)?;
+                let subject: String = row.get(3)?;
+                let relation: String = row.get(4)?;
+                let object: String = row.get(5)?;
+                let pid: String = row.get(6)?;
+                let metadata: Option<String> = row.get(7)?;
+                let timestamp: String = row.get(8)?;
+                let identity: Option<String> = row.get(9)?;
+                let previous_hash: String = row.get(10)?;
+                let event_hash: String = row.get(11)?;
+                Ok((event_id, revision, action, subject, relation, object, pid, metadata, timestamp, identity, previous_hash, event_hash))
+            })
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        let mut last_event_hash = String::new();
+        for row in rows {
+            let (event_id, revision, action, subject, relation, object, pid, metadata, timestamp, identity, prev_hash, event_hash) =
+                row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            if prev_hash != last_event_hash {
+                return Ok(Some(format!(
+                    "Chain break at event_id={}: expected previous_hash='{}', got '{}'",
+                    event_id, last_event_hash, prev_hash
+                )));
+            }
+
+            let expected = crate::storage::compute_event_hash(
+                &last_event_hash,
+                revision,
+                &action,
+                &subject,
+                &relation,
+                &object,
+                &pid,
+                metadata.as_deref(),
+                &timestamp,
+                identity.as_deref(),
+            );
+
+            if expected != event_hash {
+                return Ok(Some(format!(
+                    "Hash mismatch at event_id={}: expected '{}', got '{}'",
+                    event_id, expected, event_hash
+                )));
+            }
+
+            last_event_hash = event_hash;
+        }
+
+        Ok(None)
     }
 }
 
@@ -1356,7 +1546,7 @@ impl SqliteStorage {
     /// After recovery, verifies that the final revision matches.
     fn recover_from_events_impl(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
-            conn.execute("DELETE FROM _aegis_tuples WHERE revision_removed IS NOT NULL OR 1=1", [])
+            conn.execute("DELETE FROM _aegis_tuples WHERE partition_id = ?1", [partition_id.as_str()])
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             let mut stmt = conn
@@ -1568,16 +1758,18 @@ pub struct SqliteTransaction {
     conn: Option<r2d2::PooledConnection<SqliteConnectionManager>>,
     committed: bool,
     _node_id: Uuid,
+    actor_identity: Option<String>,
 }
 
 impl SqliteTransaction {
-    pub fn new(conn: r2d2::PooledConnection<SqliteConnectionManager>, node_id: Uuid) -> AegisResult<Self> {
+    pub fn new(conn: r2d2::PooledConnection<SqliteConnectionManager>, node_id: Uuid, actor_identity: Option<String>) -> AegisResult<Self> {
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         Ok(Self {
             conn: Some(conn),
             committed: false,
             _node_id: node_id,
+            actor_identity,
         })
     }
 
@@ -1603,7 +1795,7 @@ impl SqliteTransaction {
         metadata: Option<&str>,
     ) -> AegisResult<()> {
         let conn = self.conn()?;
-        SqliteStorage::append_event(conn, revision, action, subject, relation, object, partition_id, metadata, None)
+        SqliteStorage::append_event(conn, revision, action, subject, relation, object, partition_id, metadata, self.actor_identity.as_deref())
     }
 }
 
@@ -1633,6 +1825,12 @@ fn validate_savepoint_name(name: &str) -> AegisResult<()> {
 }
 
 impl StorageTransaction for SqliteTransaction {
+    fn set_actor_identity(&mut self, identity: Option<String>) -> Option<String> {
+        let prev = self.actor_identity.take();
+        self.actor_identity = identity;
+        prev
+    }
+
     fn write(&mut self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<()> {
         let conn = self.conn()?;
         let revision = self.bump_revision()?;

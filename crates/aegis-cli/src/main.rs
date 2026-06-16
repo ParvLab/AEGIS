@@ -4,6 +4,7 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
 use serde_json::json;
+use sha2::{Digest, Sha256};
 
 use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
@@ -177,6 +178,16 @@ enum Commands {
     /// Lint a schema file for compatibility issues
     SchemaLint {
         path: String,
+        /// Enable strict mode (promote warnings to errors)
+        #[arg(long)]
+        strict: bool,
+    },
+    /// Show a structured diff between the current schema and a new schema
+    PolicyDiff {
+        /// Path to the new schema file
+        schema_file: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
     },
     /// Run event log recovery and compaction
     Recover {
@@ -506,8 +517,8 @@ fn main() -> Result<()> {
             let revision = engine.storage().current_revision(&PartitionId::default())?;
             let backend_type = engine.storage().backend_type().to_string();
             let exported_at = Utc::now().to_rfc3339();
-            let backup = serde_json::json!({
-                "version": 2,
+            let mut backup = serde_json::json!({
+                "version": 3,
                 "schema_yaml": schema_yaml,
                 "tuples": all_tuples,
                 "events": events,
@@ -517,6 +528,15 @@ fn main() -> Result<()> {
                     "exported_at": exported_at,
                 },
             });
+            let canonical = serde_json::to_string(&backup)?;
+            let mut hasher = Sha256::new();
+            hasher.update(canonical.as_bytes());
+            let hash = hasher.finalize();
+            let checksum = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+            backup.as_object_mut().unwrap().insert(
+                "checksum".to_string(),
+                serde_json::Value::String(format!("sha256:{}", checksum)),
+            );
             let output = serde_json::to_string_pretty(&backup)?;
             std::fs::write(path, output)
                 .with_context(|| format!("failed to write backup to {path}"))?;
@@ -527,7 +547,25 @@ fn main() -> Result<()> {
             let engine = mk_engine(db, None)?;
             let content = std::fs::read_to_string(path)
                 .with_context(|| format!("failed to read backup from {path}"))?;
-            let backup: serde_json::Value = serde_json::from_str(&content)?;
+            let mut backup: serde_json::Value = serde_json::from_str(&content)?;
+            let stored_checksum = backup.get("checksum")
+                .and_then(|v| v.as_str())
+                .map(|s| s.strip_prefix("sha256:").unwrap_or(s))
+                .unwrap_or("")
+                .to_string();
+            if let Some(obj) = backup.as_object_mut() {
+                obj.remove("checksum");
+            }
+            if !stored_checksum.is_empty() {
+                let canonical = serde_json::to_string(&backup)?;
+                let mut hasher = Sha256::new();
+                hasher.update(canonical.as_bytes());
+                let hash = hasher.finalize();
+                let computed = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                if stored_checksum != computed {
+                    anyhow::bail!("checksum mismatch: backup may be corrupted");
+                }
+            }
             let version = backup.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
             if version >= 2 {
                 if let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str()) {
@@ -538,27 +576,23 @@ fn main() -> Result<()> {
                     }
                 }
             }
-            let tuples: Vec<TupleImport> = serde_json::from_value(
+            let tuples: Vec<RelationshipTuple> = serde_json::from_value(
                 backup.get("tuples").cloned().unwrap_or(serde_json::Value::Null),
             )
             .context("invalid backup format: missing or invalid 'tuples' field")?;
-            let mut count = 0usize;
-            for chunk in tuples.chunks(100) {
-                let batch: Vec<RelationshipTuple> = chunk
-                    .iter()
-                    .map(|t| {
-                        let subject_id = SubjectId::new(&t.subject)
-                            .with_context(|| format!("invalid subject: {}", t.subject))?;
-                        let relation_val = Relation::new(&t.relation)
-                            .with_context(|| format!("invalid relation: {}", t.relation))?;
-                        let object_id = ResourceId::new(&t.object)
-                            .with_context(|| format!("invalid object: {}", t.object))?;
-                        Ok(RelationshipTuple::new(subject_id, relation_val, object_id))
-                    })
-                    .collect::<Result<Vec<_>>>()?;
-                engine.write_batch(&batch)?;
-                count += batch.len();
-            }
+            let events: Vec<AuditEntry> = serde_json::from_value(
+                backup.get("events").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+            )
+            .context("invalid backup format: missing or invalid 'events' field")?;
+            let revision = backup
+                .get("metadata")
+                .and_then(|m| m.get("revision"))
+                .and_then(|r| r.as_u64())
+                .map(Revision::new)
+                .unwrap_or(Revision::ZERO);
+            let count = tuples.len();
+            engine.storage().restore_backup(&PartitionId::default(), &tuples, &events, revision)
+                .context("failed to restore backup")?;
             println!(r#"{{"status":"ok","restored":{count}}}"#);
         }
         Commands::Export {
@@ -611,12 +645,12 @@ fn main() -> Result<()> {
             }
             println!(r#"{{"status":"ok","imported":{count}}}"#);
         }
-        Commands::SchemaLint { path } => {
+        Commands::SchemaLint { path, strict } => {
             let yaml = std::fs::read_to_string(path)
                 .with_context(|| format!("failed to read schema file {path}"))?;
             match parse_schema(&yaml) {
                 Ok(schema) => {
-                    let report = aegis_core::schema::lint_schema(&schema, false);
+                    let report = aegis_core::schema::lint_schema(&schema, *strict);
                     if report.errors.is_empty() && report.warnings.is_empty() {
                         println!(r#"{{"status":"ok","types":{},"version":{}}}"#,
                             schema.types.len(), schema.schema_version);
@@ -638,6 +672,98 @@ fn main() -> Result<()> {
                     });
                     println!("{}", serde_json::to_string_pretty(&output)?);
                 }
+            }
+        }
+        Commands::PolicyDiff { schema_file, db } => {
+            let engine = mk_engine(db, None)?;
+            let yaml = std::fs::read_to_string(schema_file)
+                .with_context(|| format!("failed to read schema file {schema_file}"))?;
+            let new_schema = parse_schema(&yaml)
+                .with_context(|| format!("failed to parse schema from {schema_file}"))?;
+            let report = engine.check_schema(&new_schema);
+
+            // Compute added/removed types, relations, permissions
+            let current_schema = engine.schema();
+            let current_types: std::collections::HashSet<&str> =
+                current_schema.types.keys().map(|s| s.as_str()).collect();
+            let new_types_set: std::collections::HashSet<&str> =
+                new_schema.types.keys().map(|s| s.as_str()).collect();
+
+            let mut types_added = Vec::new();
+            let mut types_removed = Vec::new();
+            let mut relations_added = Vec::new();
+            let mut relations_removed = Vec::new();
+            let mut permissions_added = Vec::new();
+            let mut permissions_removed = Vec::new();
+
+            for t in new_types_set.difference(&current_types) {
+                types_added.push(t.to_string());
+            }
+            for t in current_types.difference(&new_types_set) {
+                types_removed.push(t.to_string());
+            }
+            for type_name in current_types.intersection(&new_types_set) {
+                let cur_type = &current_schema.types[*type_name];
+                let new_type = &new_schema.types[*type_name];
+                let cur_rels: std::collections::HashSet<&str> =
+                    cur_type.relations.keys().map(|s| s.as_str()).collect();
+                let new_rels: std::collections::HashSet<&str> =
+                    new_type.relations.keys().map(|s| s.as_str()).collect();
+                for r in new_rels.difference(&cur_rels) {
+                    relations_added.push(format!("{}:{}", type_name, r));
+                }
+                for r in cur_rels.difference(&new_rels) {
+                    relations_removed.push(format!("{}:{}", type_name, r));
+                }
+                let cur_perms: std::collections::HashSet<&str> =
+                    cur_type.permissions.keys().map(|s| s.as_str()).collect();
+                let new_perms: std::collections::HashSet<&str> =
+                    new_type.permissions.keys().map(|s| s.as_str()).collect();
+                for p in new_perms.difference(&cur_perms) {
+                    permissions_added.push(format!("{}:{}", type_name, p));
+                }
+                for p in cur_perms.difference(&new_perms) {
+                    permissions_removed.push(format!("{}:{}", type_name, p));
+                }
+            }
+
+            println!("Policy Diff");
+            println!("===========");
+            println!(
+                "Types Added:    {}",
+                if types_added.is_empty() { "(none)".to_string() } else { types_added.join(", ") }
+            );
+            println!(
+                "Types Removed:  {}",
+                if types_removed.is_empty() { "(none)".to_string() } else { types_removed.join(", ") }
+            );
+            println!(
+                "Relations Added:  {}",
+                if relations_added.is_empty() { "(none)".to_string() } else { relations_added.join(", ") }
+            );
+            println!(
+                "Relations Removed: {}",
+                if relations_removed.is_empty() { "(none)".to_string() } else { relations_removed.join(", ") }
+            );
+            println!(
+                "Permissions Added: {}",
+                if permissions_added.is_empty() { "(none)".to_string() } else { permissions_added.join(", ") }
+            );
+            println!(
+                "Permissions Removed: {}",
+                if permissions_removed.is_empty() { "(none)".to_string() } else { permissions_removed.join(", ") }
+            );
+            println!("Warnings:");
+            if report.warnings.is_empty() {
+                println!("  (none)");
+            } else {
+                for w in &report.warnings {
+                    println!("  - {w}");
+                }
+            }
+            println!("Breaking: {}", if report.breaking.is_empty() { "No" } else { "Yes" });
+            for b in &report.breaking {
+                println!("  - {b}");
             }
         }
         Commands::Recover {

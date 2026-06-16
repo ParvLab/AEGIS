@@ -4,11 +4,13 @@
 //! and retention policy management.
 
 use crate::engine::GraphEngine;
-use crate::error::AegisResult;
+use crate::error::{AegisError, AegisResult};
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginationParams, PartitionId, RelationshipTuple, Revision, SubjectId,
 };
 use chrono::{DateTime, Days, Utc};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 /// Retention policy configuration for GDPR compliance.
 #[derive(Debug, Clone)]
@@ -29,7 +31,7 @@ impl Default for GdprConfig {
 }
 
 /// Complete data export for a subject (GDPR Article 15 - Right of access).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubjectDataExport {
     /// The subject identifier.
     pub subject: String,
@@ -43,11 +45,55 @@ pub struct SubjectDataExport {
     pub exported_at: chrono::DateTime<Utc>,
 }
 
+/// A cryptographically signed export package.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SignedExport {
+    /// The export data (Serialized SubjectDataExport bytes)
+    pub data: Vec<u8>,
+    /// SHA-256 digest of `data`
+    pub data_hash: String,
+    /// Ed25519 signature over `data_hash`
+    pub signature: Vec<u8>,
+    /// Signature algorithm identifier
+    pub algorithm: String,
+    /// Public key identifier (fingerprint) so verifier knows which key to use
+    pub key_id: String,
+    /// When the export was signed
+    pub signed_at: DateTime<Utc>,
+}
+
+impl SignedExport {
+    /// Verify the signature on this export.
+    pub fn verify(&self, public_key: &[u8]) -> Result<bool, String> {
+        // Recompute hash
+        let mut hasher = Sha256::new();
+        hasher.update(&self.data);
+        let computed_hash = hex::encode(hasher.finalize());
+
+        if computed_hash != self.data_hash {
+            return Err("data hash mismatch: export has been modified".to_string());
+        }
+
+        // Verify Ed25519 signature
+        let pub_key = ed25519_dalek::VerifyingKey::from_bytes(
+            public_key.try_into().map_err(|_| "invalid public key length".to_string())?
+        ).map_err(|e| format!("invalid public key: {e}"))?;
+
+        Ok(pub_key.verify_strict(
+            &computed_hash.as_bytes(),
+            &ed25519_dalek::Signature::from_bytes(
+                self.signature.as_slice().try_into().map_err(|_| "invalid signature length".to_string())?
+            ),
+        ).is_ok())
+    }
+}
+
 /// High-level GDPR compliance operations on the authorization engine.
 pub struct GdprManager<'a> {
     engine: &'a GraphEngine,
     partition_id: PartitionId,
     config: GdprConfig,
+    pub signing_key: Option<ed25519_dalek::SigningKey>,
 }
 
 impl<'a> GdprManager<'a> {
@@ -56,11 +102,12 @@ impl<'a> GdprManager<'a> {
             engine,
             partition_id,
             config: GdprConfig::default(),
+            signing_key: None,
         }
     }
 
     pub fn new_with_config(engine: &'a GraphEngine, partition_id: PartitionId, config: GdprConfig) -> Self {
-        Self { engine, partition_id, config }
+        Self { engine, partition_id, config, signing_key: None }
     }
 
     pub fn config(&self) -> &GdprConfig {
@@ -69,6 +116,51 @@ impl<'a> GdprManager<'a> {
 
     pub fn set_config(&mut self, config: GdprConfig) {
         self.config = config;
+    }
+
+    /// Configure the signing key for signed exports.
+    pub fn with_signing_key(mut self, key: &[u8]) -> Self {
+        let bytes: [u8; 32] = key.try_into().expect("signing key must be 32 bytes");
+        self.signing_key = Some(ed25519_dalek::SigningKey::from_bytes(&bytes));
+        self
+    }
+
+    /// Sign an existing `SubjectDataExport` with the configured key.
+    pub fn sign_export(&self, export: &SubjectDataExport) -> AegisResult<SignedExport> {
+        let signing_key = self
+            .signing_key
+            .as_ref()
+            .ok_or_else(|| AegisError::Internal("no signing key configured".to_string()))?;
+
+        let data = serde_json::to_vec(export)
+            .map_err(|e| AegisError::Internal(format!("serialization failed: {e}")))?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(&data);
+        let data_hash = hex::encode(hasher.finalize());
+
+        use ed25519_dalek::Signer;
+        let signature = signing_key.sign(data_hash.as_bytes());
+
+        let verifying_key = signing_key.verifying_key();
+        let mut hasher = Sha256::new();
+        hasher.update(verifying_key.as_bytes());
+        let key_id = hex::encode(hasher.finalize());
+
+        Ok(SignedExport {
+            data,
+            data_hash,
+            signature: signature.to_bytes().to_vec(),
+            algorithm: "ed25519-dalek".to_string(),
+            key_id,
+            signed_at: Utc::now(),
+        })
+    }
+
+    /// Export all data for a subject and return it in a signed package.
+    pub fn export_signed_subject_data(&self, subject: &SubjectId) -> AegisResult<SignedExport> {
+        let export = self.export_subject_data(subject)?;
+        self.sign_export(&export)
     }
 
     /// Export all data associated with a subject (GDPR Article 15).

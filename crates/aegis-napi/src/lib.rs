@@ -204,6 +204,7 @@ pub struct AuditEntryNAP {
     pub relation: String,
     pub object: String,
     pub timestamp: String,
+    pub identity: Option<String>,
 }
 
 #[napi(object)]
@@ -248,6 +249,7 @@ fn audit_entry_to_nap(entry: &AuditEntry) -> AuditEntryNAP {
             .timestamp
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string(),
+        identity: entry.identity.clone(),
     }
 }
 
@@ -1032,6 +1034,16 @@ impl JsAegis {
     }
 
     // S3.11 — set_logger
+    #[napi]
+    pub fn set_actor(&self, actor: Option<String>) {
+        self.engine.set_actor(actor.as_deref());
+    }
+
+    #[napi]
+    pub fn active_actor(&self) -> Option<String> {
+        self.engine.active_actor()
+    }
+
     #[napi]
     pub fn set_logger(&self, callback: napi::JsFunction) -> napi::Result<()> {
         self.check_open()?;

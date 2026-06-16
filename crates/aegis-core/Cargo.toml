@@ -17,6 +17,9 @@ r2d2.workspace = true
 r2d2_sqlite.workspace = true
 serde_json.workspace = true
 sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["digest"] }
+rand = "0.8"
+hex = "0.4"
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"], optional = true }
 deadpool-postgres = { version = "0.14", features = ["serde"], optional = true }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"], optional = true }

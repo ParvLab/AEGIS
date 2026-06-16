@@ -4,6 +4,38 @@ use crate::types::{
     AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationParams, PartitionId,
     Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
 };
+use sha2::{Digest, Sha256};
+
+/// Compute a deterministic SHA-256 hash for an audit event.
+///
+/// `event_hash = sha256(previous_hash || revision(le) || action || subject || relation || object || partition_id || metadata || timestamp || identity)`
+///
+/// The genesis event has `previous_hash = ""`.
+pub fn compute_event_hash(
+    previous_hash: &str,
+    revision: i64,
+    action: &str,
+    subject: &str,
+    relation: &str,
+    object: &str,
+    partition_id: &str,
+    metadata: Option<&str>,
+    timestamp: &str,
+    identity: Option<&str>,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(previous_hash.as_bytes());
+    hasher.update(&revision.to_le_bytes());
+    hasher.update(action.as_bytes());
+    hasher.update(subject.as_bytes());
+    hasher.update(relation.as_bytes());
+    hasher.update(object.as_bytes());
+    hasher.update(partition_id.as_bytes());
+    hasher.update(metadata.unwrap_or("").as_bytes());
+    hasher.update(timestamp.as_bytes());
+    hasher.update(identity.unwrap_or("").as_bytes());
+    hex::encode(hasher.finalize())
+}
 
 /// Pluggable storage backend for relationship tuples with partition awareness.
 ///
@@ -162,6 +194,16 @@ pub trait StorageBackend: Send + Sync {
     /// returning the latest revision seen.
     fn recover_from_events(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision>;
 
+    /// Restore tuples, events, and revision from a backup in a single transaction.
+    /// Clears existing data in the partition first.
+    fn restore_backup(
+        &self,
+        partition_id: &PartitionId,
+        tuples: &[RelationshipTuple],
+        events: &[AuditEntry],
+        revision: Revision,
+    ) -> AegisResult<()>;
+
     /// Return a version string for the storage backend (e.g. "3.45.1").
     fn storage_version(&self) -> Option<String> {
         None
@@ -181,8 +223,28 @@ pub trait StorageBackend: Send + Sync {
         None
     }
 
+    /// Set the actor identity for subsequent write/delete operations.
+    /// The identity is recorded in audit events for traceability.
+    /// Returns the previously set identity, if any.
+    fn set_actor_identity(&self, identity: Option<String>) -> Option<String> {
+        let _ = identity;
+        None
+    }
+
     /// Close the storage backend, flushing all pending operations.
     fn close(&self) -> AegisResult<()>;
+
+    /// Verify the hash-chained audit log for a partition.
+    ///
+    /// Iterates all events in order, recomputes each event_hash,
+    /// and checks that the previous_hash of each event matches the
+    /// event_hash of the previous event.
+    ///
+    /// Returns `Ok(None)` if the chain is valid.
+    /// Returns `Ok(Some(reason))` with details of the first mismatch.
+    fn verify_audit_chain(&self, _partition_id: &PartitionId) -> AegisResult<Option<String>> {
+        Ok(None)
+    }
 }
 
 /// A storage transaction supporting atomic multi-tuple writes within a partition.
@@ -201,6 +263,14 @@ pub trait StorageTransaction: Send {
 
     /// Release (forget) a named savepoint.
     fn release_savepoint(&self, name: &str) -> AegisResult<()>;
+
+    /// Set the actor identity for subsequent write/delete operations.
+    /// The identity is recorded in audit events for traceability.
+    /// Returns the previously set identity, if any.
+    fn set_actor_identity(&mut self, identity: Option<String>) -> Option<String> {
+        let _ = identity;
+        None
+    }
 
     /// Commit the transaction.
     fn commit(self: Box<Self>) -> AegisResult<Revision>;

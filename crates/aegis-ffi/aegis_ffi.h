@@ -136,6 +136,10 @@ AegisWriteResult aegis_transaction_commit(AegisTransaction* txn);
 char* aegis_transaction_rollback(AegisTransaction* txn);
 void aegis_transaction_free(AegisTransaction* txn);
 
+/* ── Actor identity ── */
+char* aegis_engine_set_actor(AegisEngine* engine, const char* actor);
+char* aegis_engine_active_actor(const AegisEngine* engine);
+
 /* ── Logger ── */
 typedef void (*AegisLogFn)(int level, const char* target, const char* msg, void* user_data);
 void aegis_engine_set_logger(AegisEngine* engine, AegisLogFn callback, void* user_data);
