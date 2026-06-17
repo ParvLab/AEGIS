@@ -1,0 +1,42 @@
+{
+  "name": "@aegis/browser",
+  "version": "0.1.0",
+  "description": "Aegis authorization engine for browser — check, write, delete permissions with full offline support",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/aegis-auth/aegis.git"
+  },
+  "homepage": "https://github.com/aegis-auth/aegis/packages/aegis-browser",
+  "author": "Aegis Authors",
+  "files": [
+    "dist/",
+    "pkg/"
+  ],
+  "scripts": {
+    "build:rust": "cd rust && wasm-pack build --target web --out-dir ../pkg && cd ..",
+    "build:ts": "tsc",
+    "build": "npm run build:rust && npm run build:ts",
+    "optimize": "wasm-opt -Oz -o pkg/aegis_browser_bg.wasm pkg/aegis_browser_bg.wasm",
+    "test": "wasm-pack test --chrome --headless",
+    "prepublishOnly": "npm run build && npm run optimize"
+  },
+  "browser": {
+    "./pkg/aegis_browser.js": "./pkg/aegis_browser.js",
+    "./pkg/aegis_browser_bg.wasm": "./pkg/aegis_browser_bg.wasm"
+  },
+  "keywords": [
+    "authorization",
+    "permissions",
+    "wasm",
+    "browser",
+    "offline",
+    "indexeddb",
+    "rebac"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "typescript": "^6.0.3"
+  }
+}

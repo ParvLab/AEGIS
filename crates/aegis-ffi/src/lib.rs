@@ -1351,6 +1351,7 @@ pub struct AegisWatchEvent {
     pub object: *mut libc::c_char,
     pub revision: u64,
     pub timestamp: *mut libc::c_char,
+    pub payload: *mut libc::c_char,
     pub error: *mut libc::c_char,
 }
 
@@ -1401,7 +1402,18 @@ pub extern "C" fn aegis_watch_poll(
     let evt_type = match event.event_type {
         WatchEventType::TupleAdded => 0,
         WatchEventType::TupleRemoved => 1,
+        WatchEventType::PolicyVersionCreated => 2,
+        WatchEventType::PolicyRolledBack => 3,
+        WatchEventType::IntegrityFinding => 4,
+        WatchEventType::AnalysisCompleted => 5,
+        WatchEventType::RateLimitWarning => 6,
     };
+
+    let payload = event
+        .payload
+        .as_ref()
+        .map(|v| error_string(&v.to_string()))
+        .unwrap_or(std::ptr::null_mut());
 
     let ptr = Box::into_raw(Box::new(AegisWatchEvent {
         event_type: evt_type,
@@ -1410,6 +1422,7 @@ pub extern "C" fn aegis_watch_poll(
         object: error_string(&event.object),
         revision: event.revision.as_u64(),
         timestamp: error_string(&event.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
+        payload,
         error: std::ptr::null_mut(),
     }));
     ptr
@@ -1430,6 +1443,7 @@ pub extern "C" fn aegis_watch_event_free(evt: *mut AegisWatchEvent) {
         if !evt.relation.is_null() { unsafe { let _ = CString::from_raw(evt.relation); } }
         if !evt.object.is_null() { unsafe { let _ = CString::from_raw(evt.object); } }
         if !evt.timestamp.is_null() { unsafe { let _ = CString::from_raw(evt.timestamp); } }
+        if !evt.payload.is_null() { unsafe { let _ = CString::from_raw(evt.payload); } }
         if !evt.error.is_null() { unsafe { let _ = CString::from_raw(evt.error); } }
     }
 }
@@ -1690,6 +1704,168 @@ pub extern "C" fn aegis_free_string(s: *mut libc::c_char) {
         unsafe {
             let _ = CString::from_raw(s);
         }
+    }
+}
+
+// ── V6 Analysis APIs (return JSON strings) ──
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_explain_v2(
+    engine: *const AegisEngine,
+    subject: *const libc::c_char,
+    permission: *const libc::c_char,
+    resource: *const libc::c_char,
+    consistency: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let subject_str = match c_str_to_str(subject) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let permission_str = match c_str_to_str(permission) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let resource_str = match c_str_to_str(resource) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let cm: Option<ConsistencyMode> = if consistency.is_null() {
+        None
+    } else {
+        match c_str_to_str(consistency) {
+            Ok(s) => match s.as_str() {
+                "minimize_latency" => Some(ConsistencyMode::MinimizeLatency),
+                "fully_consistent" => Some(ConsistencyMode::FullyConsistent),
+                _ => None,
+            },
+            Err(_) => None,
+        }
+    };
+    let subject_id = match SubjectId::new(&subject_str) {
+        Ok(s) => s,
+        Err(e) => return error_string(&e.to_string()),
+    };
+    let resource_id = match ResourceId::new(&resource_str) {
+        Ok(r) => r,
+        Err(e) => return error_string(&e.to_string()),
+    };
+    match eng.explain_v2(&subject_id, &permission_str, &resource_id, cm) {
+        Ok(result) => {
+            let json = serde_json::to_string(&result).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_who_can_access(
+    engine: *const AegisEngine,
+    permission: *const libc::c_char,
+    resource: *const libc::c_char,
+    page_offset: u64,
+    page_limit: u64,
+    include_paths: bool,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let permission_str = match c_str_to_str(permission) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let resource_str = match c_str_to_str(resource) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let resource_id = match ResourceId::new(&resource_str) {
+        Ok(r) => r,
+        Err(e) => return error_string(&e.to_string()),
+    };
+    let pagination = PaginationParams {
+        limit: page_limit,
+        cursor: Some(PaginationCursor { offset: page_offset, revision: Revision::from(0) }),
+    };
+    match eng.who_can_access(&permission_str, &resource_id, &pagination, include_paths, 10, 5000) {
+        Ok(result) => {
+            let json = serde_json::to_string(&result).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_access_diff(
+    engine: *const AegisEngine,
+    schema_before_json: *const libc::c_char,
+    schema_after_json: *const libc::c_char,
+    max_checks: i64,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let before_str = match c_str_to_str(schema_before_json) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let after_str = match c_str_to_str(schema_after_json) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let schema_before: Schema = match serde_json::from_str(&before_str) {
+        Ok(s) => s,
+        Err(e) => return error_string(&e.to_string()),
+    };
+    let schema_after: Schema = match serde_json::from_str(&after_str) {
+        Ok(s) => s,
+        Err(e) => return error_string(&e.to_string()),
+    };
+    let mc = if max_checks > 0 { Some(max_checks as u64) } else { None };
+    match eng.access_diff(&schema_before, &schema_after, None, mc) {
+        Ok(result) => {
+            let json = serde_json::to_string(&result).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_list_policy_versions(
+    engine: *const AegisEngine,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    match eng.list_policy_versions() {
+        Ok(result) => {
+            let json = serde_json::to_string(&result).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_rollback_policy(
+    engine: *const AegisEngine,
+    version: u32,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    match eng.rollback_policy(version) {
+        Ok(_) => CString::new("ok").unwrap_or_default().into_raw(),
+        Err(e) => error_string(&e.to_string()),
     }
 }
 

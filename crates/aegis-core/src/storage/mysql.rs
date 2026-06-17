@@ -1,7 +1,8 @@
 use crate::error::{AegisError, AegisResult};
 use crate::util::redact::Redacted;
 use crate::storage::traits::{
-    BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
+    BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
+    TupleFilter,
 };
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId,
@@ -851,11 +852,17 @@ impl StorageBackend for MysqlStorage {
                     passed: true,
                     details: vec!["ok".to_string()],
                     backend_type: BackendType::Mysql,
+                    tenant_leakage_detected: false,
+                    leaked_crossings: vec![],
+                    orphaned_tuple_count: 0,
                 }),
                 Err(e) => Ok(IntegrityReport {
                     passed: false,
                     details: vec![e.to_string()],
                     backend_type: BackendType::Mysql,
+                    tenant_leakage_detected: false,
+                    leaked_crossings: vec![],
+                    orphaned_tuple_count: 0,
                 }),
             }
         })
@@ -1142,6 +1149,60 @@ impl StorageBackend for MysqlStorage {
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             Ok(())
+        })
+    }
+
+    fn list_policy_versions(&self) -> AegisResult<Vec<PolicyVersion>> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            let rows = conn
+                .exec(
+                    "SELECT version, schema, created_at, description FROM _aegis_policy_versions ORDER BY version ASC",
+                    (),
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let mut versions = Vec::new();
+            for row in rows {
+                let (version, schema, created_at, description): (i64, String, String, String) =
+                    mysql_async::from_row(row);
+                versions.push(PolicyVersion {
+                    version: version as u32,
+                    schema,
+                    created_at,
+                    description,
+                });
+            }
+            Ok(versions)
+        })
+    }
+
+    fn save_policy_version(&self, version: &PolicyVersion) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            conn.exec_drop(
+                "REPLACE INTO _aegis_policy_versions (version, schema, created_at, description) VALUES (?, ?, ?, ?)",
+                (version.version as i64, &version.schema, &version.created_at, &version.description),
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn load_policy_version(&self, version: u32) -> AegisResult<Option<String>> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            let rows = conn
+                .exec_first(
+                    "SELECT schema FROM _aegis_policy_versions WHERE version = ?",
+                    (version as i64,),
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            Ok(rows.map(|(s,): (String,)| s))
         })
     }
 }

@@ -1,6 +1,7 @@
 use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
-    BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
+    BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
+    TupleFilter,
 };
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId,
@@ -1041,11 +1042,17 @@ impl StorageBackend for PostgresStorage {
                     passed: true,
                     details: vec!["ok".to_string()],
                     backend_type: BackendType::Postgres,
+                    tenant_leakage_detected: false,
+                    leaked_crossings: vec![],
+                    orphaned_tuple_count: 0,
                 }),
                 Err(e) => Ok(IntegrityReport {
                     passed: false,
                     details: vec![e.to_string()],
                     backend_type: BackendType::Postgres,
+                    tenant_leakage_detected: false,
+                    leaked_crossings: vec![],
+                    orphaned_tuple_count: 0,
                 }),
             }
         })
@@ -1353,6 +1360,65 @@ impl StorageBackend for PostgresStorage {
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             Ok(())
+        })
+    }
+
+    fn list_policy_versions(&self) -> AegisResult<Vec<PolicyVersion>> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let rows = client
+                .query(
+                    "SELECT version, schema, created_at, description FROM _aegis_policy_versions ORDER BY version ASC",
+                    &[],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            let versions = rows
+                .iter()
+                .map(|row| {
+                    let version: i32 = row.get(0);
+                    let schema: String = row.get(1);
+                    let created_at: String = row.get(2);
+                    let description: String = row.get(3);
+                    PolicyVersion {
+                        version: version as u32,
+                        schema,
+                        created_at,
+                        description,
+                    }
+                })
+                .collect();
+            Ok(versions)
+        })
+    }
+
+    fn save_policy_version(&self, version: &PolicyVersion) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            client
+                .execute(
+                    "INSERT INTO _aegis_policy_versions (version, schema, created_at, description) VALUES ($1, $2, $3, $4) ON CONFLICT (version) DO UPDATE SET schema = $2, created_at = $3, description = $4",
+                    &[&(version.version as i32), &version.schema, &version.created_at, &version.description],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn load_policy_version(&self, version: u32) -> AegisResult<Option<String>> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let rows = client
+                .query(
+                    "SELECT schema FROM _aegis_policy_versions WHERE version = $1",
+                    &[&(version as i32)],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+            Ok(rows.first().map(|row| row.get(0)))
         })
     }
 }

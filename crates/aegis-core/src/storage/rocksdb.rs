@@ -1,6 +1,7 @@
 use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
-    BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
+    BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
+    TupleFilter,
 };
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId,
@@ -984,6 +985,9 @@ impl StorageBackend for RocksDbStorage {
                     passed: false,
                     details: vec!["missing meta column family".to_string()],
                     backend_type: BackendType::RocksDB,
+                    tenant_leakage_detected: false,
+                    leaked_crossings: vec![],
+                    orphaned_tuple_count: 0,
                 })
             }
         };
@@ -992,16 +996,25 @@ impl StorageBackend for RocksDbStorage {
                 passed: true,
                 details: vec!["ok".to_string()],
                 backend_type: BackendType::RocksDB,
+                tenant_leakage_detected: false,
+                leaked_crossings: vec![],
+                orphaned_tuple_count: 0,
             }),
             Ok(None) => Ok(IntegrityReport {
                 passed: false,
                 details: vec!["revision counter not found".to_string()],
                 backend_type: BackendType::RocksDB,
+                tenant_leakage_detected: false,
+                leaked_crossings: vec![],
+                orphaned_tuple_count: 0,
             }),
             Err(e) => Ok(IntegrityReport {
                 passed: false,
                 details: vec![e.to_string()],
                 backend_type: BackendType::RocksDB,
+                tenant_leakage_detected: false,
+                leaked_crossings: vec![],
+                orphaned_tuple_count: 0,
             }),
         }
     }
@@ -1350,6 +1363,65 @@ impl StorageBackend for RocksDbStorage {
         self.db.write(batch)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         Ok(())
+    }
+
+    fn list_policy_versions(&self) -> AegisResult<Vec<PolicyVersion>> {
+        let versions_cf = self
+            .db
+            .cf_handle("policy_versions")
+            .ok_or_else(|| AegisError::StorageConnection("missing policy_versions cf".into()))?;
+
+        let mut iter = self.db.raw_iterator_cf(&versions_cf);
+        iter.seek_to_first();
+
+        let mut versions = Vec::new();
+        while iter.valid() {
+            if let (Some(key), Some(value)) = (iter.key(), iter.value()) {
+                let key_str = String::from_utf8_lossy(key);
+                if let Ok(version_num) = key_str.parse::<u32>() {
+                    if let Ok(pv) = serde_json::from_slice::<PolicyVersion>(value) {
+                        versions.push(pv);
+                    }
+                }
+            }
+            iter.next();
+        }
+        versions.sort_by_key(|v| v.version);
+        Ok(versions)
+    }
+
+    fn save_policy_version(&self, version: &PolicyVersion) -> AegisResult<()> {
+        let versions_cf = self
+            .db
+            .cf_handle("policy_versions")
+            .ok_or_else(|| AegisError::StorageConnection("missing policy_versions cf".into()))?;
+
+        let key = version.version.to_string();
+        let value = serde_json::to_string(version)
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+
+        self.db
+            .put_cf(&versions_cf, key.as_bytes(), value.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_policy_version(&self, version: u32) -> AegisResult<Option<String>> {
+        let versions_cf = self
+            .db
+            .cf_handle("policy_versions")
+            .ok_or_else(|| AegisError::StorageConnection("missing policy_versions cf".into()))?;
+
+        let key = version.to_string();
+        match self.db.get_cf(&versions_cf, key.as_bytes()) {
+            Ok(Some(val)) => {
+                let pv: PolicyVersion = serde_json::from_slice(&val)
+                    .map_err(|e| AegisError::Internal(e.to_string()))?;
+                Ok(Some(pv.schema))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(AegisError::StorageQuery(e.to_string())),
+        }
     }
 }
 

@@ -14,6 +14,7 @@ aegis-core = { path = "../aegis-core" }
 chrono = "0.4"
 napi = { version = "2", features = ["napi8", "serde-json"] }
 napi-derive = "2"
+serde_json.workspace = true
 
 [lib]
 crate-type = ["cdylib"]

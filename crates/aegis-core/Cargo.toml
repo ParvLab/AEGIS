@@ -18,6 +18,7 @@ rusqlite = { workspace = true, optional = true }
 r2d2 = { workspace = true, optional = true }
 r2d2_sqlite = { workspace = true, optional = true }
 serde_json.workspace = true
+async-trait = { workspace = true }
 sha2 = "0.10"
 ed25519-dalek = { version = "2", features = ["digest"] }
 rand = "0.8"
@@ -42,10 +43,24 @@ libc = { workspace = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen = { version = "0.2" }
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "IdbDatabase", "IdbFactory", "IdbOpenDbRequest", "IdbRequest",
+    "IdbTransaction", "IdbTransactionMode", "IdbObjectStore",
+    "IdbVersionChangeEvent", "DomException", "Window",
+    "Performance", "console",
+] }
 
 [dev-dependencies]
-criterion = "0.5"
 fastrand = "2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.5"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
 
 [[bench]]
 name = "check"
@@ -66,5 +81,6 @@ mysql = ["dep:mysql_async", "tokio"]
 rocksdb = ["dep:rocksdb"]
 telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tracing-subscriber"]
 test-utils = ["sqlite"]
-wasm = []
+wasm = ["async-storage"]
+async-storage = []
 

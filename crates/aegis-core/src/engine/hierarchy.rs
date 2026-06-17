@@ -83,9 +83,10 @@ pub fn is_ancestor(
     Ok(ancestors.iter().any(|a| a == ancestor))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+    #[cfg(feature = "sqlite")]
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
     use crate::types::RelationshipTuple;
 

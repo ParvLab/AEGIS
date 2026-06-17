@@ -44,6 +44,43 @@ export interface ExplainResult {
   durationMs: number;
 }
 
+export interface ExplainV2TraceStep {
+  subject: string;
+  relation: string;
+  object: string;
+  result: boolean;
+  depth: number;
+}
+
+export interface ExplainV2Result {
+  allowed: boolean;
+  revision: number;
+  trace: ExplainV2TraceStep[];
+  resolvedVia: string;
+  durationMs: number;
+  cacheHit: boolean;
+}
+
+export interface WhoCanAccessResult {
+  subjects: Array<{ subject: string; path?: string[] }>;
+  nextOffset: number;
+  totalCount: number;
+}
+
+export interface AccessDiffResult {
+  changed: boolean;
+  added: Array<{ subject: string; permission: string; resource: string }>;
+  removed: Array<{ subject: string; permission: string; resource: string }>;
+  summary: string;
+}
+
+export interface PolicyVersion {
+  version: number;
+  schema: string;
+  created_at: string;
+  description?: string;
+}
+
 export interface ConnectionStats {
   readActive: number;
   readIdle: number;
@@ -169,6 +206,13 @@ export class JsAegis {
   transaction(): JsTransaction;
   invalidateCache(): void;
   isClosed(): boolean;
+
+  // V6 Analysis APIs
+  explainV2(subject: string, permission: string, resource: string, consistency?: string): ExplainV2Result;
+  whoCanAccess(permission: string, resource: string, pageOffset?: number, pageLimit?: number, includePaths?: boolean): WhoCanAccessResult;
+  accessDiff(schemaBefore: string, schemaAfter: string, maxChecks?: number): AccessDiffResult;
+  listPolicyVersions(): PolicyVersion[];
+  rollbackPolicy(version: number): void;
 }
 
 export interface EngineConfig {

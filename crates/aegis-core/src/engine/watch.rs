@@ -1,5 +1,6 @@
 use crate::types::Revision;
 use chrono::{DateTime, Utc};
+use serde_json;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
@@ -10,6 +11,16 @@ pub type WatchSender = std::sync::mpsc::Sender<WatchEvent>;
 pub enum WatchEventType {
     TupleAdded,
     TupleRemoved,
+    /// Emitted when a policy version is created (schema published).
+    PolicyVersionCreated,
+    /// Emitted when a rollback occurs.
+    PolicyRolledBack,
+    /// Emitted when an integrity check finds an inconsistency.
+    IntegrityFinding,
+    /// Emitted when a scheduled analysis run completes.
+    AnalysisCompleted,
+    /// Emitted when the rate limiter throttles an operation.
+    RateLimitWarning,
 }
 
 #[derive(Debug, Clone)]
@@ -20,6 +31,9 @@ pub struct WatchEvent {
     pub object: String,
     pub revision: Revision,
     pub timestamp: DateTime<Utc>,
+    /// Arbitrary metadata carried by operational events (policy, analysis, rate-limit).
+    /// For tuple events (TupleAdded / TupleRemoved) this is None.
+    pub payload: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -127,10 +141,11 @@ impl Drop for WatchSubscription {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
     use crate::engine::GraphEngine;
+    #[cfg(feature = "sqlite")]
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
     use crate::storage::StorageBackend;
     use crate::types::*;

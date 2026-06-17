@@ -1,3 +1,4 @@
+#![cfg(feature = "sqlite")]
 use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};

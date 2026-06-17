@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Worker Isolation Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 600px; margin: 0 auto; padding: 16px; }
+  pre { background: #f5f5f5; padding: 8px; border-radius: 4px; }
+  .pass { color: #090; }
+  .fail { color: #c00; }
+</style>
+</head>
+<body>
+<h1>Worker Isolation Verification</h1>
+<p>This test proves the main thread is NOT blocked during WASM operations in Worker mode.</p>
+
+<pre id="output">Running...</pre>
+
+<script type="module">
+import { AegisEngine } from '../src/index.ts';
+
+const out = document.getElementById('output');
+
+function log(line) {
+  out.textContent += '\n' + line;
+}
+
+async function main() {
+  try {
+    const engine = new AegisEngine({ useWorker: true });
+    const schema = JSON.stringify({
+      namespaces: [{
+        name: "doc",
+        relations: { owner: {}, writer: { union: ["owner"] }, reader: { union: ["writer"] } }
+      }]
+    });
+
+    // Track main-thread responsiveness
+    let mainThreadTicks = 0;
+    let tickErrors = 0;
+    const interval = setInterval(() => { mainThreadTicks++; }, 5);
+
+    // Initialize
+    await engine.init(schema);
+
+    // Fire 500 rapid operations through the worker
+    const promises = [];
+    for (let i = 0; i < 500; i++) {
+      promises.push(engine.write(`user:u${i}`, "reader", "doc:loadtest"));
+    }
+    await Promise.all(promises);
+
+    clearInterval(interval);
+
+    // Verify: during the load, the main thread should have received ticks
+    const expectedMinTicks = 10; // 500 writes at ~5ms interval = at least 10 ticks
+    if (mainThreadTicks >= expectedMinTicks) {
+      out.innerHTML = `<span class="pass">PASS</span>\nMain thread received ${mainThreadTicks} ticks during 500 Worker writes (expected >= ${expectedMinTicks}).\nMain thread was NOT blocked.`;
+    } else {
+      out.innerHTML = `<span class="fail">FAIL</span>\nMain thread only received ${mainThreadTicks} ticks (expected >= ${expectedMinTicks}).\nWorker may have blocked the main thread.`;
+    }
+
+    engine.destroy();
+  } catch (e) {
+    out.innerHTML = `<span class="fail">ERROR</span>\n${e}`;
+  }
+}
+
+main();
+</script>
+</body>
+</html>

@@ -1,6 +1,7 @@
 use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
-    BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
+    BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
+    TupleFilter,
 };
     use crate::types::{
         AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId, Relation,
@@ -1316,6 +1317,9 @@ impl StorageBackend for SqliteStorage {
             passed,
             details,
             backend_type: BackendType::Sqlite,
+            tenant_leakage_detected: false,
+            leaked_crossings: vec![],
+            orphaned_tuple_count: 0,
         })
     }
 
@@ -1535,6 +1539,60 @@ impl StorageBackend for SqliteStorage {
         }
 
         Ok(None)
+    }
+
+    fn list_policy_versions(&self) -> AegisResult<Vec<PolicyVersion>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT version, schema, created_at, description
+                 FROM _aegis_policy_versions
+                 ORDER BY version ASC",
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        let rows = stmt
+            .query_map([], |row| {
+                let version: i64 = row.get(0)?;
+                let schema: String = row.get(1)?;
+                let created_at: String = row.get(2)?;
+                let description: String = row.get(3)?;
+                Ok(PolicyVersion {
+                    version: version as u32,
+                    schema,
+                    created_at,
+                    description,
+                })
+            })
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        let mut versions = Vec::new();
+        for row in rows {
+            versions.push(row.map_err(|e| AegisError::StorageQuery(e.to_string()))?);
+        }
+        Ok(versions)
+    }
+
+    fn save_policy_version(&self, version: &PolicyVersion) -> AegisResult<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO _aegis_policy_versions (version, schema, created_at, description) VALUES (?1, ?2, ?3, ?4)",
+            params![version.version as i64, version.schema, version.created_at, version.description],
+        )
+        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_policy_version(&self, version: u32) -> AegisResult<Option<String>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT schema FROM _aegis_policy_versions WHERE version = ?1")
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        let result = stmt
+            .query_row(params![version as i64], |row| row.get::<_, String>(0))
+            .ok();
+        Ok(result)
     }
 }
 

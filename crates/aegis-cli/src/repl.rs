@@ -268,10 +268,16 @@ fn poll_watch(state: &ReplState) {
                     let icon = match event.event_type {
                         WatchEventType::TupleAdded => "+",
                         WatchEventType::TupleRemoved => "-",
+                        WatchEventType::PolicyVersionCreated => "P",
+                        WatchEventType::PolicyRolledBack => "R",
+                        WatchEventType::IntegrityFinding => "!",
+                        WatchEventType::AnalysisCompleted => "A",
+                        WatchEventType::RateLimitWarning => "W",
                     };
                     if state.json_mode {
-                        println!(r#"{{"event_type":"{:?}","subject":"{}","relation":"{}","object":"{}","revision":{}}}"#,
-                            event.event_type, event.subject, event.relation, event.object, event.revision.as_u64());
+                        println!(r#"{{"event_type":"{:?}","subject":"{}","relation":"{}","object":"{}","revision":{},"payload":{}}}"#,
+                            event.event_type, event.subject, event.relation, event.object, event.revision.as_u64(),
+                            event.payload.as_ref().map(|v| v.to_string()).unwrap_or_default());
                     } else {
                         println!(
                             "  {} {} {} {} (rev={})",

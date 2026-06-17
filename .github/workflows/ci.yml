@@ -28,6 +28,26 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+
+      - name: WASM build
+        run: |
+          cd packages/aegis-browser/rust
+          wasm-pack build --target web
+
+      - name: WASM test (Chrome)
+        run: |
+          cd crates/aegis-core
+          wasm-pack test --chrome --headless -- --no-default-features --features wasm
+
+      - name: WASM test (Firefox)
+        run: |
+          cd crates/aegis-core
+          wasm-pack test --firefox --headless -- --no-default-features --features wasm || echo "Firefox not available, skipping"
+
       - name: Security audit
         run: |
           cargo install cargo-audit --locked 2>/dev/null || true

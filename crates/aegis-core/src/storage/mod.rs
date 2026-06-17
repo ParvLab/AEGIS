@@ -8,6 +8,9 @@ pub mod rocksdb;
 #[cfg(feature = "mysql")]
 pub mod mysql;
 pub mod memory;
+pub mod async_traits;
+#[cfg(target_arch = "wasm32")]
+pub mod indexeddb;
 
 #[cfg(feature = "sqlite")]
 pub use sqlite::SqliteStorage;

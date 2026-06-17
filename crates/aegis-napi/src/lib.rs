@@ -13,8 +13,8 @@ use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::{StorageBackend, StorageTransaction, TupleFilter};
 use aegis_core::types::{
-    AuditEntry, ConsistencyMode, PaginationParams, PartitionId, Relation, RelationshipTuple,
-    ResourceId, Revision, SubjectId, TupleKey,
+    AuditEntry, ConsistencyMode, PaginationCursor, PaginationParams, PartitionId, Relation,
+    RelationshipTuple, ResourceId, Revision, Schema, SubjectId, TupleKey,
 };
 use chrono::{DateTime, Utc};
 use napi_derive::napi;
@@ -1111,6 +1111,116 @@ impl JsAegis {
                 inner: Mutex::new(Some(txn)),
                 consumed: AtomicBool::new(false),
             })
+        })
+    }
+}
+
+// ── V6 Analysis APIs ──────────────────────────────────────────────────────────────────
+
+#[napi]
+impl JsAegis {
+    #[napi]
+    pub fn explain_v2(
+        &self,
+        subject: String,
+        permission: String,
+        resource: String,
+        consistency: Option<String>,
+    ) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let subject_id = SubjectId::new(&subject)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let resource_id = ResourceId::new(&resource)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let cm = parse_consistency(consistency)?;
+            let result = self
+                .engine
+                .explain_v2(&subject_id, &permission, &resource_id, cm)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&result)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn who_can_access(
+        &self,
+        permission: String,
+        resource: String,
+        page_offset: Option<f64>,
+        page_limit: Option<f64>,
+        include_paths: Option<bool>,
+    ) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let resource_id = ResourceId::new(&resource)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let pagination = PaginationParams {
+                limit: page_limit.unwrap_or(100.0) as u64,
+                cursor: page_offset.map(|o| PaginationCursor {
+                    offset: o as u64,
+                    revision: Revision::from(0),
+                }),
+            };
+            let result = self
+                .engine
+                .who_can_access(
+                    &permission,
+                    &resource_id,
+                    &pagination,
+                    include_paths.unwrap_or(false),
+                    10,
+                    5000,
+                )
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&result)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn access_diff(
+        &self,
+        schema_before_json: String,
+        schema_after_json: String,
+        max_checks: Option<i64>,
+    ) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let schema_before: Schema = serde_json::from_str(&schema_before_json)
+                .map_err(|e| napi::Error::from_reason(format!("invalid schema_before: {}", e)))?;
+            let schema_after: Schema = serde_json::from_str(&schema_after_json)
+                .map_err(|e| napi::Error::from_reason(format!("invalid schema_after: {}", e)))?;
+            let result = self
+                .engine
+                .access_diff(&schema_before, &schema_after, None, max_checks.map(|v| v as u64))
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&result)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn list_policy_versions(&self) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let result = self
+                .engine
+                .list_policy_versions()
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&result)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn rollback_policy(&self, version: u32) -> napi::Result<()> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            self.engine
+                .rollback_policy(version)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
         })
     }
 }

@@ -11,3 +11,6 @@ crate-type = ["cdylib"]
 [dependencies]
 aegis-core = { path = "../../crates/aegis-core", default-features = false, features = ["wasm"] }
 wasm-bindgen = "0.2"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

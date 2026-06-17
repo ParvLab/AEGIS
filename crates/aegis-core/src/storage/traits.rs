@@ -1,4 +1,5 @@
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use crate::error::AegisResult;
 use crate::types::{
     AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationParams, PartitionId,
@@ -245,6 +246,15 @@ pub trait StorageBackend: Send + Sync {
     fn verify_audit_chain(&self, _partition_id: &PartitionId) -> AegisResult<Option<String>> {
         Ok(None)
     }
+
+    /// List all stored policy versions.
+    fn list_policy_versions(&self) -> AegisResult<Vec<PolicyVersion>>;
+
+    /// Store a new policy version (snapshot of current schema).
+    fn save_policy_version(&self, version: &PolicyVersion) -> AegisResult<()>;
+
+    /// Load the schema JSON for a specific policy version.
+    fn load_policy_version(&self, version: u32) -> AegisResult<Option<String>>;
 }
 
 /// A storage transaction supporting atomic multi-tuple writes within a partition.
@@ -312,6 +322,15 @@ impl std::fmt::Display for BackendType {
     }
 }
 
+/// A policy version entry stored in the backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolicyVersion {
+    pub version: u32,
+    pub schema: String,
+    pub created_at: String,
+    pub description: String,
+}
+
 /// Filter parameters for querying tuples.
 #[derive(Debug, Clone, Default)]
 pub struct TupleFilter {
@@ -330,4 +349,7 @@ pub struct IntegrityReport {
     pub passed: bool,
     pub details: Vec<String>,
     pub backend_type: BackendType,
+    pub tenant_leakage_detected: bool,
+    pub leaked_crossings: Vec<String>,
+    pub orphaned_tuple_count: usize,
 }

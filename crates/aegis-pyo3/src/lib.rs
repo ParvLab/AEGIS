@@ -538,6 +538,20 @@ impl PyAegis {
         Ok(tuples.iter().map(tuple_to_py).collect())
     }
 
+    #[pyo3(signature = (permission, resource, page_offset=None, page_limit=None, include_paths=None))]
+    fn who_can_access(&self, permission: &str, resource: &str, page_offset: Option<u64>, page_limit: Option<u64>, include_paths: Option<bool>) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let resource_id = ResourceId::new(resource).map_err(py_err)?;
+        let cursor = page_offset.map(|offset| PaginationCursor { offset, revision: Revision::from(0) });
+        let pagination = PaginationParams { limit: page_limit.unwrap_or(100), cursor };
+        let include = include_paths.unwrap_or(false);
+        let result = self.engine.who_can_access(permission, &resource_id, &pagination, include, 10, 5000)
+            .map_err(py_err)?;
+        serde_json::to_string(&result).map_err(py_err)
+    }
+
     #[pyo3(signature = (tuples))]
     fn write_batch(&self, tuples: Vec<PyTuple>) -> PyResult<PyWriteResult> {
         if self.closed.load(Ordering::Relaxed) {
@@ -727,6 +741,47 @@ impl PyAegis {
             });
         });
         Ok(())
+    }
+
+    #[pyo3(signature = (subject, permission, resource, consistency=None))]
+    fn explain_v2(&self, subject: &str, permission: &str, resource: &str, consistency: Option<String>) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let subject_id = SubjectId::new(subject).map_err(py_err)?;
+        let resource_id = ResourceId::new(resource).map_err(py_err)?;
+        let cm = parse_consistency(consistency)?;
+        let result = self.engine.explain_v2(&subject_id, permission, &resource_id, cm)
+            .map_err(py_err)?;
+        serde_json::to_string(&result).map_err(py_err)
+    }
+
+    fn list_policy_versions(&self) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let result = self.engine.list_policy_versions().map_err(py_err)?;
+        serde_json::to_string(&result).map_err(py_err)
+    }
+
+    fn rollback_policy(&self, version: u32) -> PyResult<()> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        self.engine.rollback_policy(version).map_err(py_err)?;
+        Ok(())
+    }
+
+    #[pyo3(signature = (schema_before_json, schema_after_json, max_checks=None))]
+    fn access_diff(&self, schema_before_json: &str, schema_after_json: &str, max_checks: Option<u64>) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let schema_before: Schema = serde_json::from_str(schema_before_json).map_err(py_err)?;
+        let schema_after: Schema = serde_json::from_str(schema_after_json).map_err(py_err)?;
+        let result = self.engine.access_diff(&schema_before, &schema_after, None, max_checks)
+            .map_err(py_err)?;
+        serde_json::to_string(&result).map_err(py_err)
     }
 
     fn close(&self) -> PyResult<()> {

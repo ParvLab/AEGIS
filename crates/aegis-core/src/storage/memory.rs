@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
-    BackendType, IntegrityReport, StorageBackend, StorageMeta, StorageTransaction, TupleFilter,
+    BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
+    TupleFilter,
 };
 use crate::types::{
     AuditEntry, PaginatedTuples, PaginationParams, PartitionId, Relation,
@@ -22,6 +23,7 @@ struct Inner {
     schema_version: u32,
     node_id: Uuid,
     actor_identity: Option<String>,
+    policy_versions: HashMap<u32, PolicyVersion>,
 }
 
 pub struct InMemoryStorage {
@@ -38,6 +40,7 @@ impl InMemoryStorage {
                 schema_version: 0,
                 node_id: Uuid::new_v4(),
                 actor_identity: None,
+                policy_versions: HashMap::new(),
             })),
         }
     }
@@ -328,6 +331,9 @@ impl StorageBackend for InMemoryStorage {
             passed: true,
             details: vec!["in-memory storage: integrity check passed".to_string()],
             backend_type: BackendType::InMemory,
+            tenant_leakage_detected: false,
+            leaked_crossings: vec![],
+            orphaned_tuple_count: 0,
         })
     }
 
@@ -415,6 +421,24 @@ impl StorageBackend for InMemoryStorage {
         let prev = inner.actor_identity.clone();
         inner.actor_identity = identity;
         prev
+    }
+
+    fn list_policy_versions(&self) -> AegisResult<Vec<PolicyVersion>> {
+        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut versions: Vec<PolicyVersion> = inner.policy_versions.values().cloned().collect();
+        versions.sort_by_key(|v| v.version);
+        Ok(versions)
+    }
+
+    fn save_policy_version(&self, version: &PolicyVersion) -> AegisResult<()> {
+        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        inner.policy_versions.insert(version.version, version.clone());
+        Ok(())
+    }
+
+    fn load_policy_version(&self, version: u32) -> AegisResult<Option<String>> {
+        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        Ok(inner.policy_versions.get(&version).map(|v| v.schema.clone()))
     }
 }
 

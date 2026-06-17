@@ -1,3 +1,4 @@
+#![cfg(feature = "sqlite")]
 use aegis_core::engine::GraphEngine;
 use aegis_core::engine::{acl, condition, rbac};
 use aegis_core::engine::condition::ConditionEvalContext;

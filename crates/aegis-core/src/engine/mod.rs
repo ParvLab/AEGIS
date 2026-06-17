@@ -1,15 +1,19 @@
 pub mod acl;
+pub mod analysis;
 pub mod cache;
 pub mod condition;
 pub mod gdpr;
 pub mod hierarchy;
 pub mod hooks;
 pub mod partition;
+pub mod enforcement_history;
+pub mod policy_lifecycle;
 #[cfg(feature = "hot-reload")]
 pub mod hot_reload;
 pub mod migration;
 pub mod policy;
 pub mod ratelimit;
+pub mod scheduler;
 pub mod rbac;
 pub mod traversal;
 pub mod watch;
@@ -73,6 +77,15 @@ pub struct GraphEngine {
     last_integrity_check: std::sync::Mutex<Option<std::time::Instant>>,
     integrity_check_interval: std::sync::RwLock<Option<std::time::Duration>>,
     wal_checkpoint_threshold: Option<f64>,
+    #[cfg(feature = "async-storage")]
+    async_storage: Option<Box<dyn crate::storage::async_traits::AsyncStorageBackend>>,
+    analysis_cache: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u64, String)>>,
+    drafts: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, policy_lifecycle::PolicyDraft>>,
+    pub(crate) analysis_schedules: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, scheduler::AnalysisSchedule>>,
+    pub(crate) analysis_runs: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, scheduler::AnalysisRun>>,
+    pub(crate) enforcement_config: std::sync::Mutex<enforcement_history::EnforcementHistoryConfig>,
+    pub(crate) enforcement_events: std::sync::Mutex<std::collections::VecDeque<enforcement_history::EnforcementEvent>>,
+    pub(crate) enforcement_rate_tracker: std::sync::Mutex<enforcement_history::RateTracker>,
 }
 
 impl GraphEngine {
@@ -124,6 +137,15 @@ impl GraphEngine {
             last_integrity_check: std::sync::Mutex::new(None),
             integrity_check_interval: std::sync::RwLock::new(None),
             wal_checkpoint_threshold: None,
+            #[cfg(feature = "async-storage")]
+            async_storage: None,
+            analysis_cache: std::sync::Mutex::new(std::collections::HashMap::new()),
+            drafts: std::sync::Mutex::new(std::collections::HashMap::new()),
+            analysis_schedules: std::sync::Mutex::new(std::collections::HashMap::new()),
+            analysis_runs: std::sync::Mutex::new(std::collections::HashMap::new()),
+            enforcement_config: std::sync::Mutex::new(enforcement_history::EnforcementHistoryConfig::default()),
+            enforcement_events: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            enforcement_rate_tracker: std::sync::Mutex::new(enforcement_history::RateTracker::new(10_000)),
         }
     }
 
@@ -256,7 +278,34 @@ impl GraphEngine {
         self.watch(WatchFilter::default())
     }
 
-    fn emit_watch_event(&self, event_type: WatchEventType, subject: &str, relation: &str, object: &str, revision: Revision) {
+    /// Subscribe to a specific set of event types (convenience wrapper).
+    pub fn subscribe(&self, event_types: Vec<WatchEventType>) -> WatchSubscription {
+        self.watch(WatchFilter {
+            event_types: Some(event_types),
+            ..Default::default()
+        })
+    }
+
+    fn emit_watch_event(
+        &self,
+        event_type: WatchEventType,
+        subject: &str,
+        relation: &str,
+        object: &str,
+        revision: Revision,
+    ) {
+        self.emit_watch_event_with_payload(event_type, subject, relation, object, revision, None)
+    }
+
+    fn emit_watch_event_with_payload(
+        &self,
+        event_type: WatchEventType,
+        subject: &str,
+        relation: &str,
+        object: &str,
+        revision: Revision,
+        payload: Option<serde_json::Value>,
+    ) {
         let event = WatchEvent {
             event_type,
             subject: subject.to_string(),
@@ -264,6 +313,7 @@ impl GraphEngine {
             object: object.to_string(),
             revision,
             timestamp: chrono::Utc::now(),
+            payload,
         };
         let Ok(mut watchers) = self.watchers.lock() else { return };
         watchers.retain(|_, (filter, tx)| {
@@ -293,6 +343,16 @@ impl GraphEngine {
     /// The first `allow` short-circuits remaining evaluations.
     pub fn with_parallel_eval(self, enabled: bool) -> Self {
         self.parallel_eval.store(enabled, Ordering::Relaxed);
+        self
+    }
+
+    /// Configure an async storage backend (required for WASM/IndexedDB targets).
+    #[cfg(feature = "async-storage")]
+    pub fn with_async_storage(
+        mut self,
+        storage: Box<dyn crate::storage::async_traits::AsyncStorageBackend>,
+    ) -> Self {
+        self.async_storage = Some(storage);
         self
     }
 
@@ -690,6 +750,145 @@ impl GraphEngine {
         self.check_inner(subject, permission, resource, consistency, true, Some(context))
     }
 
+    /// Async check: evaluate authorization using the async storage backend.
+    ///
+    /// Mirrors the sync `check()` but operates on `AsyncStorageBackend`.
+    /// For V5 this provides basic cache-first and permission-resolution semantics.
+    /// Full traversal with async storage delegation is planned for V5-M3.
+    #[cfg(feature = "async-storage")]
+    pub async fn async_check(
+        &self,
+        subject: &SubjectId,
+        permission: &str,
+        resource: &ResourceId,
+        consistency: Option<ConsistencyMode>,
+    ) -> AegisResult<CheckResult> {
+        let backend_str = self
+            .async_storage
+            .as_ref()
+            .map(|s| s.capabilities().backend_type.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        let _span = span!(
+            Level::INFO,
+            "aegis.async_check",
+            subject = subject.as_str(),
+            permission = permission,
+            resource = resource.as_str(),
+            backend = &backend_str as &str,
+        )
+        .entered();
+        let _start = std::time::Instant::now();
+
+        let rl_key = format!("async_check:{}", resource.as_str());
+        if let Err(e) = self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Check) {
+            crate::telemetry::inc_check_error();
+            return Err(e);
+        }
+
+        let storage = self.async_storage.as_ref().ok_or_else(|| {
+            AegisError::Internal("async storage not configured".to_string())
+        })?;
+
+        let revision = match consistency {
+            Some(ConsistencyMode::AtRevision(rev)) => {
+                let current = storage.current_revision(&self.active_partition_id()).await?;
+                if rev > current {
+                    return Err(AegisError::RevisionFromFuture(rev.as_u64() as usize));
+                }
+                rev
+            }
+            _ => storage.current_revision(&self.active_partition_id()).await?,
+        };
+
+        // Cache check
+        let pid = self.active_partition_id();
+        let from_cache = self.with_cache(|cache| {
+            cache.get(subject.as_str(), permission, resource.as_str(), pid.as_str(), revision)
+        });
+        if let Some(Some(allowed)) = from_cache {
+            info!(
+                allowed = allowed,
+                revision = field::display(&revision),
+                cache_hit = true,
+                "async check cache hit"
+            );
+            crate::telemetry::inc_cache_hit();
+            crate::telemetry::inc_check_total();
+            if allowed { crate::telemetry::inc_check_allowed(); }
+            else { crate::telemetry::inc_check_denied(); }
+            return Ok(CheckResult { allowed, revision });
+        }
+
+        // Resolve permission to relations
+        let resource_type = resource_type_name(resource.as_str());
+        let schema = self.schema.read().unwrap();
+        let resolved = match policy::resolve_permission(&schema, &resource_type, permission) {
+            Some(r) => r,
+            None => {
+                crate::telemetry::inc_check_total();
+                crate::telemetry::inc_check_denied();
+                return Ok(CheckResult { allowed: false, revision });
+            }
+        };
+        drop(schema);
+
+        // Evaluate each candidate relation by checking tuples from async storage
+        let mut allowed = false;
+        for rel_name in &resolved.relations {
+            let rel = match Relation::new(rel_name) {
+                Ok(r) => r,
+                Err(_) => continue,
+            };
+            let tuples = storage.list_by_object(
+                &self.active_partition_id(),
+                resource,
+                Some(&rel),
+                &ConsistencyMode::AtRevision(revision),
+            ).await?;
+
+            for t in &tuples {
+                if t.subject.as_str() == subject.as_str() {
+                    allowed = true;
+                    break;
+                }
+            }
+            if allowed {
+                break;
+            }
+        }
+
+        crate::telemetry::inc_check_total();
+        if allowed { crate::telemetry::inc_check_allowed(); }
+        else { crate::telemetry::inc_check_denied(); }
+
+        if !allowed {
+            self.with_cache(|cache| {
+                cache.insert(
+                    subject.as_str(),
+                    permission,
+                    resource.as_str(),
+                    pid.as_str(),
+                    false,
+                    revision,
+                );
+            });
+            return Ok(CheckResult { allowed: false, revision });
+        }
+
+        self.with_cache(|cache| {
+            cache.insert(
+                subject.as_str(),
+                permission,
+                resource.as_str(),
+                pid.as_str(),
+                true,
+                revision,
+            );
+        });
+
+        Ok(CheckResult { allowed: true, revision })
+    }
+
     /// Internal check implementation with dry_run flag.
     fn check_inner(
         &self,
@@ -853,6 +1052,14 @@ impl GraphEngine {
         } else {
             crate::telemetry::inc_check_denied();
         }
+
+        self.record_enforcement_event(
+            subject.as_str(),
+            permission,
+            resource.as_str(),
+            allowed,
+            revision.as_u64(),
+        );
 
         info!(
             allowed = allowed,
@@ -1087,6 +1294,114 @@ impl GraphEngine {
         Ok(RevisionToken::new(revision, self.node_id))
     }
 
+    /// Async write: write a relationship tuple using the async storage backend.
+    #[cfg(feature = "async-storage")]
+    pub async fn async_write(
+        &self,
+        tuple: &crate::types::RelationshipTuple,
+    ) -> AegisResult<RevisionToken> {
+        let _span = span!(
+            Level::INFO,
+            "aegis.async_write",
+            subject = tuple.subject.as_str(),
+            relation = tuple.relation.as_str(),
+            resource = tuple.object.as_str(),
+        )
+        .entered();
+
+        self.check_closed()?;
+        self.check_authenticated()?;
+        self.maybe_checkpoint_wal();
+
+        let rl_key = format!("async_write:{}", tuple.object.as_str());
+        self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
+
+        let resource_type = resource_type_name(tuple.object.as_str());
+        let schema = self.schema.read().unwrap();
+        let type_def = match schema.types.get(&resource_type) {
+            Some(t) => t,
+            None => return Err(AegisError::UnknownSubjectType(resource_type)),
+        };
+        if !type_def.relations.contains_key(tuple.relation.as_str()) {
+            return Err(AegisError::UnknownRelation {
+                type_name: resource_type,
+                relation: tuple.relation.to_string(),
+            });
+        }
+        drop(schema);
+
+        let storage = self.async_storage.as_ref().ok_or_else(|| {
+            AegisError::Internal("async storage not configured".to_string())
+        })?;
+
+        storage.set_actor_identity(self.active_actor()).await;
+        let revision = storage.write_tuple(&self.active_partition_id(), tuple).await?;
+        crate::telemetry::update_revision_current(revision.as_u64());
+
+        info!(revision = field::display(&revision), "tuple written (async)");
+
+        self.emit_watch_event(
+            WatchEventType::TupleAdded,
+            tuple.subject.as_str(),
+            tuple.relation.as_str(),
+            tuple.object.as_str(),
+            revision,
+        );
+
+        self.hooks.trigger(&hooks::HookEvent::OnWrite {
+            tuple: tuple.clone(),
+        });
+
+        Ok(RevisionToken::new(revision, self.node_id))
+    }
+
+    /// Async delete: delete a tuple by key using the async storage backend.
+    #[cfg(feature = "async-storage")]
+    pub async fn async_delete(
+        &self,
+        key: &crate::types::TupleKey,
+    ) -> AegisResult<RevisionToken> {
+        let _span = span!(
+            Level::INFO,
+            "aegis.async_delete",
+            subject = key.subject.as_str(),
+            relation = key.relation.as_str(),
+            resource = key.object.as_str(),
+        )
+        .entered();
+
+        self.check_closed()?;
+        self.check_authenticated()?;
+        self.maybe_checkpoint_wal();
+
+        let rl_key = format!("async_delete:{}", key.object.as_str());
+        self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
+
+        let storage = self.async_storage.as_ref().ok_or_else(|| {
+            AegisError::Internal("async storage not configured".to_string())
+        })?;
+
+        storage.set_actor_identity(self.active_actor()).await;
+        let revision = storage.delete_tuple(&self.active_partition_id(), key).await?;
+        crate::telemetry::update_revision_current(revision.as_u64());
+
+        info!(revision = field::display(&revision), "tuple deleted (async)");
+
+        self.emit_watch_event(
+            WatchEventType::TupleRemoved,
+            key.subject.as_str(),
+            key.relation.as_str(),
+            key.object.as_str(),
+            revision,
+        );
+
+        self.hooks.trigger(&hooks::HookEvent::OnDelete {
+            key: key.clone(),
+        });
+
+        Ok(RevisionToken::new(revision, self.node_id))
+    }
+
     /// Invalidate the decision cache.
     pub fn invalidate_cache(&self) {
         self.with_cache(|cache| cache.clear());
@@ -1110,6 +1425,47 @@ impl GraphEngine {
             }
             _ => self.storage.current_revision(&self.active_partition_id()),
         }
+    }
+
+    /// List all stored policy versions.
+    pub fn list_policy_versions(&self) -> AegisResult<Vec<crate::storage::PolicyVersion>> {
+        self.storage.list_policy_versions()
+    }
+
+    /// Roll back the active schema to a previous policy version.
+    /// Stores the current schema as a new version first, then swaps.
+    pub fn rollback_policy(&self, version: u32) -> AegisResult<()> {
+        // Save current schema as a version for safety
+        let current_schema = {
+            let schema = self.schema.read().unwrap();
+            serde_json::to_string(&*schema).map_err(|e| AegisError::Internal(e.to_string()))?
+        };
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let current_ver = self.storage.read_schema_version()?;
+        let save_ver = crate::storage::PolicyVersion {
+            version: current_ver + 1,
+            schema: current_schema,
+            created_at: now.clone(),
+            description: "auto-save before rollback".to_string(),
+        };
+        self.storage.save_policy_version(&save_ver)?;
+
+        // Load the target version
+        let schema_json = self.storage.load_policy_version(version)?
+            .ok_or_else(|| AegisError::Internal(format!("policy version {} not found", version)))?;
+
+        let new_schema: Schema = serde_json::from_str(&schema_json)
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+
+        // Swap schema and update schema version
+        {
+            let mut schema = self.schema.write().unwrap();
+            *schema = new_schema;
+        }
+        self.storage.write_schema_version(version)?;
+
+        Ok(())
     }
 
     /// Write a tuple in dry-run mode: validates against schema but does not persist.
@@ -1528,9 +1884,10 @@ fn resource_type_name(id: &str) -> String {
     id.split(':').next().unwrap_or(id).to_string()
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+    #[cfg(feature = "sqlite")]
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
     use crate::types::*;
     use crate::engine::rbac;

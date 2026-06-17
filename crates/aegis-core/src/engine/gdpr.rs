@@ -252,9 +252,10 @@ impl<'a> GdprManager<'a> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+    #[cfg(feature = "sqlite")]
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
     use crate::storage::StorageBackend;
     use crate::types::*;
