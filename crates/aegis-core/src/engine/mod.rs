@@ -739,11 +739,11 @@ impl GraphEngine {
                         Some(ctx_ref.as_ref()),
                         None,
                     );
-                    if let Ok(r) = result
-                        && r.found
-                        && evaluate_condition_if_present(cond.as_ref(), ctx_ref.as_ref())
-                    {
-                        found_ref.store(true, std::sync::atomic::Ordering::Relaxed);
+                    if let Ok(r) = result {
+                        if r.found && evaluate_condition_if_present(cond.as_ref(), ctx_ref.as_ref())
+                        {
+                            found_ref.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
                     }
                 });
             }
@@ -1140,11 +1140,11 @@ impl GraphEngine {
                             Some(revision),
                             consistency,
                         );
-                        if let Ok(tr) = traversal_result
-                            && tr.found
-                        {
-                            allowed = false;
-                            break 'deny_outer;
+                        if let Ok(tr) = traversal_result {
+                            if tr.found {
+                                allowed = false;
+                                break 'deny_outer;
+                            }
                         }
                     }
                 }
@@ -1293,11 +1293,11 @@ impl GraphEngine {
                             Some(revision),
                             consistency,
                         );
-                        if let Ok(tr) = tr
-                            && tr.found
-                        {
-                            allowed = false;
-                            break 'deny_outer;
+                        if let Ok(tr) = tr {
+                            if tr.found {
+                                allowed = false;
+                                break 'deny_outer;
+                            }
                         }
                     }
                 }
@@ -2062,15 +2062,15 @@ impl GraphEngine {
         let Some(threshold) = self.wal_checkpoint_threshold else {
             return;
         };
-        if let Some(wal_size) = self.storage.wal_size_mb()
-            && wal_size > threshold
-        {
-            let _ = self.storage.close();
-            tracing::info!(
-                "WAL auto-checkpoint triggered ({} MB > {} MB)",
-                wal_size,
-                threshold
-            );
+        if let Some(wal_size) = self.storage.wal_size_mb() {
+            if wal_size > threshold {
+                let _ = self.storage.close();
+                tracing::info!(
+                    "WAL auto-checkpoint triggered ({} MB > {} MB)",
+                    wal_size,
+                    threshold
+                );
+            }
         }
     }
 }

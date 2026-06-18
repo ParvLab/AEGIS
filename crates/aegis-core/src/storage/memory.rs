@@ -364,20 +364,20 @@ impl StorageBackend for InMemoryStorage {
             .tuples
             .values()
             .filter(|t| {
-                if let Some(ref st) = filter.subject_type
-                    && !t.subject.as_str().starts_with(st.trim_end_matches('#'))
-                {
-                    return false;
+                if let Some(ref st) = filter.subject_type {
+                    if !t.subject.as_str().starts_with(st.trim_end_matches('#')) {
+                        return false;
+                    }
                 }
-                if let Some(ref rel) = filter.relation
-                    && t.relation != *rel
-                {
-                    return false;
+                if let Some(ref rel) = filter.relation {
+                    if t.relation != *rel {
+                        return false;
+                    }
                 }
-                if let Some(ref ot) = filter.object_type
-                    && !t.object.as_str().starts_with(ot)
-                {
-                    return false;
+                if let Some(ref ot) = filter.object_type {
+                    if !t.object.as_str().starts_with(ot) {
+                        return false;
+                    }
                 }
                 true
             })

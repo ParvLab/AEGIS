@@ -46,25 +46,25 @@ pub struct WatchFilter {
 
 impl WatchFilter {
     pub fn matches(&self, event: &WatchEvent) -> bool {
-        if let Some(subjects) = &self.subjects
-            && !subjects.iter().any(|s| s == &event.subject)
-        {
-            return false;
+        if let Some(subjects) = &self.subjects {
+            if !subjects.iter().any(|s| s == &event.subject) {
+                return false;
+            }
         }
-        if let Some(relations) = &self.relations
-            && !relations.iter().any(|r| r == &event.relation)
-        {
-            return false;
+        if let Some(relations) = &self.relations {
+            if !relations.iter().any(|r| r == &event.relation) {
+                return false;
+            }
         }
-        if let Some(objects) = &self.objects
-            && !objects.iter().any(|o| o == &event.object)
-        {
-            return false;
+        if let Some(objects) = &self.objects {
+            if !objects.iter().any(|o| o == &event.object) {
+                return false;
+            }
         }
-        if let Some(types) = &self.event_types
-            && !types.contains(&event.event_type)
-        {
-            return false;
+        if let Some(types) = &self.event_types {
+            if !types.contains(&event.event_type) {
+                return false;
+            }
         }
         true
     }

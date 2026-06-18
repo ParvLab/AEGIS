@@ -48,30 +48,31 @@ impl GraphEngine {
         if !allowed {
             let schema = self.schema.read().unwrap();
             let type_def = schema.types.get(&resource_type);
-            if let Some(type_def) = type_def
-                && !type_def.deny.is_empty()
-            {
-                'deny_check: for deny_def in &type_def.deny {
-                    for deny_rel in &deny_def.relations {
-                        let relation = match Relation::new(deny_rel) {
-                            Ok(r) => r,
-                            Err(_) => continue,
-                        };
-                        if let Ok(tr) = crate::engine::traversal::bfs_traversal(
-                            &self.active_partition_id(),
-                            self.storage.as_ref(),
-                            subject,
-                            &relation,
-                            resource,
-                            Some(revision),
-                            consistency,
-                        ) && tr.found
-                        {
-                            denial_reason = Some(DenialReason::ExplicitDeny {
-                                subject: subject.as_str().to_string(),
-                                rule: deny_rel.clone(),
-                            });
-                            break 'deny_check;
+            if let Some(type_def) = type_def {
+                if !type_def.deny.is_empty() {
+                    'deny_check: for deny_def in &type_def.deny {
+                        for deny_rel in &deny_def.relations {
+                            let relation = match Relation::new(deny_rel) {
+                                Ok(r) => r,
+                                Err(_) => continue,
+                            };
+                            if let Ok(tr) = crate::engine::traversal::bfs_traversal(
+                                &self.active_partition_id(),
+                                self.storage.as_ref(),
+                                subject,
+                                &relation,
+                                resource,
+                                Some(revision),
+                                consistency,
+                            ) {
+                                if tr.found {
+                                    denial_reason = Some(DenialReason::ExplicitDeny {
+                                        subject: subject.as_str().to_string(),
+                                        rule: deny_rel.clone(),
+                                    });
+                                    break 'deny_check;
+                                }
+                            }
                         }
                     }
                 }

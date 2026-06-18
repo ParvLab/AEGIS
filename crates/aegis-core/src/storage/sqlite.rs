@@ -1979,10 +1979,11 @@ impl SqliteStorage {
                     row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
                 let rev = Revision::new(rev as u64);
-                if let Some(target) = to_revision
-                    && rev > target {
+                if let Some(target) = to_revision {
+                    if rev > target {
                         continue;
                     }
+                }
                 let now = Utc::now().to_rfc3339();
 
                 match action.as_str() {
