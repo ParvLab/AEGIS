@@ -25,6 +25,7 @@ pub use crate::engine::gdpr::{GdprConfig, GdprManager, SubjectDataExport};
 pub use crate::engine::ratelimit::{RateLimitConfig, RateLimitOp, TokenBucketRateLimiter};
 pub use crate::engine::condition::ConditionEvalContext;
 pub use crate::engine::enforcement_history::{EnforcementEvent, EnforcementHistoryConfig, EnforcementTrends, SamplingMode};
+pub use crate::engine::policy_lifecycle::{DraftStatus, PolicyDraft, PublishResult, ValidationReport};
 pub use crate::engine::scheduler::{AnalysisRun, AnalysisRunStatus, AnalysisSchedule, SchedulerConfig};
 pub use crate::engine::watch::{WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
 pub use crate::engine::GraphEngine;

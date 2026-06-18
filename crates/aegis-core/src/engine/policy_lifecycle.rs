@@ -99,6 +99,8 @@ impl GraphEngine {
             drafts.insert(draft.id, draft.clone());
         }
 
+        let _ = self.storage.save_policy_draft(&draft);
+
         Ok(draft)
     }
 
@@ -117,6 +119,7 @@ impl GraphEngine {
 
         draft.schema = schema;
         draft.updated_at = chrono::Utc::now().to_rfc3339();
+        let _ = self.storage.save_policy_draft(draft);
         Ok(draft.clone())
     }
 
@@ -168,6 +171,7 @@ impl GraphEngine {
 
         draft.status = DraftStatus::UnderReview;
         draft.updated_at = chrono::Utc::now().to_rfc3339();
+        let _ = self.storage.save_policy_draft(draft);
         Ok(draft.clone())
     }
 
@@ -187,6 +191,7 @@ impl GraphEngine {
         draft.status = DraftStatus::Approved;
         draft.approved_by = Some(self.active_actor().unwrap_or_else(|| "unknown".to_string()));
         draft.updated_at = chrono::Utc::now().to_rfc3339();
+        let _ = self.storage.save_policy_draft(draft);
         Ok(draft.clone())
     }
 
@@ -206,6 +211,7 @@ impl GraphEngine {
         draft.status = DraftStatus::Rejected;
         draft.rejection_reason = Some(reason.to_string());
         draft.updated_at = chrono::Utc::now().to_rfc3339();
+        let _ = self.storage.save_policy_draft(draft);
         Ok(draft.clone())
     }
 
@@ -259,6 +265,7 @@ impl GraphEngine {
             if let Some(d) = drafts.get_mut(&id) {
                 d.status = DraftStatus::Published;
                 d.updated_at = chrono::Utc::now().to_rfc3339();
+                let _ = self.storage.save_policy_draft(d);
             }
         }
 
@@ -278,6 +285,7 @@ impl GraphEngine {
 
         draft.status = DraftStatus::Archived;
         draft.updated_at = chrono::Utc::now().to_rfc3339();
+        let _ = self.storage.save_policy_draft(draft);
         Ok(draft.clone())
     }
 

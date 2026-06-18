@@ -1,3 +1,6 @@
+use crate::engine::enforcement_history::EnforcementEvent;
+use crate::engine::policy_lifecycle::PolicyDraft;
+use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
     BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
@@ -21,6 +24,11 @@ const CF_META: &str = "meta";
 const CF_TUPLES: &str = "tuples";
 const CF_IDX_OBJECT: &str = "idx_object";
 const CF_EVENTS: &str = "events";
+const CF_POLICY_VERSIONS: &str = "policy_versions";
+const CF_POLICY_DRAFTS: &str = "policy_drafts";
+const CF_ANALYSIS_SCHEDULES: &str = "analysis_schedules";
+const CF_ANALYSIS_RUNS: &str = "analysis_runs";
+const CF_ENFORCEMENT_EVENTS: &str = "enforcement_events";
 
 const META_REVISION: &str = "revision";
 const META_SCHEMA_VERSION: &str = "schema_version";
@@ -70,6 +78,11 @@ impl RocksDbStorage {
             CF_TUPLES,
             CF_IDX_OBJECT,
             CF_EVENTS,
+            CF_POLICY_VERSIONS,
+            CF_POLICY_DRAFTS,
+            CF_ANALYSIS_SCHEDULES,
+            CF_ANALYSIS_RUNS,
+            CF_ENFORCEMENT_EVENTS,
         ];
 
         let db = DB::open_cf(&opts, path, cfs)
@@ -1368,7 +1381,7 @@ impl StorageBackend for RocksDbStorage {
     fn list_policy_versions(&self) -> AegisResult<Vec<PolicyVersion>> {
         let versions_cf = self
             .db
-            .cf_handle("policy_versions")
+            .cf_handle(CF_POLICY_VERSIONS)
             .ok_or_else(|| AegisError::StorageConnection("missing policy_versions cf".into()))?;
 
         let mut iter = self.db.raw_iterator_cf(&versions_cf);
@@ -1393,7 +1406,7 @@ impl StorageBackend for RocksDbStorage {
     fn save_policy_version(&self, version: &PolicyVersion) -> AegisResult<()> {
         let versions_cf = self
             .db
-            .cf_handle("policy_versions")
+            .cf_handle(CF_POLICY_VERSIONS)
             .ok_or_else(|| AegisError::StorageConnection("missing policy_versions cf".into()))?;
 
         let key = version.version.to_string();
@@ -1409,7 +1422,7 @@ impl StorageBackend for RocksDbStorage {
     fn load_policy_version(&self, version: u32) -> AegisResult<Option<String>> {
         let versions_cf = self
             .db
-            .cf_handle("policy_versions")
+            .cf_handle(CF_POLICY_VERSIONS)
             .ok_or_else(|| AegisError::StorageConnection("missing policy_versions cf".into()))?;
 
         let key = version.to_string();
@@ -1422,6 +1435,129 @@ impl StorageBackend for RocksDbStorage {
             Ok(None) => Ok(None),
             Err(e) => Err(AegisError::StorageQuery(e.to_string())),
         }
+    }
+
+    fn save_policy_draft(&self, draft: &PolicyDraft) -> AegisResult<()> {
+        let cf = self
+            .db
+            .cf_handle(CF_POLICY_DRAFTS)
+            .ok_or_else(|| AegisError::StorageConnection("missing policy_drafts cf".into()))?;
+
+        let key = draft.id.to_string();
+        let value = serde_json::to_string(draft)
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+
+        self.db
+            .put_cf(&cf, key.as_bytes(), value.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_policy_draft(&self, id: &str) -> AegisResult<Option<PolicyDraft>> {
+        let cf = self
+            .db
+            .cf_handle(CF_POLICY_DRAFTS)
+            .ok_or_else(|| AegisError::StorageConnection("missing policy_drafts cf".into()))?;
+
+        match self.db.get_cf(&cf, id.as_bytes()) {
+            Ok(Some(val)) => {
+                let draft: PolicyDraft = serde_json::from_slice(&val)
+                    .map_err(|e| AegisError::Internal(e.to_string()))?;
+                Ok(Some(draft))
+            }
+            Ok(None) => Ok(None),
+            Err(e) => Err(AegisError::StorageQuery(e.to_string())),
+        }
+    }
+
+    fn delete_policy_draft(&self, id: &str) -> AegisResult<bool> {
+        let cf = self
+            .db
+            .cf_handle(CF_POLICY_DRAFTS)
+            .ok_or_else(|| AegisError::StorageConnection("missing policy_drafts cf".into()))?;
+
+        let existing = self
+            .db
+            .get_cf(&cf, id.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        if existing.is_none() {
+            return Ok(false);
+        }
+
+        self.db
+            .delete_cf(&cf, id.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(true)
+    }
+
+    fn save_analysis_schedule(&self, schedule: &AnalysisSchedule) -> AegisResult<()> {
+        let cf = self
+            .db
+            .cf_handle(CF_ANALYSIS_SCHEDULES)
+            .ok_or_else(|| AegisError::StorageConnection("missing analysis_schedules cf".into()))?;
+
+        let key = schedule.id.to_string();
+        let value = serde_json::to_string(schedule)
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+
+        self.db
+            .put_cf(&cf, key.as_bytes(), value.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
+
+    fn delete_analysis_schedule(&self, id: &str) -> AegisResult<bool> {
+        let cf = self
+            .db
+            .cf_handle(CF_ANALYSIS_SCHEDULES)
+            .ok_or_else(|| AegisError::StorageConnection("missing analysis_schedules cf".into()))?;
+
+        let existing = self
+            .db
+            .get_cf(&cf, id.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        if existing.is_none() {
+            return Ok(false);
+        }
+
+        self.db
+            .delete_cf(&cf, id.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(true)
+    }
+
+    fn save_analysis_run(&self, run: &AnalysisRun) -> AegisResult<()> {
+        let cf = self
+            .db
+            .cf_handle(CF_ANALYSIS_RUNS)
+            .ok_or_else(|| AegisError::StorageConnection("missing analysis_runs cf".into()))?;
+
+        let key = run.id.to_string();
+        let value = serde_json::to_string(run)
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+
+        self.db
+            .put_cf(&cf, key.as_bytes(), value.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
+
+    fn save_enforcement_event(&self, event: &EnforcementEvent) -> AegisResult<()> {
+        let cf = self
+            .db
+            .cf_handle(CF_ENFORCEMENT_EVENTS)
+            .ok_or_else(|| AegisError::StorageConnection("missing enforcement_events cf".into()))?;
+
+        let key = event.id.to_string();
+        let value = serde_json::to_string(event)
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+
+        self.db
+            .put_cf(&cf, key.as_bytes(), value.as_bytes())
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
     }
 }
 

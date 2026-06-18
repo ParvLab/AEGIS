@@ -8,10 +8,16 @@ on:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        rust: [1.85, stable, nightly]
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: ${{ matrix.rust }}
 
       - name: Format check
         run: cargo fmt --all -- --check
@@ -25,8 +31,23 @@ jobs:
       - name: Build with features
         run: cargo build --workspace --features postgres,mysql
 
-      - name: Test
+      - name: Test (default features)
         run: cargo test --workspace
+
+      - name: Test (no default features)
+        run: cargo test --workspace --no-default-features
+
+      - name: Test (sqlite)
+        run: cargo test --workspace --features sqlite
+
+      - name: Test (postgres)
+        run: cargo test --workspace --features postgres
+
+      - name: Test (mysql)
+        run: cargo test --workspace --features mysql
+
+      - name: Test (rocksdb)
+        run: cargo test --workspace --features rocksdb
 
       - name: Install wasm-pack
         uses: taiki-e/install-action@v2

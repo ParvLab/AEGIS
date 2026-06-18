@@ -30,6 +30,10 @@ const STORE_EVENTS: &str = "events";
 const STORE_REVISION: &str = "revision";
 const STORE_SCHEMA: &str = "schema";
 const STORE_METADATA: &str = "metadata";
+const STORE_POLICY_DRAFTS: &str = "_aegis_policy_drafts";
+const STORE_ANALYSIS_SCHEDULES: &str = "_aegis_analysis_schedules";
+const STORE_ANALYSIS_RUNS: &str = "_aegis_analysis_runs";
+const STORE_ENFORCEMENT_EVENTS: &str = "_aegis_enforcement_events";
 
 fn aegis_err(msg: &str) -> AegisError {
     AegisError::Internal(msg.to_string())
@@ -247,6 +251,10 @@ fn create_stores(event: &IdbVersionChangeEvent) {
         db.create_object_store(STORE_REVISION).ok();
         db.create_object_store(STORE_SCHEMA).ok();
         db.create_object_store(STORE_METADATA).ok();
+        db.create_object_store(STORE_POLICY_DRAFTS).ok();
+        db.create_object_store(STORE_ANALYSIS_SCHEDULES).ok();
+        db.create_object_store(STORE_ANALYSIS_RUNS).ok();
+        db.create_object_store(STORE_ENFORCEMENT_EVENTS).ok();
     }
 }
 
@@ -713,6 +721,64 @@ impl AsyncStorageBackend for IndexedDbStorage {
     async fn close(&self) -> AegisResult<()> {
         if let Ok(mut g) = self.db.lock() { *g = None; }
         Ok(())
+    }
+
+    async fn save_policy_draft(&self, draft: &crate::engine::policy_lifecycle::PolicyDraft) -> AegisResult<()> {
+        let s = store(&self.db()?, STORE_POLICY_DRAFTS, IdbTransactionMode::Readwrite)?;
+        let json = serde_json::to_string(draft).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
+        put_s(&s, &JsValue::from_str(&draft.id.to_string()), &JsValue::from_str(&json)).await
+    }
+
+    async fn load_policy_draft(&self, id: &str) -> AegisResult<Option<crate::engine::policy_lifecycle::PolicyDraft>> {
+        let s = store(&self.db()?, STORE_POLICY_DRAFTS, IdbTransactionMode::Readonly)?;
+        match get_s(&s, &JsValue::from_str(id)).await? {
+            Some(v) => {
+                let json = v.as_string().ok_or_else(|| aegis_err("expected string"))?;
+                let draft = serde_json::from_str(&json).map_err(|e| aegis_err(&format!("deserialize: {}", e)))?;
+                Ok(Some(draft))
+            }
+            None => Ok(None),
+        }
+    }
+
+    async fn delete_policy_draft(&self, id: &str) -> AegisResult<bool> {
+        let s = store(&self.db()?, STORE_POLICY_DRAFTS, IdbTransactionMode::Readwrite)?;
+        let exists = get_s(&s, &JsValue::from_str(id)).await?.is_some();
+        if exists {
+            del_s(&s, &JsValue::from_str(id)).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn save_analysis_schedule(&self, schedule: &crate::engine::scheduler::AnalysisSchedule) -> AegisResult<()> {
+        let s = store(&self.db()?, STORE_ANALYSIS_SCHEDULES, IdbTransactionMode::Readwrite)?;
+        let json = serde_json::to_string(schedule).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
+        put_s(&s, &JsValue::from_str(&schedule.id.to_string()), &JsValue::from_str(&json)).await
+    }
+
+    async fn delete_analysis_schedule(&self, id: &str) -> AegisResult<bool> {
+        let s = store(&self.db()?, STORE_ANALYSIS_SCHEDULES, IdbTransactionMode::Readwrite)?;
+        let exists = get_s(&s, &JsValue::from_str(id)).await?.is_some();
+        if exists {
+            del_s(&s, &JsValue::from_str(id)).await?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    async fn save_analysis_run(&self, run: &crate::engine::scheduler::AnalysisRun) -> AegisResult<()> {
+        let s = store(&self.db()?, STORE_ANALYSIS_RUNS, IdbTransactionMode::Readwrite)?;
+        let json = serde_json::to_string(run).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
+        put_s(&s, &JsValue::from_str(&run.id.to_string()), &JsValue::from_str(&json)).await
+    }
+
+    async fn save_enforcement_event(&self, event: &crate::engine::enforcement_history::EnforcementEvent) -> AegisResult<()> {
+        let s = store(&self.db()?, STORE_ENFORCEMENT_EVENTS, IdbTransactionMode::Readwrite)?;
+        let json = serde_json::to_string(event).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
+        put_s(&s, &JsValue::from_str(&event.id.to_string()), &JsValue::from_str(&json)).await
     }
 
     async fn verify_audit_chain(&self, pid: &PartitionId) -> AegisResult<Option<String>> {

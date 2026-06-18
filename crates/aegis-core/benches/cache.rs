@@ -23,11 +23,10 @@ fn setup_engine_with_cache(capacity: usize) -> GraphEngine {
                 "read".to_string(),
                 PermissionDef {
                     union_of: vec!["owner".to_string()],
-                    condition: None,
-                    description: None,
+                    ..Default::default()
                 },
             );
-            types.insert("repo".to_string(), TypeDef { relations, permissions });
+            types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
             types
         },
     };

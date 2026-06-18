@@ -4,6 +4,9 @@ use std::sync::{Arc, Mutex};
 use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
+use crate::engine::enforcement_history::EnforcementEvent;
+use crate::engine::policy_lifecycle::PolicyDraft;
+use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
     BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
@@ -24,6 +27,10 @@ struct Inner {
     node_id: Uuid,
     actor_identity: Option<String>,
     policy_versions: HashMap<u32, PolicyVersion>,
+    policy_drafts: HashMap<String, PolicyDraft>,
+    analysis_schedules: HashMap<String, AnalysisSchedule>,
+    analysis_runs: Vec<AnalysisRun>,
+    enforcement_events: Vec<EnforcementEvent>,
 }
 
 pub struct InMemoryStorage {
@@ -41,6 +48,10 @@ impl InMemoryStorage {
                 node_id: Uuid::new_v4(),
                 actor_identity: None,
                 policy_versions: HashMap::new(),
+                policy_drafts: HashMap::new(),
+                analysis_schedules: HashMap::new(),
+                analysis_runs: Vec::new(),
+                enforcement_events: Vec::new(),
             })),
         }
     }
@@ -439,6 +450,45 @@ impl StorageBackend for InMemoryStorage {
     fn load_policy_version(&self, version: u32) -> AegisResult<Option<String>> {
         let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
         Ok(inner.policy_versions.get(&version).map(|v| v.schema.clone()))
+    }
+
+    fn save_policy_draft(&self, draft: &PolicyDraft) -> AegisResult<()> {
+        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        inner.policy_drafts.insert(draft.id.to_string(), draft.clone());
+        Ok(())
+    }
+
+    fn load_policy_draft(&self, id: &str) -> AegisResult<Option<PolicyDraft>> {
+        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        Ok(inner.policy_drafts.get(id).cloned())
+    }
+
+    fn delete_policy_draft(&self, id: &str) -> AegisResult<bool> {
+        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        Ok(inner.policy_drafts.remove(id).is_some())
+    }
+
+    fn save_analysis_schedule(&self, schedule: &AnalysisSchedule) -> AegisResult<()> {
+        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        inner.analysis_schedules.insert(schedule.id.to_string(), schedule.clone());
+        Ok(())
+    }
+
+    fn delete_analysis_schedule(&self, id: &str) -> AegisResult<bool> {
+        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        Ok(inner.analysis_schedules.remove(id).is_some())
+    }
+
+    fn save_analysis_run(&self, run: &AnalysisRun) -> AegisResult<()> {
+        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        inner.analysis_runs.push(run.clone());
+        Ok(())
+    }
+
+    fn save_enforcement_event(&self, event: &EnforcementEvent) -> AegisResult<()> {
+        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        inner.enforcement_events.push(event.clone());
+        Ok(())
     }
 }
 

@@ -12,6 +12,9 @@ use chrono::{DateTime, Utc};
 use mysql_async::prelude::Queryable;
 use std::collections::HashMap;
 use uuid::Uuid;
+use crate::engine::enforcement_history::EnforcementEvent;
+use crate::engine::policy_lifecycle::PolicyDraft;
+use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 
 /// MySQL configuration.
 #[derive(Debug, Clone)]
@@ -139,6 +142,29 @@ impl MysqlStorage {
                 `version`    INTEGER NOT NULL,
                 `applied_at` VARCHAR(64) NOT NULL,
                 `checksum`   TEXT NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS _aegis_policy_drafts (
+                `id`         VARCHAR(64) PRIMARY KEY,
+                `status`     VARCHAR(32) NOT NULL DEFAULT 'Drafting',
+                `created_at` VARCHAR(64) NOT NULL,
+                `updated_at` VARCHAR(64) NOT NULL,
+                `data`       JSON NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS _aegis_analysis_schedules (
+                `id`         VARCHAR(64) PRIMARY KEY,
+                `data`       JSON NOT NULL,
+                `created_at` VARCHAR(64) NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS _aegis_analysis_runs (
+                `id`          VARCHAR(64) PRIMARY KEY,
+                `schedule_id` VARCHAR(64),
+                `data`        JSON NOT NULL,
+                `created_at`  VARCHAR(64) NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS _aegis_enforcement_events (
+                `id`         VARCHAR(64) PRIMARY KEY,
+                `data`       JSON NOT NULL,
+                `created_at` VARCHAR(64) NOT NULL
             )",
         ];
         for stmt in &statements {
@@ -1203,6 +1229,111 @@ impl StorageBackend for MysqlStorage {
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             Ok(rows.map(|(s,): (String,)| s))
+        })
+    }
+
+    fn save_policy_draft(&self, draft: &PolicyDraft) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            let data = serde_json::to_string(draft)
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+            let status_str = draft.status.to_string();
+            conn.exec_drop(
+                "REPLACE INTO _aegis_policy_drafts (id, status, created_at, updated_at, data) VALUES (?, ?, ?, ?, ?)",
+                (draft.id.to_string(), &status_str, &draft.created_at, &draft.updated_at, &data),
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn load_policy_draft(&self, id: &str) -> AegisResult<Option<PolicyDraft>> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            let rows: Option<(String,)> = conn
+                .exec_first("SELECT data FROM _aegis_policy_drafts WHERE id = ?", (id,))
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            match rows {
+                Some((data,)) => {
+                    let draft: PolicyDraft = serde_json::from_str(&data)
+                        .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+                    Ok(Some(draft))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    fn delete_policy_draft(&self, id: &str) -> AegisResult<bool> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            let result = conn
+                .exec_iter("DELETE FROM _aegis_policy_drafts WHERE id = ?", (id,))
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(result.affected_rows() > 0)
+        })
+    }
+
+    fn save_analysis_schedule(&self, schedule: &AnalysisSchedule) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            let data = serde_json::to_string(schedule)
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+            let now = Utc::now().to_rfc3339();
+            conn.exec_drop(
+                "REPLACE INTO _aegis_analysis_schedules (id, data, created_at) VALUES (?, ?, ?)",
+                (schedule.id.to_string(), &data, &now),
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn delete_analysis_schedule(&self, id: &str) -> AegisResult<bool> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            let result = conn
+                .exec_iter("DELETE FROM _aegis_analysis_schedules WHERE id = ?", (id,))
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(result.affected_rows() > 0)
+        })
+    }
+
+    fn save_analysis_run(&self, run: &AnalysisRun) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            let data = serde_json::to_string(run)
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+            let now = Utc::now().to_rfc3339();
+            let schedule_id = run.schedule_id.map(|id| id.to_string());
+            conn.exec_drop(
+                "REPLACE INTO _aegis_analysis_runs (id, schedule_id, data, created_at) VALUES (?, ?, ?, ?)",
+                (run.id.to_string(), schedule_id.as_deref(), &data, &now),
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn save_enforcement_event(&self, event: &EnforcementEvent) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await?;
+            let data = serde_json::to_string(event)
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+            let now = Utc::now().to_rfc3339();
+            conn.exec_drop(
+                "REPLACE INTO _aegis_enforcement_events (id, data, created_at) VALUES (?, ?, ?)",
+                (event.id.to_string(), &data, &now),
+            )
+            .await
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
         })
     }
 }

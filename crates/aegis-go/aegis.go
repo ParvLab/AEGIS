@@ -123,6 +123,69 @@ type PaginatedTuples struct {
 	Revision   uint64  `json:"revision"`
 }
 
+// V7 Policy Draft types
+type PolicyDraft struct {
+	ID              string             `json:"id"`
+	Name            string             `json:"name"`
+	Description     string             `json:"description"`
+	Status          string             `json:"status"`
+	Schema          string             `json:"schema"`
+	CreatedAt       string             `json:"created_at"`
+	UpdatedAt       string             `json:"updated_at"`
+	CreatedBy       string             `json:"created_by"`
+	ApprovedBy      string             `json:"approved_by,omitempty"`
+	RejectionReason string             `json:"rejection_reason,omitempty"`
+	Validation      *ValidationReport  `json:"validation,omitempty"`
+}
+
+type ValidationReport struct {
+	Valid    bool     `json:"valid"`
+	Errors   []string `json:"errors,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+type PublishResult struct {
+	Version          uint32 `json:"version"`
+	PublishedAt      string `json:"published_at"`
+	PreviousVersion  uint32 `json:"previous_version"`
+}
+
+type AnalysisSchedule struct {
+	ID        string `json:"id"`
+	Query     string `json:"query"`
+	Cron      string `json:"cron_expression"`
+	Enabled   bool   `json:"enabled"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
+type AnalysisRun struct {
+	ID          string `json:"id"`
+	ScheduleID  string `json:"schedule_id,omitempty"`
+	Status      string `json:"status"`
+	StartedAt   string `json:"started_at"`
+	CompletedAt string `json:"completed_at,omitempty"`
+	Result      string `json:"result,omitempty"`
+}
+
+type EnforcementHistoryConfig struct {
+	Enabled         bool    `json:"enabled"`
+	SamplingMode    string  `json:"sampling_mode"`
+	SamplingRate    float64 `json:"sampling_rate"`
+	MaxEventsPerMin uint64  `json:"max_events_per_minute"`
+	MaxRows         *uint64 `json:"max_rows,omitempty"`
+	MaxDays         *uint64 `json:"max_days,omitempty"`
+}
+
+type EnforcementTrends struct {
+	TotalEvents  uint64            `json:"total_events"`
+	DeniedCount  uint64            `json:"denied_count"`
+	AllowedCount uint64            `json:"allowed_count"`
+	PeriodStart  string            `json:"period_start"`
+	PeriodEnd    string            `json:"period_end"`
+	ByPermission map[string]uint64 `json:"by_permission,omitempty"`
+	ByResource   map[string]uint64 `json:"by_resource,omitempty"`
+}
+
 // Consistency mode constants
 const (
 	ConsistencyDefault        = -1
@@ -891,4 +954,270 @@ func (t *Transaction) Free() {
 		C.aegis_transaction_free(t.ptr)
 		t.ptr = nil
 	}
+}
+
+// ── V7 Policy Draft ──
+
+// CreatePolicyDraft creates a new policy draft.
+func (e *Engine) CreatePolicyDraft(name, description string) (*PolicyDraft, error) {
+	cName := C.CString(name)
+	cDesc := C.CString(description)
+	defer C.free(unsafe.Pointer(cName))
+	defer C.free(unsafe.Pointer(cDesc))
+	res := C.aegis_engine_create_policy_draft(e.ptr, cName, cDesc)
+	if res == nil {
+		return nil, errors.New("null result from create_policy_draft")
+	}
+	defer C.aegis_free_string(res)
+	var draft PolicyDraft
+	if err := json.Unmarshal([]byte(C.GoString(res)), &draft); err != nil {
+		return nil, err
+	}
+	return &draft, nil
+}
+
+// UpdatePolicyDraft updates an existing policy draft's schema.
+func (e *Engine) UpdatePolicyDraft(id, schemaJSON string) (*PolicyDraft, error) {
+	cID := C.CString(id)
+	cSchema := C.CString(schemaJSON)
+	defer C.free(unsafe.Pointer(cID))
+	defer C.free(unsafe.Pointer(cSchema))
+	res := C.aegis_engine_update_policy_draft(e.ptr, cID, cSchema)
+	if res == nil {
+		return nil, errors.New("null result from update_policy_draft")
+	}
+	defer C.aegis_free_string(res)
+	var draft PolicyDraft
+	if err := json.Unmarshal([]byte(C.GoString(res)), &draft); err != nil {
+		return nil, err
+	}
+	return &draft, nil
+}
+
+// ValidatePolicyDraft validates a policy draft's schema.
+func (e *Engine) ValidatePolicyDraft(id string) (*ValidationReport, error) {
+	cID := C.CString(id)
+	defer C.free(unsafe.Pointer(cID))
+	res := C.aegis_engine_validate_policy_draft(e.ptr, cID)
+	if res == nil {
+		return nil, errors.New("null result from validate_policy_draft")
+	}
+	defer C.aegis_free_string(res)
+	var report ValidationReport
+	if err := json.Unmarshal([]byte(C.GoString(res)), &report); err != nil {
+		return nil, err
+	}
+	return &report, nil
+}
+
+// SubmitPolicyDraftForReview submits a policy draft for review.
+func (e *Engine) SubmitPolicyDraftForReview(id string) (*PolicyDraft, error) {
+	cID := C.CString(id)
+	defer C.free(unsafe.Pointer(cID))
+	res := C.aegis_engine_submit_policy_draft_for_review(e.ptr, cID)
+	if res == nil {
+		return nil, errors.New("null result from submit_policy_draft_for_review")
+	}
+	defer C.aegis_free_string(res)
+	var draft PolicyDraft
+	if err := json.Unmarshal([]byte(C.GoString(res)), &draft); err != nil {
+		return nil, err
+	}
+	return &draft, nil
+}
+
+// ApprovePolicyDraft approves a policy draft.
+func (e *Engine) ApprovePolicyDraft(id string) (*PolicyDraft, error) {
+	cID := C.CString(id)
+	defer C.free(unsafe.Pointer(cID))
+	res := C.aegis_engine_approve_policy_draft(e.ptr, cID)
+	if res == nil {
+		return nil, errors.New("null result from approve_policy_draft")
+	}
+	defer C.aegis_free_string(res)
+	var draft PolicyDraft
+	if err := json.Unmarshal([]byte(C.GoString(res)), &draft); err != nil {
+		return nil, err
+	}
+	return &draft, nil
+}
+
+// RejectPolicyDraft rejects a policy draft with a reason.
+func (e *Engine) RejectPolicyDraft(id, reason string) (*PolicyDraft, error) {
+	cID := C.CString(id)
+	cReason := C.CString(reason)
+	defer C.free(unsafe.Pointer(cID))
+	defer C.free(unsafe.Pointer(cReason))
+	res := C.aegis_engine_reject_policy_draft(e.ptr, cID, cReason)
+	if res == nil {
+		return nil, errors.New("null result from reject_policy_draft")
+	}
+	defer C.aegis_free_string(res)
+	var draft PolicyDraft
+	if err := json.Unmarshal([]byte(C.GoString(res)), &draft); err != nil {
+		return nil, err
+	}
+	return &draft, nil
+}
+
+// PublishPolicyDraft publishes a policy draft as a new version.
+func (e *Engine) PublishPolicyDraft(id string) (*PublishResult, error) {
+	cID := C.CString(id)
+	defer C.free(unsafe.Pointer(cID))
+	res := C.aegis_engine_publish_policy_draft(e.ptr, cID)
+	if res == nil {
+		return nil, errors.New("null result from publish_policy_draft")
+	}
+	defer C.aegis_free_string(res)
+	var result PublishResult
+	if err := json.Unmarshal([]byte(C.GoString(res)), &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ArchivePolicyDraft archives a policy draft.
+func (e *Engine) ArchivePolicyDraft(id string) (*PolicyDraft, error) {
+	cID := C.CString(id)
+	defer C.free(unsafe.Pointer(cID))
+	res := C.aegis_engine_archive_policy_draft(e.ptr, cID)
+	if res == nil {
+		return nil, errors.New("null result from archive_policy_draft")
+	}
+	defer C.aegis_free_string(res)
+	var draft PolicyDraft
+	if err := json.Unmarshal([]byte(C.GoString(res)), &draft); err != nil {
+		return nil, err
+	}
+	return &draft, nil
+}
+
+// ListPolicyDrafts returns all policy drafts.
+func (e *Engine) ListPolicyDrafts() ([]PolicyDraft, error) {
+	res := C.aegis_engine_list_policy_drafts(e.ptr)
+	if res == nil {
+		return nil, errors.New("null result from list_policy_drafts")
+	}
+	defer C.aegis_free_string(res)
+	var drafts []PolicyDraft
+	if err := json.Unmarshal([]byte(C.GoString(res)), &drafts); err != nil {
+		return nil, err
+	}
+	return drafts, nil
+}
+
+// ── V7 Scheduler ──
+
+// CreateAnalysisSchedule creates a new analysis schedule from JSON config.
+func (e *Engine) CreateAnalysisSchedule(configJSON string) (*AnalysisSchedule, error) {
+	cJSON := C.CString(configJSON)
+	defer C.free(unsafe.Pointer(cJSON))
+	res := C.aegis_engine_create_analysis_schedule(e.ptr, cJSON)
+	if res == nil {
+		return nil, errors.New("null result from create_analysis_schedule")
+	}
+	defer C.aegis_free_string(res)
+	var schedule AnalysisSchedule
+	if err := json.Unmarshal([]byte(C.GoString(res)), &schedule); err != nil {
+		return nil, err
+	}
+	return &schedule, nil
+}
+
+// ListAnalysisSchedules returns all analysis schedules.
+func (e *Engine) ListAnalysisSchedules() ([]AnalysisSchedule, error) {
+	res := C.aegis_engine_list_analysis_schedules(e.ptr)
+	if res == nil {
+		return nil, errors.New("null result from list_analysis_schedules")
+	}
+	defer C.aegis_free_string(res)
+	var schedules []AnalysisSchedule
+	if err := json.Unmarshal([]byte(C.GoString(res)), &schedules); err != nil {
+		return nil, err
+	}
+	return schedules, nil
+}
+
+// DeleteAnalysisSchedule deletes an analysis schedule by ID.
+func (e *Engine) DeleteAnalysisSchedule(id string) error {
+	cID := C.CString(id)
+	defer C.free(unsafe.Pointer(cID))
+	res := C.aegis_engine_delete_analysis_schedule(e.ptr, cID)
+	if res != nil {
+		defer C.aegis_free_string(res)
+		return errors.New(C.GoString(res))
+	}
+	return nil
+}
+
+// RunAnalysisNow triggers an immediate analysis run.
+func (e *Engine) RunAnalysisNow(scheduleID string) ([]AnalysisRun, error) {
+	cID := C.CString(scheduleID)
+	defer C.free(unsafe.Pointer(cID))
+	res := C.aegis_engine_run_analysis_now(e.ptr, cID)
+	if res == nil {
+		return nil, errors.New("null result from run_analysis_now")
+	}
+	defer C.aegis_free_string(res)
+	var runs []AnalysisRun
+	if err := json.Unmarshal([]byte(C.GoString(res)), &runs); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+// GetAnalysisRuns returns recent analysis runs.
+func (e *Engine) GetAnalysisRuns(limit int) ([]AnalysisRun, error) {
+	res := C.aegis_engine_get_analysis_runs(e.ptr, C.int32_t(limit))
+	if res == nil {
+		return nil, errors.New("null result from get_analysis_runs")
+	}
+	defer C.aegis_free_string(res)
+	var runs []AnalysisRun
+	if err := json.Unmarshal([]byte(C.GoString(res)), &runs); err != nil {
+		return nil, err
+	}
+	return runs, nil
+}
+
+// ── V7 Enforcement History ──
+
+// SetEnforcementHistoryConfig sets the enforcement history sampling configuration.
+func (e *Engine) SetEnforcementHistoryConfig(configJSON string) error {
+	cJSON := C.CString(configJSON)
+	defer C.free(unsafe.Pointer(cJSON))
+	res := C.aegis_engine_set_enforcement_history_config(e.ptr, cJSON)
+	if res != nil {
+		defer C.aegis_free_string(res)
+		return errors.New(C.GoString(res))
+	}
+	return nil
+}
+
+// GetEnforcementHistoryConfig returns the current enforcement history configuration.
+func (e *Engine) GetEnforcementHistoryConfig() (*EnforcementHistoryConfig, error) {
+	res := C.aegis_engine_get_enforcement_history_config(e.ptr)
+	if res == nil {
+		return nil, errors.New("null result from get_enforcement_history_config")
+	}
+	defer C.aegis_free_string(res)
+	var cfg EnforcementHistoryConfig
+	if err := json.Unmarshal([]byte(C.GoString(res)), &cfg); err != nil {
+		return nil, err
+	}
+	return &cfg, nil
+}
+
+// EnforcementTrends returns enforcement activity trends.
+func (e *Engine) EnforcementTrends(limit int) (*EnforcementTrends, error) {
+	res := C.aegis_engine_enforcement_trends(e.ptr, C.int32_t(limit))
+	if res == nil {
+		return nil, errors.New("null result from enforcement_trends")
+	}
+	defer C.aegis_free_string(res)
+	var trends EnforcementTrends
+	if err := json.Unmarshal([]byte(C.GoString(res)), &trends); err != nil {
+		return nil, err
+	}
+	return &trends, nil
 }

@@ -1869,6 +1869,462 @@ pub extern "C" fn aegis_engine_rollback_policy(
     }
 }
 
+// ── V7 Policy Lifecycle ─────────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_create_policy_draft(
+    engine: *const AegisEngine,
+    name: *const libc::c_char,
+    description: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let name = match c_str_to_str(name) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let description = match c_str_to_str(description) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match eng.create_policy_draft(&name, &description) {
+        Ok(draft) => {
+            let json = serde_json::to_string(&draft).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_update_policy_draft(
+    engine: *const AegisEngine,
+    id: *const libc::c_char,
+    schema_json: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let id = match c_str_to_str(id) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let uid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(e) => return error_string(&format!("invalid id: {}", e)),
+    };
+    let schema_json = match c_str_to_str(schema_json) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let schema: Schema = match serde_json::from_str(&schema_json) {
+        Ok(s) => s,
+        Err(e) => return error_string(&format!("invalid schema: {}", e)),
+    };
+    match eng.update_policy_draft(uid, schema) {
+        Ok(draft) => {
+            let json = serde_json::to_string(&draft).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_validate_policy_draft(
+    engine: *const AegisEngine,
+    id: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let id = match c_str_to_str(id) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let uid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(e) => return error_string(&format!("invalid id: {}", e)),
+    };
+    match eng.validate_policy_draft(uid) {
+        Ok(report) => {
+            let json = serde_json::to_string(&report).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_submit_policy_draft_for_review(
+    engine: *const AegisEngine,
+    id: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let id = match c_str_to_str(id) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let uid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(e) => return error_string(&format!("invalid id: {}", e)),
+    };
+    match eng.submit_policy_draft_for_review(uid) {
+        Ok(draft) => {
+            let json = serde_json::to_string(&draft).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_approve_policy_draft(
+    engine: *const AegisEngine,
+    id: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let id = match c_str_to_str(id) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let uid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(e) => return error_string(&format!("invalid id: {}", e)),
+    };
+    match eng.approve_policy_draft(uid) {
+        Ok(draft) => {
+            let json = serde_json::to_string(&draft).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_reject_policy_draft(
+    engine: *const AegisEngine,
+    id: *const libc::c_char,
+    rejection_reason: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let id = match c_str_to_str(id) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let uid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(e) => return error_string(&format!("invalid id: {}", e)),
+    };
+    let reason = match c_str_to_str(rejection_reason) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    match eng.reject_policy_draft(uid, &reason) {
+        Ok(draft) => {
+            let json = serde_json::to_string(&draft).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_publish_policy_draft(
+    engine: *const AegisEngine,
+    id: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let id = match c_str_to_str(id) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let uid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(e) => return error_string(&format!("invalid id: {}", e)),
+    };
+    match eng.publish_policy_draft(uid) {
+        Ok(result) => {
+            let json = serde_json::to_string(&result).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_archive_policy_draft(
+    engine: *const AegisEngine,
+    id: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let id = match c_str_to_str(id) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let uid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(e) => return error_string(&format!("invalid id: {}", e)),
+    };
+    match eng.archive_policy_draft(uid) {
+        Ok(draft) => {
+            let json = serde_json::to_string(&draft).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_list_policy_drafts(
+    engine: *const AegisEngine,
+    filter_status: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let status = if filter_status.is_null() {
+        None
+    } else {
+        let s = match c_str_to_str(filter_status) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        Some(match s.to_lowercase().as_str() {
+            "drafting" => aegis_core::engine::policy_lifecycle::DraftStatus::Drafting,
+            "underreview" => aegis_core::engine::policy_lifecycle::DraftStatus::UnderReview,
+            "approved" => aegis_core::engine::policy_lifecycle::DraftStatus::Approved,
+            "rejected" => aegis_core::engine::policy_lifecycle::DraftStatus::Rejected,
+            "published" => aegis_core::engine::policy_lifecycle::DraftStatus::Published,
+            "archived" => aegis_core::engine::policy_lifecycle::DraftStatus::Archived,
+            _ => return error_string(&format!("unknown status: {}", s)),
+        })
+    };
+    match eng.list_policy_drafts(status) {
+        Ok(drafts) => {
+            let json = serde_json::to_string(&drafts).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+// ── V7 Scheduler ────────────────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_create_analysis_schedule(
+    engine: *const AegisEngine,
+    name: *const libc::c_char,
+    interval_seconds: u64,
+    queries_json: *const libc::c_char,
+    compare_schema_json: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let name = match c_str_to_str(name) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let queries_json = match c_str_to_str(queries_json) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let queries: Vec<aegis_core::types::analysis::CheckQuery> = match serde_json::from_str(&queries_json) {
+        Ok(q) => q,
+        Err(e) => return error_string(&format!("invalid queries: {}", e)),
+    };
+    let compare_schema = if compare_schema_json.is_null() {
+        None
+    } else {
+        let s = match c_str_to_str(compare_schema_json) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        match serde_json::from_str(&s) {
+            Ok(schema) => Some(schema),
+            Err(e) => return error_string(&format!("invalid compare schema: {}", e)),
+        }
+    };
+    match eng.create_analysis_schedule(&name, interval_seconds, queries, compare_schema) {
+        Ok(schedule) => {
+            let json = serde_json::to_string(&schedule).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_list_analysis_schedules(
+    engine: *const AegisEngine,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    match eng.list_analysis_schedules() {
+        Ok(schedules) => {
+            let json = serde_json::to_string(&schedules).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_delete_analysis_schedule(
+    engine: *const AegisEngine,
+    id: *const libc::c_char,
+) -> i32 {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(_) => return 0,
+    };
+    let id = match c_str_to_str(id) {
+        Ok(s) => s,
+        Err(_) => return 0,
+    };
+    let uid = match uuid::Uuid::parse_str(&id) {
+        Ok(u) => u,
+        Err(_) => return 0,
+    };
+    match eng.delete_analysis_schedule(uid) {
+        Ok(true) => 1,
+        _ => 0,
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_run_analysis_now(
+    engine: *const AegisEngine,
+    schedule_id: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let uid = if schedule_id.is_null() {
+        None
+    } else {
+        let id = match c_str_to_str(schedule_id) {
+            Ok(s) => s,
+            Err(e) => return e,
+        };
+        match uuid::Uuid::parse_str(&id) {
+            Ok(u) => Some(u),
+            Err(e) => return error_string(&format!("invalid id: {}", e)),
+        }
+    };
+    match eng.run_analysis_now(uid) {
+        Ok(runs) => {
+            let json = serde_json::to_string(&runs).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_get_analysis_runs(
+    engine: *const AegisEngine,
+    limit: u64,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    match eng.get_analysis_runs(limit as usize) {
+        Ok(runs) => {
+            let json = serde_json::to_string(&runs).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+// ── V7 Enforcement History ──────────────────────────────────────────────────────────────
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_set_enforcement_history_config(
+    engine: *const AegisEngine,
+    config_json: *const libc::c_char,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    let config_json = match c_str_to_str(config_json) {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let config: aegis_core::engine::enforcement_history::EnforcementHistoryConfig =
+        match serde_json::from_str(&config_json) {
+            Ok(c) => c,
+            Err(e) => return error_string(&format!("invalid config: {}", e)),
+        };
+    match eng.set_enforcement_history_config(config) {
+        Ok(_) => CString::new("ok").unwrap_or_default().into_raw(),
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_get_enforcement_history_config(
+    engine: *const AegisEngine,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    match eng.get_enforcement_history_config() {
+        Ok(config) => {
+            let json = serde_json::to_string(&config).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn aegis_engine_enforcement_trends(
+    engine: *const AegisEngine,
+    limit: u64,
+) -> *mut libc::c_char {
+    let eng = match engine_from_const_ptr(engine) {
+        Ok(e) => e,
+        Err(e) => return e,
+    };
+    match eng.enforcement_trends(limit as usize) {
+        Ok(trends) => {
+            let json = serde_json::to_string(&trends).unwrap_or_default();
+            CString::new(json).unwrap_or_default().into_raw()
+        }
+        Err(e) => error_string(&e.to_string()),
+    }
+}
+
 // ── Helpers ──
 
 fn engine_from_ptr(ptr: *mut AegisEngine) -> Result<&'static GraphEngine, *mut libc::c_char> {

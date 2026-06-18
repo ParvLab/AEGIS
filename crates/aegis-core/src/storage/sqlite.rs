@@ -1,12 +1,15 @@
+use crate::engine::enforcement_history::EnforcementEvent;
+use crate::engine::policy_lifecycle::PolicyDraft;
+use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
     BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
     TupleFilter,
 };
-    use crate::types::{
-        AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId, Relation,
-        RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
-    };
+use crate::types::{
+    AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId, Relation,
+    RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
+};
 use chrono::{DateTime, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
@@ -74,6 +77,63 @@ const SCHEMA_TABLE: &str = "
         version    INTEGER NOT NULL,
         applied_at TEXT NOT NULL,
         checksum   TEXT NOT NULL
+    )";
+
+const POLICY_DRAFTS_TABLE: &str = "
+    CREATE TABLE IF NOT EXISTS _aegis_policy_drafts (
+        id               TEXT PRIMARY KEY,
+        name             TEXT NOT NULL,
+        description      TEXT NOT NULL,
+        schema_json      TEXT NOT NULL,
+        base_version     INTEGER NOT NULL,
+        status           TEXT NOT NULL,
+        created_at       TEXT NOT NULL,
+        updated_at       TEXT NOT NULL,
+        created_by       TEXT NOT NULL,
+        approved_by      TEXT,
+        rejection_reason TEXT
+    )";
+
+const ANALYSIS_SCHEDULES_TABLE: &str = "
+    CREATE TABLE IF NOT EXISTS _aegis_analysis_schedules (
+        id               TEXT PRIMARY KEY,
+        name             TEXT NOT NULL,
+        interval_seconds INTEGER NOT NULL,
+        queries          TEXT NOT NULL,
+        compare_schema   TEXT,
+        enabled          INTEGER NOT NULL DEFAULT 1,
+        created_at       TEXT NOT NULL,
+        updated_at       TEXT NOT NULL
+    )";
+
+const ANALYSIS_RUNS_TABLE: &str = "
+    CREATE TABLE IF NOT EXISTS _aegis_analysis_runs (
+        id             TEXT PRIMARY KEY,
+        schedule_id    TEXT,
+        started_at     TEXT NOT NULL,
+        completed_at   TEXT NOT NULL,
+        status         TEXT NOT NULL,
+        summary        TEXT NOT NULL,
+        error_message  TEXT
+    )";
+
+const ENFORCEMENT_EVENTS_TABLE: &str = "
+    CREATE TABLE IF NOT EXISTS _aegis_enforcement_events (
+        id         TEXT PRIMARY KEY,
+        subject    TEXT NOT NULL,
+        permission TEXT NOT NULL,
+        resource   TEXT NOT NULL,
+        allowed    INTEGER NOT NULL,
+        revision   INTEGER NOT NULL,
+        timestamp  TEXT NOT NULL
+    )";
+
+const POLICY_VERSIONS_TABLE: &str = "
+    CREATE TABLE IF NOT EXISTS _aegis_policy_versions (
+        version     INTEGER PRIMARY KEY,
+        schema      TEXT NOT NULL,
+        created_at  TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT ''
     )";
 
 // ── Config ─────────────────────────────────────────────────────
@@ -199,6 +259,16 @@ impl SqliteStorage {
         conn.execute_batch(EVENTS_HASH_IDX)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         conn.execute_batch(SCHEMA_TABLE)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        conn.execute_batch(POLICY_DRAFTS_TABLE)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        conn.execute_batch(ANALYSIS_SCHEDULES_TABLE)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        conn.execute_batch(ANALYSIS_RUNS_TABLE)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        conn.execute_batch(ENFORCEMENT_EVENTS_TABLE)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        conn.execute_batch(POLICY_VERSIONS_TABLE)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         // V2: Add valid_until and condition columns (no-op if columns already exist)
         let _ = conn.execute_batch("ALTER TABLE _aegis_tuples ADD COLUMN valid_until TEXT");
@@ -1593,6 +1663,185 @@ impl StorageBackend for SqliteStorage {
             .query_row(params![version as i64], |row| row.get::<_, String>(0))
             .ok();
         Ok(result)
+    }
+
+    fn save_policy_draft(&self, draft: &PolicyDraft) -> AegisResult<()> {
+        let conn = self.conn()?;
+        let schema_json = serde_json::to_string(&draft.schema)
+            .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO _aegis_policy_drafts (id, name, description, schema_json, base_version, status, created_at, updated_at, created_by, approved_by, rejection_reason)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                draft.id.to_string(),
+                draft.name,
+                draft.description,
+                schema_json,
+                draft.base_version as i64,
+                draft.status.to_string(),
+                draft.created_at,
+                draft.updated_at,
+                draft.created_by,
+                draft.approved_by,
+                draft.rejection_reason,
+            ],
+        )
+        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
+
+    fn load_policy_draft(&self, id: &str) -> AegisResult<Option<PolicyDraft>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, name, description, schema_json, base_version, status, created_at, updated_at, created_by, approved_by, rejection_reason
+                 FROM _aegis_policy_drafts WHERE id = ?1",
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        let result = stmt
+            .query_row(params![id], |row| {
+                let id_str: String = row.get(0)?;
+                let name: String = row.get(1)?;
+                let description: String = row.get(2)?;
+                let schema_json: String = row.get(3)?;
+                let base_version: i64 = row.get(4)?;
+                let status_str: String = row.get(5)?;
+                let created_at: String = row.get(6)?;
+                let updated_at: String = row.get(7)?;
+                let created_by: String = row.get(8)?;
+                let approved_by: Option<String> = row.get(9)?;
+                let rejection_reason: Option<String> = row.get(10)?;
+
+                let schema = serde_json::from_str(&schema_json)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let status = match status_str.as_str() {
+                    "drafting" => crate::engine::policy_lifecycle::DraftStatus::Drafting,
+                    "under_review" => crate::engine::policy_lifecycle::DraftStatus::UnderReview,
+                    "approved" => crate::engine::policy_lifecycle::DraftStatus::Approved,
+                    "published" => crate::engine::policy_lifecycle::DraftStatus::Published,
+                    "rejected" => crate::engine::policy_lifecycle::DraftStatus::Rejected,
+                    "superseded" => crate::engine::policy_lifecycle::DraftStatus::Superseded,
+                    "archived" => crate::engine::policy_lifecycle::DraftStatus::Archived,
+                    other => return Err(rusqlite::Error::ToSqlConversionFailure(
+                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("unknown DraftStatus: {}", other)))
+                    )),
+                };
+                let id = uuid::Uuid::parse_str(&id_str)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+                Ok(PolicyDraft {
+                    id,
+                    name,
+                    description,
+                    schema,
+                    base_version: base_version as u32,
+                    status,
+                    created_at,
+                    updated_at,
+                    created_by,
+                    approved_by,
+                    rejection_reason,
+                })
+            });
+
+        match result {
+            Ok(draft) => Ok(Some(draft)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(AegisError::StorageQuery(e.to_string())),
+        }
+    }
+
+    fn delete_policy_draft(&self, id: &str) -> AegisResult<bool> {
+        let conn = self.conn()?;
+        let rows = conn
+            .execute(
+                "DELETE FROM _aegis_policy_drafts WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(rows > 0)
+    }
+
+    fn save_analysis_schedule(&self, schedule: &AnalysisSchedule) -> AegisResult<()> {
+        let conn = self.conn()?;
+        let queries_json = serde_json::to_string(&schedule.queries)
+            .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+        let compare_schema_json = schedule.compare_schema.as_ref()
+            .map(|s| serde_json::to_string(s))
+            .transpose()
+            .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO _aegis_analysis_schedules (id, name, interval_seconds, queries, compare_schema, enabled, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                schedule.id.to_string(),
+                schedule.name,
+                schedule.interval_seconds as i64,
+                queries_json,
+                compare_schema_json,
+                schedule.enabled as i64,
+                schedule.created_at,
+                schedule.updated_at,
+            ],
+        )
+        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
+
+    fn delete_analysis_schedule(&self, id: &str) -> AegisResult<bool> {
+        let conn = self.conn()?;
+        let rows = conn
+            .execute(
+                "DELETE FROM _aegis_analysis_schedules WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(rows > 0)
+    }
+
+    fn save_analysis_run(&self, run: &AnalysisRun) -> AegisResult<()> {
+        let conn = self.conn()?;
+        let summary_json = serde_json::to_string(&run.summary)
+            .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+        conn.execute(
+            "INSERT OR REPLACE INTO _aegis_analysis_runs (id, schedule_id, started_at, completed_at, status, summary, error_message)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                run.id.to_string(),
+                run.schedule_id.map(|id| id.to_string()),
+                run.started_at,
+                run.completed_at,
+                match run.status {
+                    crate::engine::scheduler::AnalysisRunStatus::Running => "running",
+                    crate::engine::scheduler::AnalysisRunStatus::Completed => "completed",
+                    crate::engine::scheduler::AnalysisRunStatus::Failed => "failed",
+                },
+                summary_json,
+                run.error_message,
+            ],
+        )
+        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
+
+    fn save_enforcement_event(&self, event: &EnforcementEvent) -> AegisResult<()> {
+        let conn = self.conn()?;
+        conn.execute(
+            "INSERT OR REPLACE INTO _aegis_enforcement_events (id, subject, permission, resource, allowed, revision, timestamp)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![
+                event.id.to_string(),
+                event.subject,
+                event.permission,
+                event.resource,
+                event.allowed as i64,
+                event.revision as i64,
+                event.timestamp,
+            ],
+        )
+        .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
     }
 }
 

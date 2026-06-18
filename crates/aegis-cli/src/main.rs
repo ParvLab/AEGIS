@@ -6,12 +6,15 @@ use clap::{Parser, Subcommand};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use aegis_core::engine::policy_lifecycle::DraftStatus;
+use aegis_core::engine::watch::WatchEventType;
 use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
 use aegis_core::storage::TupleFilter;
 use aegis_core::types::*;
+use std::time::Duration;
 
 #[cfg(feature = "rocksdb")]
 use aegis_core::storage::RocksDbStorage;
@@ -206,6 +209,151 @@ enum Commands {
         policy: String,
         #[arg(long)]
         transfer_to: Option<String>,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+
+    /// Manage policy lifecycle drafts
+    #[command(name = "policy-draft", subcommand)]
+    PolicyDraft(PolicyDraftAction),
+
+    /// Manage analysis schedules
+    #[command(name = "schedule", subcommand)]
+    Schedule(ScheduleAction),
+
+    /// Configure and query enforcement history
+    #[command(name = "enforcement", subcommand)]
+    Enforcement(EnforcementAction),
+
+    /// Subscribe to engine events (interactive)
+    Subscribe {
+        /// Comma-separated event types
+        event_types: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+        #[arg(long)]
+        schema: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PolicyDraftAction {
+    /// Create a new policy draft
+    Create {
+        name: String,
+        description: String,
+        #[arg(long)]
+        /// Path to schema YAML file
+        schema: Option<String>,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Validate a policy draft
+    Validate {
+        id: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Diff current schema against a draft's schema
+    Diff {
+        id: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Submit a draft for review
+    Submit {
+        id: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Approve a submitted draft
+    Approve {
+        id: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Reject a draft
+    Reject {
+        id: String,
+        reason: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Publish an approved draft
+    Publish {
+        id: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Archive a draft
+    Archive {
+        id: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// List all drafts, optionally filtered by status
+    List {
+        #[arg(long)]
+        status: Option<String>,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum ScheduleAction {
+    /// Create a new analysis schedule
+    Create {
+        /// Path to schedule config JSON file
+        config: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// List all schedules
+    List {
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Delete a schedule
+    Delete {
+        id: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Run analysis now (optionally for a specific schedule)
+    Run {
+        #[arg(long)]
+        schedule_id: Option<String>,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Get analysis run history
+    Runs {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum EnforcementAction {
+    /// Set enforcement history config (JSON)
+    Set {
+        /// Path to config JSON file
+        config: String,
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Get current enforcement history config
+    Get {
+        #[arg(long, default_value = "aegis.db")]
+        db: String,
+    },
+    /// Get enforcement trends
+    Trends {
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
         #[arg(long, default_value = "aegis.db")]
         db: String,
     },
@@ -825,6 +973,202 @@ fn main() -> Result<()> {
                     "revision": token.revision.as_u64(),
                 })
             );
+        }
+        Commands::PolicyDraft(action) => {
+            let (db, schema_path) = match action {
+                PolicyDraftAction::Create { db, schema, .. } => (db, schema.as_deref()),
+                PolicyDraftAction::Validate { db, .. } => (db, None),
+                PolicyDraftAction::Diff { db, .. } => (db, None),
+                PolicyDraftAction::Submit { db, .. } => (db, None),
+                PolicyDraftAction::Approve { db, .. } => (db, None),
+                PolicyDraftAction::Reject { db, .. } => (db, None),
+                PolicyDraftAction::Publish { db, .. } => (db, None),
+                PolicyDraftAction::Archive { db, .. } => (db, None),
+                PolicyDraftAction::List { db, .. } => (db, None),
+            };
+            let engine = mk_engine(db, schema_path)?;
+            match action {
+                PolicyDraftAction::Create { name, description, schema, .. } => {
+                    let draft = engine.create_policy_draft(name, description)?;
+                    if let Some(schema_path) = schema.as_ref() {
+                        let yaml = std::fs::read_to_string(schema_path)
+                            .with_context(|| format!("failed to read schema file {schema_path}"))?;
+                        let schema_obj = aegis_core::schema::parse_schema(&yaml)
+                            .context("failed to parse schema")?;
+                        let _ = engine.update_policy_draft(draft.id, schema_obj)?;
+                    }
+                    println!("{}", serde_json::to_string_pretty(&draft)?);
+                }
+                PolicyDraftAction::Validate { id, .. } => {
+                    let uid = uuid::Uuid::parse_str(id)
+                        .with_context(|| format!("invalid id: {id}"))?;
+                    let report = engine.validate_policy_draft(uid)?;
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                }
+                PolicyDraftAction::Diff { id, .. } => {
+                    let uid = uuid::Uuid::parse_str(id)
+                        .with_context(|| format!("invalid id: {id}"))?;
+                    let drafts = engine.list_policy_drafts(None)?;
+                    let draft = drafts.into_iter()
+                        .find(|d| d.id == uid)
+                        .ok_or_else(|| anyhow::anyhow!("draft {id} not found"))?;
+                    let report = engine.access_diff(&*engine.schema(), &draft.schema, None, None)?;
+                    println!("{}", serde_json::to_string_pretty(&report)?);
+                }
+                PolicyDraftAction::Submit { id, .. } => {
+                    let uid = uuid::Uuid::parse_str(id)
+                        .with_context(|| format!("invalid id: {id}"))?;
+                    let draft = engine.submit_policy_draft_for_review(uid)?;
+                    println!("{}", serde_json::to_string_pretty(&draft)?);
+                }
+                PolicyDraftAction::Approve { id, .. } => {
+                    let uid = uuid::Uuid::parse_str(id)
+                        .with_context(|| format!("invalid id: {id}"))?;
+                    let draft = engine.approve_policy_draft(uid)?;
+                    println!("{}", serde_json::to_string_pretty(&draft)?);
+                }
+                PolicyDraftAction::Reject { id, reason, .. } => {
+                    let uid = uuid::Uuid::parse_str(id)
+                        .with_context(|| format!("invalid id: {id}"))?;
+                    let draft = engine.reject_policy_draft(uid, reason)?;
+                    println!("{}", serde_json::to_string_pretty(&draft)?);
+                }
+                PolicyDraftAction::Publish { id, .. } => {
+                    let uid = uuid::Uuid::parse_str(id)
+                        .with_context(|| format!("invalid id: {id}"))?;
+                    let result = engine.publish_policy_draft(uid)?;
+                    println!("{}", serde_json::to_string_pretty(&result)?);
+                }
+                PolicyDraftAction::Archive { id, .. } => {
+                    let uid = uuid::Uuid::parse_str(id)
+                        .with_context(|| format!("invalid id: {id}"))?;
+                    let draft = engine.archive_policy_draft(uid)?;
+                    println!("{}", serde_json::to_string_pretty(&draft)?);
+                }
+                PolicyDraftAction::List { status, .. } => {
+                    let filter = match status {
+                        Some(s) => {
+                            let status_val = match s.to_lowercase().as_str() {
+                                "drafting" => DraftStatus::Drafting,
+                                "under_review" | "underreview" => DraftStatus::UnderReview,
+                                "approved" => DraftStatus::Approved,
+                                "published" => DraftStatus::Published,
+                                "rejected" => DraftStatus::Rejected,
+                                "superseded" => DraftStatus::Superseded,
+                                "archived" => DraftStatus::Archived,
+                                _ => anyhow::bail!("invalid status: {s}"),
+                            };
+                            Some(status_val)
+                        }
+                        None => None,
+                    };
+                    let drafts = engine.list_policy_drafts(filter)?;
+                    println!("{}", serde_json::to_string_pretty(&drafts)?);
+                }
+            }
+        }
+        Commands::Schedule(action) => {
+            let db = match action {
+                ScheduleAction::Create { db, .. } => db,
+                ScheduleAction::List { db } => db,
+                ScheduleAction::Delete { db, .. } => db,
+                ScheduleAction::Run { db, .. } => db,
+                ScheduleAction::Runs { db, .. } => db,
+            };
+            let engine = mk_engine(db, None)?;
+            match action {
+                ScheduleAction::Create { config, .. } => {
+                    let json_str = std::fs::read_to_string(config)
+                        .with_context(|| format!("failed to read config file {config}"))?;
+                    let cfg: aegis_core::engine::scheduler::AnalysisScheduleConfig =
+                        serde_json::from_str(&json_str)
+                            .context("failed to parse schedule config")?;
+                    let schedule = engine.create_analysis_schedule(&cfg.name, cfg.interval_seconds, cfg.queries, cfg.compare_schema)?;
+                    println!("{}", serde_json::to_string_pretty(&schedule)?);
+                }
+                ScheduleAction::List { .. } => {
+                    let schedules = engine.list_analysis_schedules()?;
+                    println!("{}", serde_json::to_string_pretty(&schedules)?);
+                }
+                ScheduleAction::Delete { id, .. } => {
+                    let uid = uuid::Uuid::parse_str(id)
+                        .with_context(|| format!("invalid id: {id}"))?;
+                    let deleted = engine.delete_analysis_schedule(uid)?;
+                    println!("{}", if deleted { "deleted" } else { "not found" });
+                }
+                ScheduleAction::Run { schedule_id, .. } => {
+                    let uid = schedule_id
+                        .as_ref()
+                        .map(|id| uuid::Uuid::parse_str(id))
+                        .transpose()
+                        .with_context(|| "invalid schedule id")?;
+                    let runs = engine.run_analysis_now(uid)?;
+                    println!("{}", serde_json::to_string_pretty(&runs)?);
+                }
+                ScheduleAction::Runs { limit, .. } => {
+                    let runs = engine.get_analysis_runs(*limit)?;
+                    println!("{}", serde_json::to_string_pretty(&runs)?);
+                }
+            }
+        }
+        Commands::Enforcement(action) => {
+            let db = match action {
+                EnforcementAction::Set { db, .. } => db,
+                EnforcementAction::Get { db } => db,
+                EnforcementAction::Trends { db, .. } => db,
+            };
+            let engine = mk_engine(db, None)?;
+            match action {
+                EnforcementAction::Set { config, .. } => {
+                    let json_str = std::fs::read_to_string(config)
+                        .with_context(|| format!("failed to read config file {config}"))?;
+                    let config: aegis_core::engine::enforcement_history::EnforcementHistoryConfig =
+                        serde_json::from_str(&json_str)
+                            .context("failed to parse enforcement config")?;
+                    engine.set_enforcement_history_config(config)?;
+                    println!("ok");
+                }
+                EnforcementAction::Get { .. } => {
+                    let config = engine.get_enforcement_history_config()?;
+                    println!("{}", serde_json::to_string_pretty(&config)?);
+                }
+                EnforcementAction::Trends { limit, .. } => {
+                    let trends = engine.enforcement_trends(*limit)?;
+                    println!("{}", serde_json::to_string_pretty(&trends)?);
+                }
+            }
+        }
+        Commands::Subscribe { event_types, db, schema } => {
+            let engine = mk_engine(db, schema.as_deref())?;
+            let types: Vec<WatchEventType> = event_types
+                .split(',')
+                .map(|s| match s.trim().to_lowercase().as_str() {
+                    "tupleadded" => Ok(WatchEventType::TupleAdded),
+                    "tupleremoved" => Ok(WatchEventType::TupleRemoved),
+                    "policyversioncreated" => Ok(WatchEventType::PolicyVersionCreated),
+                    "policyrolledback" => Ok(WatchEventType::PolicyRolledBack),
+                    "integrityfinding" => Ok(WatchEventType::IntegrityFinding),
+                    "analysiscompleted" => Ok(WatchEventType::AnalysisCompleted),
+                    "ratelimitwarning" => Ok(WatchEventType::RateLimitWarning),
+                    _ => anyhow::bail!("unknown event type: {}", s),
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let sub = engine.subscribe(types);
+            println!("Subscribed (id: {}). Polling... Press Ctrl+C to stop.", sub.id());
+            loop {
+                if let Some(event) = sub.try_recv().ok() {
+                    let json = serde_json::json!({
+                        "event_type": format!("{:?}", event.event_type),
+                        "subject": event.subject,
+                        "relation": event.relation,
+                        "object": event.object,
+                        "revision": event.revision.as_u64(),
+                        "payload": event.payload,
+                    });
+                    println!("{}", serde_json::to_string(&json)?);
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
         }
     }
 

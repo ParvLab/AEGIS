@@ -9,8 +9,11 @@ use rustyline::hint::Hinter;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Config, Context as RlContext, Editor, Helper};
 
-use aegis_core::engine::GraphEngine;
+use aegis_core::engine::enforcement_history::EnforcementHistoryConfig;
+use aegis_core::engine::policy_lifecycle::DraftStatus;
+use aegis_core::engine::scheduler::{AnalysisScheduleConfig, AnalysisRunStatus};
 use aegis_core::engine::watch::{WatchEventType, WatchFilter, WatchSubscription};
+use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::{StorageBackend, TupleFilter};
@@ -23,7 +26,9 @@ use aegis_core::storage::RocksDbStorage;
 const COMMANDS: &[&str] = &[
     "check", "write", "delete", "list", "explain", "health", "dry-run",
     "audit", "export", "export-subject", "schema", "query", "watch", "unwatch",
-    "backup", "restore", "import", "recover", "delete-subject", "help", "exit",
+    "backup", "restore", "import", "recover", "delete-subject",
+    "policy-draft", "schedule", "enforcement", "subscribe",
+    "help", "exit",
 ];
 
 struct ReplState {
@@ -122,6 +127,24 @@ fn print_help() {
     println!("  delete-subject <subject> --policy <cascade|fail|transfer> [--transfer-to X]");
     println!("                                                   - Delete subject with policy");
     println!("  export-subject <subject>                          - Export all tuples for a subject");
+    println!("  policy-draft create <name> <desc>                 - Create a policy draft");
+    println!("  policy-draft validate <id>                        - Validate a policy draft");
+    println!("  policy-draft diff <id>                            - Diff draft against current schema");
+    println!("  policy-draft submit <id>                          - Submit draft for review");
+    println!("  policy-draft approve <id>                         - Approve a draft");
+    println!("  policy-draft reject <id> <reason>                 - Reject a draft");
+    println!("  policy-draft publish <id>                         - Publish an approved draft");
+    println!("  policy-draft archive <id>                         - Archive a draft");
+    println!("  policy-draft list [status]                        - List drafts");
+    println!("  schedule create <config>                          - Create analysis schedule from JSON");
+    println!("  schedule list                                     - List schedules");
+    println!("  schedule delete <id>                              - Delete a schedule");
+    println!("  schedule run [id]                                 - Run analysis now");
+    println!("  schedule runs [limit]                             - Show analysis run history");
+    println!("  enforcement set <config>                          - Set enforcement config from JSON");
+    println!("  enforcement get                                   - Show enforcement config");
+    println!("  enforcement trends [limit]                        - Show enforcement trends");
+    println!("  subscribe <event_types>                           - Subscribe to engine events");
     println!("  help                                             - Show this help");
     println!("  exit                                             - Exit the REPL");
 }
@@ -325,6 +348,10 @@ fn process_command(state: &mut ReplState, line: &str) -> Result<()> {
         "import" => cmd_import(state, &parts[1..]),
         "recover" => cmd_recover_repl(state, &parts[1..]),
         "delete-subject" => cmd_delete_subject_repl(state, &parts[1..]),
+        "policy-draft" => cmd_policy_draft(state, &parts[1..]),
+        "schedule" => cmd_schedule(state, &parts[1..]),
+        "enforcement" => cmd_enforcement(state, &parts[1..]),
+        "subscribe" => cmd_subscribe(state, &parts[1..]),
         "help" => {
             print_help();
             Ok(())
@@ -1031,6 +1058,330 @@ fn cmd_export_subject_repl(state: &ReplState, args: &[&str]) -> Result<()> {
             }
             println!("  {} tuple(s)", tuples.len());
         }
+    }
+    Ok(())
+}
+
+fn cmd_policy_draft(state: &mut ReplState, args: &[&str]) -> Result<()> {
+    if args.is_empty() {
+        eprintln!("Usage: policy-draft <subcommand> [args]");
+        return Ok(());
+    }
+    match args[0] {
+        "create" => {
+            if args.len() < 3 {
+                eprintln!("Usage: policy-draft create <name> <description>");
+                return Ok(());
+            }
+            let draft = state.engine.create_policy_draft(args[1], args[2])?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&draft)?);
+            } else {
+                println!("  {} Created draft {} ({})", green("✓"), draft.name, draft.id);
+            }
+        }
+        "validate" => {
+            if args.len() < 2 {
+                eprintln!("Usage: policy-draft validate <id>");
+                return Ok(());
+            }
+            let uid = uuid::Uuid::parse_str(args[1])
+                .with_context(|| format!("invalid id: {}", args[1]))?;
+            let report = state.engine.validate_policy_draft(uid)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("  {} Validation: {}", green("✓"),
+                    if report.schema_valid { "valid" } else { "invalid" });
+            }
+        }
+        "diff" => {
+            if args.len() < 2 {
+                eprintln!("Usage: policy-draft diff <id>");
+                return Ok(());
+            }
+            let uid = uuid::Uuid::parse_str(args[1])
+                .with_context(|| format!("invalid id: {}", args[1]))?;
+            let drafts = state.engine.list_policy_drafts(None)?;
+            let draft = drafts.into_iter()
+                .find(|d| d.id == uid)
+                .ok_or_else(|| anyhow::anyhow!("draft {} not found", args[1]))?;
+            let report = state.engine.access_diff(&*state.engine.schema(), &draft.schema, None, None)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!("  {} Diff computed", green("✓"));
+            }
+        }
+        "submit" => {
+            if args.len() < 2 {
+                eprintln!("Usage: policy-draft submit <id>");
+                return Ok(());
+            }
+            let uid = uuid::Uuid::parse_str(args[1])
+                .with_context(|| format!("invalid id: {}", args[1]))?;
+            let draft = state.engine.submit_policy_draft_for_review(uid)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&draft)?);
+            } else {
+                println!("  {} Draft {} submitted for review", green("✓"), draft.id);
+            }
+        }
+        "approve" => {
+            if args.len() < 2 {
+                eprintln!("Usage: policy-draft approve <id>");
+                return Ok(());
+            }
+            let uid = uuid::Uuid::parse_str(args[1])
+                .with_context(|| format!("invalid id: {}", args[1]))?;
+            let draft = state.engine.approve_policy_draft(uid)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&draft)?);
+            } else {
+                println!("  {} Draft {} approved", green("✓"), draft.id);
+            }
+        }
+        "reject" => {
+            if args.len() < 3 {
+                eprintln!("Usage: policy-draft reject <id> <reason>");
+                return Ok(());
+            }
+            let uid = uuid::Uuid::parse_str(args[1])
+                .with_context(|| format!("invalid id: {}", args[1]))?;
+            let reason = args[2..].join(" ");
+            let draft = state.engine.reject_policy_draft(uid, &reason)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&draft)?);
+            } else {
+                println!("  {} Draft {} rejected", green("✓"), draft.id);
+            }
+        }
+        "publish" => {
+            if args.len() < 2 {
+                eprintln!("Usage: policy-draft publish <id>");
+                return Ok(());
+            }
+            let uid = uuid::Uuid::parse_str(args[1])
+                .with_context(|| format!("invalid id: {}", args[1]))?;
+            let result = state.engine.publish_policy_draft(uid)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&result)?);
+            } else {
+                println!("  {} Draft published as policy version {}", green("✓"), result.policy_version);
+            }
+        }
+        "archive" => {
+            if args.len() < 2 {
+                eprintln!("Usage: policy-draft archive <id>");
+                return Ok(());
+            }
+            let uid = uuid::Uuid::parse_str(args[1])
+                .with_context(|| format!("invalid id: {}", args[1]))?;
+            let draft = state.engine.archive_policy_draft(uid)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&draft)?);
+            } else {
+                println!("  {} Draft {} archived", green("✓"), draft.id);
+            }
+        }
+        "list" => {
+            let filter = args.get(1).and_then(|s| {
+                match s.to_lowercase().as_str() {
+                    "drafting" => Some(DraftStatus::Drafting),
+                    "under_review" | "underreview" => Some(DraftStatus::UnderReview),
+                    "approved" => Some(DraftStatus::Approved),
+                    "published" => Some(DraftStatus::Published),
+                    "rejected" => Some(DraftStatus::Rejected),
+                    "superseded" => Some(DraftStatus::Superseded),
+                    "archived" => Some(DraftStatus::Archived),
+                    _ => {
+                        eprintln!("  {} Invalid status: {s}", yellow("!"));
+                        None
+                    }
+                }
+            });
+            let drafts = state.engine.list_policy_drafts(filter)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&drafts)?);
+            } else {
+                if drafts.is_empty() {
+                    println!("  {} No drafts found", yellow("!"));
+                } else {
+                    for d in &drafts {
+                        println!("  {} {}  [{}]  {}", green("•"), d.id, d.status, d.name);
+                    }
+                }
+            }
+        }
+        other => {
+            eprintln!("Unknown policy-draft subcommand: {other}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_schedule(state: &mut ReplState, args: &[&str]) -> Result<()> {
+    if args.is_empty() {
+        eprintln!("Usage: schedule <subcommand> [args]");
+        return Ok(());
+    }
+    match args[0] {
+        "create" => {
+            if args.len() < 2 {
+                eprintln!("Usage: schedule create <config_path>");
+                return Ok(());
+            }
+            let json_str = std::fs::read_to_string(args[1])
+                .with_context(|| format!("failed to read config: {}", args[1]))?;
+            let cfg: AnalysisScheduleConfig = serde_json::from_str(&json_str)?;
+            let schedule = state.engine.create_analysis_schedule(&cfg.name, cfg.interval_seconds, cfg.queries, cfg.compare_schema)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&schedule)?);
+            } else {
+                println!("  {} Created schedule {} ({})", green("✓"), schedule.name, schedule.id);
+            }
+        }
+        "list" => {
+            let schedules = state.engine.list_analysis_schedules()?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&schedules)?);
+            } else {
+                if schedules.is_empty() {
+                    println!("  {} No schedules found", yellow("!"));
+                } else {
+                    for s in &schedules {
+                        println!("  {} {}  ({}s interval)", green("•"), s.name, s.interval_seconds);
+                    }
+                }
+            }
+        }
+        "delete" => {
+            if args.len() < 2 {
+                eprintln!("Usage: schedule delete <id>");
+                return Ok(());
+            }
+            let uid = uuid::Uuid::parse_str(args[1])?;
+            let deleted = state.engine.delete_analysis_schedule(uid)?;
+            if state.json_mode {
+                println!(r#"{{"deleted":{deleted}}}"#);
+            } else {
+                println!("  {} {}",
+                    if deleted { green("✓") } else { yellow("!") },
+                    if deleted { "Schedule deleted" } else { "Schedule not found" });
+            }
+        }
+        "run" => {
+            let schedule_id = args.get(1).map(|s| uuid::Uuid::parse_str(s)).transpose()?;
+            let runs = state.engine.run_analysis_now(schedule_id)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&runs)?);
+            } else {
+                println!("  {} {} analysis run(s) completed", green("✓"), runs.len());
+            }
+        }
+        "runs" => {
+            let limit: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
+            let runs = state.engine.get_analysis_runs(limit)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&runs)?);
+            } else {
+                if runs.is_empty() {
+                    println!("  {} No runs found", yellow("!"));
+                } else {
+                    for r in &runs {
+                        println!("  {} {}  [{}]", green("•"), r.id,
+                            if r.status == AnalysisRunStatus::Completed { "completed" } else { "failed" });
+                    }
+                }
+            }
+        }
+        other => {
+            eprintln!("Unknown schedule subcommand: {other}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_enforcement(state: &mut ReplState, args: &[&str]) -> Result<()> {
+    if args.is_empty() {
+        eprintln!("Usage: enforcement <subcommand> [args]");
+        return Ok(());
+    }
+    match args[0] {
+        "set" => {
+            if args.len() < 2 {
+                eprintln!("Usage: enforcement set <config_path>");
+                return Ok(());
+            }
+            let json_str = std::fs::read_to_string(args[1])
+                .with_context(|| format!("failed to read config: {}", args[1]))?;
+            let config: EnforcementHistoryConfig = serde_json::from_str(&json_str)?;
+            state.engine.set_enforcement_history_config(config)?;
+            if state.json_mode {
+                println!(r#"{{"status":"ok"}}"#);
+            } else {
+                println!("  {} Enforcement config updated", green("✓"));
+            }
+        }
+        "get" => {
+            let config = state.engine.get_enforcement_history_config()?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&config)?);
+            } else {
+                println!("  {} Enabled: {}", bold("Enforcement"), config.enabled);
+                println!("  {}: {:?}", bold("Sampling"), config.sampling);
+                println!("  {}: {}", bold("Max events/min"), config.max_events_per_minute);
+                println!("  {}: {}", bold("Max rows"), config.max_rows);
+                println!("  {}: {} days", bold("Max age"), config.max_days);
+            }
+        }
+        "trends" => {
+            let limit: usize = args.get(1).and_then(|s| s.parse().ok()).unwrap_or(100);
+            let trends = state.engine.enforcement_trends(limit)?;
+            if state.json_mode {
+                println!("{}", serde_json::to_string_pretty(&trends)?);
+            } else {
+                println!("  {} Total events: {}", bold("Trends"), trends.total_events);
+                println!("  {} Allowed: {}", green("✓"), trends.allowed_count);
+                println!("  {} Denied: {}", red("✗"), trends.denied_count);
+                println!("  {} By resource:", bold("Top"));
+                for (i, (res, count)) in trends.by_resource.iter().take(5).enumerate() {
+                    println!("    {}. {} ({})", i + 1, res, count);
+                }
+            }
+        }
+        other => {
+            eprintln!("Unknown enforcement subcommand: {other}");
+        }
+    }
+    Ok(())
+}
+
+fn cmd_subscribe(state: &mut ReplState, args: &[&str]) -> Result<()> {
+    if args.is_empty() {
+        eprintln!("Usage: subscribe <event_types>");
+        eprintln!("  event_types: comma-separated, e.g. TupleAdded,TupleRemoved");
+        return Ok(());
+    }
+    let types: Vec<WatchEventType> = args[0]
+        .split(',')
+        .map(|s| match s.trim().to_lowercase().as_str() {
+            "tupleadded" => Ok(WatchEventType::TupleAdded),
+            "tupleremoved" => Ok(WatchEventType::TupleRemoved),
+            "policyversioncreated" => Ok(WatchEventType::PolicyVersionCreated),
+            "policyrolledback" => Ok(WatchEventType::PolicyRolledBack),
+            "integrityfinding" => Ok(WatchEventType::IntegrityFinding),
+            "analysiscompleted" => Ok(WatchEventType::AnalysisCompleted),
+            "ratelimitwarning" => Ok(WatchEventType::RateLimitWarning),
+            _ => anyhow::bail!("unknown event type: {}", s),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let sub = state.engine.subscribe(types);
+    state.watch_sub = Some(sub);
+    if state.json_mode {
+        println!(r#"{{"status":"subscribed"}}"#);
+    } else {
+        println!("  {} Subscribed to events. Type 'unwatch' to stop.", green("✓"));
     }
     Ok(())
 }

@@ -11,6 +11,7 @@ use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
 use aegis_core::types::*;
 use aegis_core::types::PartitionId;
+
 use chrono::{DateTime, Utc};
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -782,6 +783,206 @@ impl PyAegis {
         let result = self.engine.access_diff(&schema_before, &schema_after, None, max_checks)
             .map_err(py_err)?;
         serde_json::to_string(&result).map_err(py_err)
+    }
+
+    // ── V7 Policy Lifecycle ──
+
+    fn create_policy_draft(&self, name: &str, description: &str) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let draft = self.engine.create_policy_draft(name, description).map_err(py_err)?;
+        serde_json::to_string(&draft).map_err(py_err)
+    }
+
+    fn update_policy_draft(&self, id: &str, schema_json: &str) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
+        let schema: Schema = serde_json::from_str(schema_json).map_err(py_err)?;
+        let draft = self.engine.update_policy_draft(uid, schema).map_err(py_err)?;
+        serde_json::to_string(&draft).map_err(py_err)
+    }
+
+    fn validate_policy_draft(&self, id: &str) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
+        let report = self.engine.validate_policy_draft(uid).map_err(py_err)?;
+        serde_json::to_string(&report).map_err(py_err)
+    }
+
+    fn submit_policy_draft_for_review(&self, id: &str) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
+        let draft = self.engine.submit_policy_draft_for_review(uid).map_err(py_err)?;
+        serde_json::to_string(&draft).map_err(py_err)
+    }
+
+    fn approve_policy_draft(&self, id: &str) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
+        let draft = self.engine.approve_policy_draft(uid).map_err(py_err)?;
+        serde_json::to_string(&draft).map_err(py_err)
+    }
+
+    fn reject_policy_draft(&self, id: &str, rejection_reason: &str) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
+        let draft = self.engine.reject_policy_draft(uid, rejection_reason).map_err(py_err)?;
+        serde_json::to_string(&draft).map_err(py_err)
+    }
+
+    fn publish_policy_draft(&self, id: &str) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
+        let result = self.engine.publish_policy_draft(uid).map_err(py_err)?;
+        serde_json::to_string(&result).map_err(py_err)
+    }
+
+    fn archive_policy_draft(&self, id: &str) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
+        let draft = self.engine.archive_policy_draft(uid).map_err(py_err)?;
+        serde_json::to_string(&draft).map_err(py_err)
+    }
+
+    #[pyo3(signature = (filter_status=None))]
+    fn list_policy_drafts(&self, filter_status: Option<&str>) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let status = filter_status
+            .map(|s| match s.to_lowercase().as_str() {
+                "drafting" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Drafting),
+                "underreview" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::UnderReview),
+                "approved" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Approved),
+                "rejected" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Rejected),
+                "published" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Published),
+                "archived" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Archived),
+                _ => Err(py_err(format!("unknown status: {}", s))),
+            })
+            .transpose()?;
+        let drafts = self.engine.list_policy_drafts(status).map_err(py_err)?;
+        serde_json::to_string(&drafts).map_err(py_err)
+    }
+
+    // ── V7 Scheduler ──
+
+    #[pyo3(signature = (name, interval_seconds, queries_json, compare_schema_json=None))]
+    fn create_analysis_schedule(&self, name: &str, interval_seconds: f64, queries_json: &str, compare_schema_json: Option<&str>) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let queries: Vec<aegis_core::types::analysis::CheckQuery> = serde_json::from_str(queries_json).map_err(py_err)?;
+        let compare_schema = compare_schema_json
+            .map(|s| serde_json::from_str(s).map_err(py_err))
+            .transpose()?;
+        let schedule = self.engine.create_analysis_schedule(name, interval_seconds as u64, queries, compare_schema)
+            .map_err(py_err)?;
+        serde_json::to_string(&schedule).map_err(py_err)
+    }
+
+    fn list_analysis_schedules(&self) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let schedules = self.engine.list_analysis_schedules().map_err(py_err)?;
+        serde_json::to_string(&schedules).map_err(py_err)
+    }
+
+    fn delete_analysis_schedule(&self, id: &str) -> PyResult<bool> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
+        self.engine.delete_analysis_schedule(uid).map_err(py_err)
+    }
+
+    #[pyo3(signature = (schedule_id=None))]
+    fn run_analysis_now(&self, schedule_id: Option<&str>) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let uid = schedule_id
+            .map(|id| uuid::Uuid::parse_str(id).map_err(py_err))
+            .transpose()?;
+        let runs = self.engine.run_analysis_now(uid).map_err(py_err)?;
+        serde_json::to_string(&runs).map_err(py_err)
+    }
+
+    #[pyo3(signature = (limit=100.0))]
+    fn get_analysis_runs(&self, limit: f64) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let runs = self.engine.get_analysis_runs(limit as usize).map_err(py_err)?;
+        serde_json::to_string(&runs).map_err(py_err)
+    }
+
+    // ── V7 Enforcement History ──
+
+    fn set_enforcement_history_config(&self, config_json: &str) -> PyResult<()> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let config: aegis_core::engine::enforcement_history::EnforcementHistoryConfig =
+            serde_json::from_str(config_json).map_err(py_err)?;
+        self.engine.set_enforcement_history_config(config).map_err(py_err)
+    }
+
+    fn get_enforcement_history_config(&self) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let config = self.engine.get_enforcement_history_config().map_err(py_err)?;
+        serde_json::to_string(&config).map_err(py_err)
+    }
+
+    #[pyo3(signature = (limit=100.0))]
+    fn enforcement_trends(&self, limit: f64) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        let trends = self.engine.enforcement_trends(limit as usize).map_err(py_err)?;
+        serde_json::to_string(&trends).map_err(py_err)
+    }
+
+    // ── V7 Subscribe ──
+
+    fn subscribe(&self, event_types: Vec<String>) -> PyResult<String> {
+        if self.closed.load(Ordering::Relaxed) {
+            return Err(py_err("engine is closed"));
+        }
+        use aegis_core::engine::watch::WatchEventType;
+        let types: Vec<WatchEventType> = event_types
+            .iter()
+            .map(|s| match s.to_lowercase().as_str() {
+                "tupleadded" => Ok(WatchEventType::TupleAdded),
+                "tupleremoved" => Ok(WatchEventType::TupleRemoved),
+                "policyversioncreated" => Ok(WatchEventType::PolicyVersionCreated),
+                "policyrolledback" => Ok(WatchEventType::PolicyRolledBack),
+                "integrityfinding" => Ok(WatchEventType::IntegrityFinding),
+                "analysiscompleted" => Ok(WatchEventType::AnalysisCompleted),
+                "ratelimitwarning" => Ok(WatchEventType::RateLimitWarning),
+                _ => Err(py_err(format!("unknown event type: {}", s))),
+            })
+            .collect::<PyResult<Vec<_>>>()?;
+        let sub = self.engine.subscribe(types);
+        // Return subscription ID as JSON so user can poll/unsubscribe via other means
+        Ok(serde_json::json!({"subscription_id": sub.id().to_string()}).to_string())
     }
 
     fn close(&self) -> PyResult<()> {

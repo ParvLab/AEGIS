@@ -3,11 +3,14 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
-use crate::error::AegisResult;
+use crate::error::{AegisError, AegisResult};
 use crate::storage::memory::InMemoryStorage;
 use crate::storage::traits::{
     BackendType, IntegrityReport, StorageBackend, StorageMeta, TupleFilter,
 };
+use crate::engine::enforcement_history::EnforcementEvent;
+use crate::engine::policy_lifecycle::PolicyDraft;
+use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationParams, PartitionId, Relation,
     RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
@@ -279,6 +282,28 @@ pub trait AsyncStorageBackend: Send + Sync {
         let _ = partition_id;
         Ok(None)
     }
+
+    async fn save_policy_draft(&self, _draft: &PolicyDraft) -> AegisResult<()> {
+        Err(AegisError::UnsupportedStorageOperation("async save_policy_draft not supported".into()))
+    }
+    async fn load_policy_draft(&self, _id: &str) -> AegisResult<Option<PolicyDraft>> {
+        Err(AegisError::UnsupportedStorageOperation("async load_policy_draft not supported".into()))
+    }
+    async fn delete_policy_draft(&self, _id: &str) -> AegisResult<bool> {
+        Err(AegisError::UnsupportedStorageOperation("async delete_policy_draft not supported".into()))
+    }
+    async fn save_analysis_schedule(&self, _schedule: &AnalysisSchedule) -> AegisResult<()> {
+        Err(AegisError::UnsupportedStorageOperation("async save_analysis_schedule not supported".into()))
+    }
+    async fn delete_analysis_schedule(&self, _id: &str) -> AegisResult<bool> {
+        Err(AegisError::UnsupportedStorageOperation("async delete_analysis_schedule not supported".into()))
+    }
+    async fn save_analysis_run(&self, _run: &AnalysisRun) -> AegisResult<()> {
+        Err(AegisError::UnsupportedStorageOperation("async save_analysis_run not supported".into()))
+    }
+    async fn save_enforcement_event(&self, _event: &EnforcementEvent) -> AegisResult<()> {
+        Err(AegisError::UnsupportedStorageOperation("async save_enforcement_event not supported".into()))
+    }
 }
 
 /// In-memory async storage backend for testing and non-persistent use.
@@ -514,6 +539,28 @@ impl AsyncStorageBackend for InMemoryAsyncStorage {
         partition_id: &PartitionId,
     ) -> AegisResult<Option<String>> {
         lock_storage(&self.storage)?.verify_audit_chain(partition_id)
+    }
+
+    async fn save_policy_draft(&self, draft: &PolicyDraft) -> AegisResult<()> {
+        lock_storage(&self.storage)?.save_policy_draft(draft)
+    }
+    async fn load_policy_draft(&self, id: &str) -> AegisResult<Option<PolicyDraft>> {
+        lock_storage(&self.storage)?.load_policy_draft(id)
+    }
+    async fn delete_policy_draft(&self, id: &str) -> AegisResult<bool> {
+        lock_storage(&self.storage)?.delete_policy_draft(id)
+    }
+    async fn save_analysis_schedule(&self, schedule: &AnalysisSchedule) -> AegisResult<()> {
+        lock_storage(&self.storage)?.save_analysis_schedule(schedule)
+    }
+    async fn delete_analysis_schedule(&self, id: &str) -> AegisResult<bool> {
+        lock_storage(&self.storage)?.delete_analysis_schedule(id)
+    }
+    async fn save_analysis_run(&self, run: &AnalysisRun) -> AegisResult<()> {
+        lock_storage(&self.storage)?.save_analysis_run(run)
+    }
+    async fn save_enforcement_event(&self, event: &EnforcementEvent) -> AegisResult<()> {
+        lock_storage(&self.storage)?.save_enforcement_event(event)
     }
 }
 

@@ -7,7 +7,7 @@ use aegis_core::engine::hooks::LogLevel;
 
 use aegis_core::engine::condition::ConditionEvalContext;
 use aegis_core::engine::ratelimit::{RateLimitConfig, TokenBucketRateLimiter};
-use aegis_core::engine::watch::{WatchEvent, WatchFilter, WatchSubscription};
+use aegis_core::engine::watch::{WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
 use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
@@ -1221,6 +1221,315 @@ impl JsAegis {
             self.engine
                 .rollback_policy(version)
                 .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+}
+
+// ── V7 Policy Lifecycle ────────────────────────────────────────────────────────────────
+
+#[napi]
+impl JsAegis {
+    #[napi]
+    pub fn create_policy_draft(
+        &self,
+        name: String,
+        description: String,
+    ) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let draft = self
+                .engine
+                .create_policy_draft(&name, &description)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&draft)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn update_policy_draft(
+        &self,
+        id: String,
+        schema_json: String,
+    ) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let uid = uuid::Uuid::parse_str(&id)
+                .map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e)))?;
+            let schema: aegis_core::types::Schema = serde_json::from_str(&schema_json)
+                .map_err(|e| napi::Error::from_reason(format!("invalid schema: {}", e)))?;
+            let draft = self
+                .engine
+                .update_policy_draft(uid, schema)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&draft)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn validate_policy_draft(&self, id: String) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let uid = uuid::Uuid::parse_str(&id)
+                .map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e)))?;
+            let report = self
+                .engine
+                .validate_policy_draft(uid)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&report)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn submit_policy_draft_for_review(&self, id: String) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let uid = uuid::Uuid::parse_str(&id)
+                .map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e)))?;
+            let draft = self
+                .engine
+                .submit_policy_draft_for_review(uid)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&draft)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn approve_policy_draft(&self, id: String) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let uid = uuid::Uuid::parse_str(&id)
+                .map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e)))?;
+            let draft = self
+                .engine
+                .approve_policy_draft(uid)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&draft)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn reject_policy_draft(&self, id: String, rejection_reason: String) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let uid = uuid::Uuid::parse_str(&id)
+                .map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e)))?;
+            let draft = self
+                .engine
+                .reject_policy_draft(uid, &rejection_reason)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&draft)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn publish_policy_draft(&self, id: String) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let uid = uuid::Uuid::parse_str(&id)
+                .map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e)))?;
+            let result = self
+                .engine
+                .publish_policy_draft(uid)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&result)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn archive_policy_draft(&self, id: String) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let uid = uuid::Uuid::parse_str(&id)
+                .map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e)))?;
+            let draft = self
+                .engine
+                .archive_policy_draft(uid)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&draft)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn list_policy_drafts(&self, filter_status: Option<String>) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let status = filter_status
+                .as_deref()
+                .map(|s| match s.to_lowercase().as_str() {
+                    "drafting" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Drafting),
+                    "underreview" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::UnderReview),
+                    "approved" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Approved),
+                    "rejected" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Rejected),
+                    "published" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Published),
+                    "archived" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Archived),
+                    _ => Err(napi::Error::from_reason(format!("unknown status: {}", s))),
+                })
+                .transpose()?;
+            let drafts = self
+                .engine
+                .list_policy_drafts(status)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&drafts)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    // ── V7 Scheduler ──
+
+    #[napi]
+    pub fn create_analysis_schedule(
+        &self,
+        name: String,
+        interval_seconds: f64,
+        queries_json: String,
+        compare_schema_json: Option<String>,
+    ) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let queries: Vec<aegis_core::types::analysis::CheckQuery> = serde_json::from_str(&queries_json)
+                .map_err(|e| napi::Error::from_reason(format!("invalid queries: {}", e)))?;
+            let compare_schema = match compare_schema_json {
+                Some(s) => Some(
+                    serde_json::from_str(&s)
+                        .map_err(|e| napi::Error::from_reason(format!("invalid schema: {}", e)))?,
+                ),
+                None => None,
+            };
+            let schedule = self
+                .engine
+                .create_analysis_schedule(&name, interval_seconds as u64, queries, compare_schema)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&schedule)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn list_analysis_schedules(&self) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let schedules = self
+                .engine
+                .list_analysis_schedules()
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&schedules)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn delete_analysis_schedule(&self, id: String) -> napi::Result<bool> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let uid = uuid::Uuid::parse_str(&id)
+                .map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e)))?;
+            self.engine
+                .delete_analysis_schedule(uid)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn run_analysis_now(&self, schedule_id: Option<String>) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let uid = schedule_id
+                .map(|id| uuid::Uuid::parse_str(&id).map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e))))
+                .transpose()?;
+            let runs = self
+                .engine
+                .run_analysis_now(uid)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&runs)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn get_analysis_runs(&self, limit: Option<f64>) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let runs = self
+                .engine
+                .get_analysis_runs(limit.unwrap_or(100.0) as usize)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&runs)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    // ── V7 Enforcement History ──
+
+    #[napi]
+    pub fn set_enforcement_history_config(&self, config_json: String) -> napi::Result<()> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let config: aegis_core::engine::enforcement_history::EnforcementHistoryConfig =
+                serde_json::from_str(&config_json)
+                    .map_err(|e| napi::Error::from_reason(format!("invalid config: {}", e)))?;
+            self.engine
+                .set_enforcement_history_config(config)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn get_enforcement_history_config(&self) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let config = self
+                .engine
+                .get_enforcement_history_config()
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&config)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    #[napi]
+    pub fn enforcement_trends(&self, limit: Option<f64>) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let trends = self
+                .engine
+                .enforcement_trends(limit.unwrap_or(100.0) as usize)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            serde_json::to_string(&trends)
+                .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
+        })
+    }
+
+    // ── V7 Subscribe convenience ──
+
+    #[napi]
+    pub fn subscribe(&self, event_types: Vec<String>) -> napi::Result<JsWatchSubscription> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let types: Vec<WatchEventType> = event_types
+                .iter()
+                .map(|s| match s.to_lowercase().as_str() {
+                    "tupleadded" => Ok(WatchEventType::TupleAdded),
+                    "tupleremoved" => Ok(WatchEventType::TupleRemoved),
+                    "policyversioncreated" => Ok(WatchEventType::PolicyVersionCreated),
+                    "policyrolledback" => Ok(WatchEventType::PolicyRolledBack),
+                    "integrityfinding" => Ok(WatchEventType::IntegrityFinding),
+                    "analysiscompleted" => Ok(WatchEventType::AnalysisCompleted),
+                    "ratelimitwarning" => Ok(WatchEventType::RateLimitWarning),
+                    _ => Err(napi::Error::from_reason(format!("unknown event type: {}", s))),
+                })
+                .collect::<napi::Result<Vec<_>>>()?;
+            let subscription = self.engine.subscribe(types);
+            Ok(JsWatchSubscription {
+                inner: Some(subscription),
+            })
         })
     }
 }

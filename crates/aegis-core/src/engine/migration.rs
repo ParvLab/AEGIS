@@ -144,6 +144,12 @@ pub fn register_default_migrations(runner: &mut MigrationRunner) {
         Box::new(|_storage| Ok(())),
         Box::new(|_storage| Ok(())),
     );
+    runner.register(
+        3,
+        "Create _aegis_policy_drafts, _aegis_analysis_schedules, _aegis_analysis_runs, _aegis_enforcement_events tables",
+        Box::new(|_storage| Ok(())),
+        Box::new(|_storage| Ok(())),
+    );
 }
 
 /// Check schema compatibility between an existing and new schema.

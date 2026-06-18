@@ -19,6 +19,32 @@ interface AegisWasm {
   access_diff(schemaBefore: string, schemaAfter: string, maxChecks: number | null): string;
   list_policy_versions(): string;
   rollback_policy(version: number): string;
+
+  // V7 Policy Lifecycle
+  create_policy_draft(name: string, description: string): string;
+  update_policy_draft(id: string, schemaJson: string): string;
+  validate_policy_draft(id: string): string;
+  submit_policy_draft_for_review(id: string): string;
+  approve_policy_draft(id: string): string;
+  reject_policy_draft(id: string, reason: string): string;
+  publish_policy_draft(id: string): string;
+  archive_policy_draft(id: string): string;
+  list_policy_drafts(filterStatus?: string): string;
+
+  // V7 Scheduler
+  create_analysis_schedule(configJson: string): string;
+  list_analysis_schedules(): string;
+  delete_analysis_schedule(id: string): string;
+  run_analysis_now(scheduleId?: string): string;
+  get_analysis_runs(limit?: number): string;
+
+  // V7 Enforcement History
+  set_enforcement_history_config(configJson: string): string;
+  get_enforcement_history_config(): string;
+  enforcement_trends(limit?: number): string;
+
+  // V7 Subscribe
+  subscribe(eventTypesJson: string): string;
 }
 
 let counter = 0;
@@ -135,6 +161,120 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
         if (!engine) throw new Error("not initialized");
         engine.rollback_policy(msg.version);
         postMessage({ type: "rollbackPolicy", id, ok: true } satisfies WorkerResponse);
+        break;
+      }
+
+      // V7 Policy Lifecycle
+      case "createPolicyDraft": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.create_policy_draft(msg.name, msg.description);
+        postMessage({ type: "createPolicyDraft", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "updatePolicyDraft": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.update_policy_draft(msg.id, msg.schemaJson);
+        postMessage({ type: "updatePolicyDraft", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "validatePolicyDraft": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.validate_policy_draft(msg.id);
+        postMessage({ type: "validatePolicyDraft", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "submitPolicyDraftForReview": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.submit_policy_draft_for_review(msg.id);
+        postMessage({ type: "submitPolicyDraftForReview", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "approvePolicyDraft": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.approve_policy_draft(msg.id);
+        postMessage({ type: "approvePolicyDraft", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "rejectPolicyDraft": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.reject_policy_draft(msg.id, msg.reason);
+        postMessage({ type: "rejectPolicyDraft", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "publishPolicyDraft": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.publish_policy_draft(msg.id);
+        postMessage({ type: "publishPolicyDraft", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "archivePolicyDraft": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.archive_policy_draft(msg.id);
+        postMessage({ type: "archivePolicyDraft", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "listPolicyDrafts": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.list_policy_drafts(msg.filterStatus);
+        postMessage({ type: "listPolicyDrafts", id, result } satisfies WorkerResponse);
+        break;
+      }
+
+      // V7 Scheduler
+      case "createAnalysisSchedule": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.create_analysis_schedule(msg.configJson);
+        postMessage({ type: "createAnalysisSchedule", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "listAnalysisSchedules": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.list_analysis_schedules();
+        postMessage({ type: "listAnalysisSchedules", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "deleteAnalysisSchedule": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.delete_analysis_schedule(msg.id);
+        postMessage({ type: "deleteAnalysisSchedule", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "runAnalysisNow": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.run_analysis_now(msg.scheduleId);
+        postMessage({ type: "runAnalysisNow", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "getAnalysisRuns": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.get_analysis_runs(msg.limit);
+        postMessage({ type: "getAnalysisRuns", id, result } satisfies WorkerResponse);
+        break;
+      }
+
+      // V7 Enforcement History
+      case "setEnforcementHistoryConfig": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.set_enforcement_history_config(msg.configJson);
+        postMessage({ type: "setEnforcementHistoryConfig", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "getEnforcementHistoryConfig": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.get_enforcement_history_config();
+        postMessage({ type: "getEnforcementHistoryConfig", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "enforcementTrends": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.enforcement_trends(msg.limit);
+        postMessage({ type: "enforcementTrends", id, result } satisfies WorkerResponse);
+        break;
+      }
+      case "subscribe": {
+        if (!engine) throw new Error("not initialized");
+        const result = engine.subscribe(msg.eventTypesJson);
+        postMessage({ type: "subscribe", id, result } satisfies WorkerResponse);
         break;
       }
     }

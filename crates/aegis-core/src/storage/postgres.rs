@@ -3,6 +3,9 @@ use crate::storage::traits::{
     BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
     TupleFilter,
 };
+use crate::engine::enforcement_history::EnforcementEvent;
+use crate::engine::policy_lifecycle::PolicyDraft;
+use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId,
     Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
@@ -119,6 +122,29 @@ impl PostgresStorage {
                 version    INTEGER NOT NULL,
                 applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                 checksum   TEXT NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS _aegis_policy_drafts (
+                id TEXT PRIMARY KEY,
+                status TEXT NOT NULL DEFAULT 'Drafting',
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                data JSONB NOT NULL
+            )",
+            "CREATE TABLE IF NOT EXISTS _aegis_analysis_schedules (
+                id TEXT PRIMARY KEY,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )",
+            "CREATE TABLE IF NOT EXISTS _aegis_analysis_runs (
+                id TEXT PRIMARY KEY,
+                schedule_id TEXT,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )",
+            "CREATE TABLE IF NOT EXISTS _aegis_enforcement_events (
+                id TEXT PRIMARY KEY,
+                data JSONB NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             )",
         ];
         for stmt in &statements {
@@ -1419,6 +1445,119 @@ impl StorageBackend for PostgresStorage {
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             Ok(rows.first().map(|row| row.get(0)))
+        })
+    }
+
+    fn save_policy_draft(&self, draft: &PolicyDraft) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let data = serde_json::to_value(draft)
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+            client
+                .execute(
+                    "INSERT INTO _aegis_policy_drafts (id, status, created_at, updated_at, data)
+                     VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT (id) DO UPDATE SET status=$2, updated_at=$4, data=$5",
+                    &[&draft.id.to_string(), &draft.status.to_string(), &Utc::now(), &Utc::now(), &data],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn load_policy_draft(&self, id: &str) -> AegisResult<Option<PolicyDraft>> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let row = client
+                .query_opt(
+                    "SELECT data FROM _aegis_policy_drafts WHERE id = $1",
+                    &[&id],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            match row {
+                Some(r) => {
+                    let data: serde_json::Value = r.get(0);
+                    let draft: PolicyDraft = serde_json::from_value(data)
+                        .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+                    Ok(Some(draft))
+                }
+                None => Ok(None),
+            }
+        })
+    }
+
+    fn delete_policy_draft(&self, id: &str) -> AegisResult<bool> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let row = client
+                .query_opt("DELETE FROM _aegis_policy_drafts WHERE id = $1 RETURNING id", &[&id])
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(row.is_some())
+        })
+    }
+
+    fn save_analysis_schedule(&self, schedule: &AnalysisSchedule) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let data = serde_json::to_value(schedule)
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+            client
+                .execute(
+                    "INSERT INTO _aegis_analysis_schedules (id, data) VALUES ($1, $2)
+                     ON CONFLICT (id) DO UPDATE SET data=$2",
+                    &[&schedule.id.to_string(), &data],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn delete_analysis_schedule(&self, id: &str) -> AegisResult<bool> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let rows = client
+                .execute("DELETE FROM _aegis_analysis_schedules WHERE id = $1", &[&id])
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(rows > 0)
+        })
+    }
+
+    fn save_analysis_run(&self, run: &AnalysisRun) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let data = serde_json::to_value(run)
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+            let schedule_id = run.schedule_id.map(|id| id.to_string());
+            client
+                .execute(
+                    "INSERT INTO _aegis_analysis_runs (id, schedule_id, data) VALUES ($1, $2, $3)
+                     ON CONFLICT DO NOTHING",
+                    &[&run.id.to_string(), &schedule_id, &data],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn save_enforcement_event(&self, event: &EnforcementEvent) -> AegisResult<()> {
+        self.runtime.block_on(async {
+            let client = self.get_client().await?;
+            let data = serde_json::to_value(event)
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+            client
+                .execute(
+                    "INSERT INTO _aegis_enforcement_events (id, data) VALUES ($1, $2)",
+                    &[&event.id.to_string(), &data],
+                )
+                .await
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
         })
     }
 }

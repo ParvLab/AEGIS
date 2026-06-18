@@ -69,6 +69,80 @@ export type PolicyVersion = {
   description?: string;
 };
 
+export type PolicyDraft = {
+  id: string;
+  name: string;
+  description: string;
+  schema: string;
+  baseVersion: number;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  approvedBy?: string;
+  rejectionReason?: string;
+};
+
+export type ValidationReport = {
+  schemaValid: boolean;
+  accessDiffSummary?: any;
+  simulationSummary?: any;
+  warnings: string[];
+};
+
+export type PublishResult = {
+  policyVersion: number;
+  accessDiffSummary?: any;
+  simulationSummary?: any;
+};
+
+export type AnalysisSchedule = {
+  id: string;
+  name: string;
+  intervalSeconds: number;
+  queries: Array<{ subject: string; permission: string; resource: string }>;
+  compareSchema?: any;
+  enabled: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type AnalysisRun = {
+  id: string;
+  scheduleId?: string;
+  startedAt: string;
+  completedAt: string;
+  status: string;
+  summary: any;
+  errorMessage?: string;
+};
+
+export type EnforcementHistoryConfig = {
+  enabled: boolean;
+  sampling: string;
+  maxEventsPerMinute: number;
+  maxRows: number;
+  maxDays: number;
+};
+
+export type EnforcementTrends = {
+  totalEvents: number;
+  deniedCount: number;
+  allowedCount: number;
+  byResource: Array<[string, number]>;
+  recentEvents: EnforcementEvent[];
+};
+
+export type EnforcementEvent = {
+  id: string;
+  subject: string;
+  permission: string;
+  resource: string;
+  allowed: boolean;
+  revision: number;
+  timestamp: string;
+};
+
 export type WorkerRequest =
   | { type: "init"; id: string; schema: string; dbName?: string }
   | { type: "check"; id: string; subject: string; permission: string; resource: string }
@@ -84,7 +158,29 @@ export type WorkerRequest =
   | { type: "whoCanAccess"; id: string; permission: string; resource: string; pageOffset?: number; pageLimit?: number; includePaths?: boolean }
   | { type: "accessDiff"; id: string; schemaBefore: string; schemaAfter: string; maxChecks?: number }
   | { type: "listPolicyVersions"; id: string }
-  | { type: "rollbackPolicy"; id: string; version: number };
+  | { type: "rollbackPolicy"; id: string; version: number }
+  // V7 Policy Lifecycle
+  | { type: "createPolicyDraft"; id: string; name: string; description: string }
+  | { type: "updatePolicyDraft"; id: string; draftId: string; schemaJson: string }
+  | { type: "validatePolicyDraft"; id: string; draftId: string }
+  | { type: "submitPolicyDraftForReview"; id: string; draftId: string }
+  | { type: "approvePolicyDraft"; id: string; draftId: string }
+  | { type: "rejectPolicyDraft"; id: string; draftId: string; rejectionReason: string }
+  | { type: "publishPolicyDraft"; id: string; draftId: string }
+  | { type: "archivePolicyDraft"; id: string; draftId: string }
+  | { type: "listPolicyDrafts"; id: string; filterStatus?: string }
+  // V7 Scheduler
+  | { type: "createAnalysisSchedule"; id: string; configJson: string }
+  | { type: "listAnalysisSchedules"; id: string }
+  | { type: "deleteAnalysisSchedule"; id: string; scheduleId: string }
+  | { type: "runAnalysisNow"; id: string; scheduleId?: string }
+  | { type: "getAnalysisRuns"; id: string; limit?: number }
+  // V7 Enforcement History
+  | { type: "setEnforcementHistoryConfig"; id: string; configJson: string }
+  | { type: "getEnforcementHistoryConfig"; id: string }
+  | { type: "enforcementTrends"; id: string; limit?: number }
+  // V7 Subscribe
+  | { type: "subscribe"; id: string; eventTypesJson: string };
 
 export type WorkerResponse =
   | { type: "init"; id: string; ok: boolean; error?: string }
@@ -101,4 +197,26 @@ export type WorkerResponse =
   | { type: "whoCanAccess"; id: string; result: string; error?: string }
   | { type: "accessDiff"; id: string; result: string; error?: string }
   | { type: "listPolicyVersions"; id: string; result: string; error?: string }
-  | { type: "rollbackPolicy"; id: string; ok: boolean; error?: string };
+  | { type: "rollbackPolicy"; id: string; ok: boolean; error?: string }
+  // V7 Policy Lifecycle
+  | { type: "createPolicyDraft"; id: string; result: string; error?: string }
+  | { type: "updatePolicyDraft"; id: string; result: string; error?: string }
+  | { type: "validatePolicyDraft"; id: string; result: string; error?: string }
+  | { type: "submitPolicyDraftForReview"; id: string; result: string; error?: string }
+  | { type: "approvePolicyDraft"; id: string; result: string; error?: string }
+  | { type: "rejectPolicyDraft"; id: string; result: string; error?: string }
+  | { type: "publishPolicyDraft"; id: string; result: string; error?: string }
+  | { type: "archivePolicyDraft"; id: string; result: string; error?: string }
+  | { type: "listPolicyDrafts"; id: string; result: string; error?: string }
+  // V7 Scheduler
+  | { type: "createAnalysisSchedule"; id: string; result: string; error?: string }
+  | { type: "listAnalysisSchedules"; id: string; result: string; error?: string }
+  | { type: "deleteAnalysisSchedule"; id: string; ok: boolean; error?: string }
+  | { type: "runAnalysisNow"; id: string; result: string; error?: string }
+  | { type: "getAnalysisRuns"; id: string; result: string; error?: string }
+  // V7 Enforcement History
+  | { type: "setEnforcementHistoryConfig"; id: string; ok: boolean; error?: string }
+  | { type: "getEnforcementHistoryConfig"; id: string; result: string; error?: string }
+  | { type: "enforcementTrends"; id: string; result: string; error?: string }
+  // V7 Subscribe
+  | { type: "subscribe"; id: string; result: string; error?: string };

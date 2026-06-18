@@ -1,9 +1,9 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion};
 
 use aegis_core::engine::GraphEngine;
-use aegis_core::schema::types::{PermissionDef, RelationDef, Schema, TypeDef};
+use aegis_core::types::schema::{PermissionDef, RelationDef, Schema, TypeDef};
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
-use aegis_core::storage::StorageBackend;
+use aegis_core::storage::{StorageBackend, TupleFilter};
 use aegis_core::types::*;
 use std::collections::HashMap;
 
@@ -27,11 +27,10 @@ fn setup_engine() -> GraphEngine {
                 "read".to_string(),
                 PermissionDef {
                     union_of: vec!["viewer".to_string(), "owner".to_string()],
-                    condition: None,
-                    description: None,
+                    ..Default::default()
                 },
             );
-            types.insert("repo".to_string(), TypeDef { relations, permissions });
+            types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
             types
         },
     };
@@ -103,6 +102,7 @@ fn bench_query(c: &mut Criterion) {
         object_type: None,
         metadata_key: None,
         metadata_value: None,
+        ..Default::default()
     };
     let pagination = PaginationParams::new(100, None);
 

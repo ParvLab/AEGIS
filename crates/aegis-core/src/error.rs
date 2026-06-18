@@ -79,6 +79,9 @@ pub enum AegisError {
 
     #[error("engine is closed and no longer accepting requests")]
     EngineClosed,
+
+    #[error("storage operation not supported: {0}")]
+    UnsupportedStorageOperation(String),
 }
 
 /// Convenience alias for Result types throughout the Aegis codebase.

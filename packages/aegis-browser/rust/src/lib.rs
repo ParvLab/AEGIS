@@ -1,11 +1,12 @@
 use std::sync::Mutex;
 use aegis_core::engine::GraphEngine;
-use aegis_core::storage::{InMemoryStorage, PolicyVersion, StorageBackend, TupleFilter};
+use aegis_core::storage::{InMemoryStorage, StorageBackend, TupleFilter};
 use aegis_core::types::{
     ConsistencyMode, PaginationCursor, PaginationParams, Relation, RelationshipTuple, ResourceId,
     Revision, Schema, SubjectId, TupleKey,
 };
-use aegis_core::types::analysis::*;
+use aegis_core::engine::policy_lifecycle::DraftStatus;
+use aegis_core::engine::watch::WatchEventType;
 use wasm_bindgen::prelude::*;
 
 static ENGINE: Mutex<Option<GraphEngine>> = Mutex::new(None);
@@ -215,4 +216,151 @@ pub fn list_policy_versions() -> Result<String, JsValue> {
 #[wasm_bindgen]
 pub fn rollback_policy(version: u32) -> Result<String, JsValue> {
     with_engine(|e| e.rollback_policy(version).map(|_| "ok".to_string()))
+}
+
+// === Policy Lifecycle (9) ===
+#[wasm_bindgen]
+pub fn create_policy_draft(name: &str, description: &str) -> Result<String, JsValue> {
+    with_engine(|e| e.create_policy_draft(name, description)
+        .map(|d| serde_json::to_string(&d).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn update_policy_draft(id: &str, schema_json: &str) -> Result<String, JsValue> {
+    let uid = uuid::Uuid::parse_str(id).map_err(to_js_err)?;
+    let schema: aegis_core::types::Schema = serde_json::from_str(schema_json).map_err(to_js_err)?;
+    with_engine(|e| e.update_policy_draft(uid, schema)
+        .map(|d| serde_json::to_string(&d).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn validate_policy_draft(id: &str) -> Result<String, JsValue> {
+    let uid = uuid::Uuid::parse_str(id).map_err(to_js_err)?;
+    with_engine(|e| e.validate_policy_draft(uid)
+        .map(|r| serde_json::to_string(&r).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn submit_policy_draft_for_review(id: &str) -> Result<String, JsValue> {
+    let uid = uuid::Uuid::parse_str(id).map_err(to_js_err)?;
+    with_engine(|e| e.submit_policy_draft_for_review(uid)
+        .map(|d| serde_json::to_string(&d).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn approve_policy_draft(id: &str) -> Result<String, JsValue> {
+    let uid = uuid::Uuid::parse_str(id).map_err(to_js_err)?;
+    with_engine(|e| e.approve_policy_draft(uid)
+        .map(|d| serde_json::to_string(&d).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn reject_policy_draft(id: &str, reason: &str) -> Result<String, JsValue> {
+    let uid = uuid::Uuid::parse_str(id).map_err(to_js_err)?;
+    with_engine(|e| e.reject_policy_draft(uid, reason)
+        .map(|d| serde_json::to_string(&d).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn publish_policy_draft(id: &str) -> Result<String, JsValue> {
+    let uid = uuid::Uuid::parse_str(id).map_err(to_js_err)?;
+    with_engine(|e| e.publish_policy_draft(uid)
+        .map(|r| serde_json::to_string(&r).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn archive_policy_draft(id: &str) -> Result<String, JsValue> {
+    let uid = uuid::Uuid::parse_str(id).map_err(to_js_err)?;
+    with_engine(|e| e.archive_policy_draft(uid)
+        .map(|d| serde_json::to_string(&d).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn list_policy_drafts(filter_status: Option<String>) -> Result<String, JsValue> {
+    let filter = match filter_status {
+        Some(s) => {
+            let status: DraftStatus = serde_json::from_str(&format!("\"{}\"", s)).map_err(to_js_err)?;
+            Some(status)
+        }
+        None => None,
+    };
+    with_engine(|e| e.list_policy_drafts(filter)
+        .map(|d| serde_json::to_string(&d).unwrap_or_default()))
+}
+
+// === Scheduler (5) ===
+#[wasm_bindgen]
+pub fn create_analysis_schedule(config_json: &str) -> Result<String, JsValue> {
+    let config: aegis_core::engine::scheduler::AnalysisScheduleConfig = serde_json::from_str(config_json).map_err(to_js_err)?;
+    with_engine(|e| e.create_analysis_schedule(&config.name, config.interval_seconds, config.queries, config.compare_schema)
+        .map(|s| serde_json::to_string(&s).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn list_analysis_schedules() -> Result<String, JsValue> {
+    with_engine(|e| e.list_analysis_schedules()
+        .map(|s| serde_json::to_string(&s).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn delete_analysis_schedule(id: &str) -> Result<String, JsValue> {
+    let uid = uuid::Uuid::parse_str(id).map_err(to_js_err)?;
+    with_engine(|e| e.delete_analysis_schedule(uid).map(|_| "ok".to_string()))
+}
+
+#[wasm_bindgen]
+pub fn run_analysis_now(schedule_id: Option<String>) -> Result<String, JsValue> {
+    let uid = match schedule_id {
+        Some(id) => Some(uuid::Uuid::parse_str(&id).map_err(to_js_err)?),
+        None => None,
+    };
+    with_engine(|e| e.run_analysis_now(uid)
+        .map(|r| serde_json::to_string(&r).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn get_analysis_runs(limit: Option<usize>) -> Result<String, JsValue> {
+    with_engine(|e| e.get_analysis_runs(limit.unwrap_or(100))
+        .map(|r| serde_json::to_string(&r).unwrap_or_default()))
+}
+
+// === Enforcement History (3) ===
+#[wasm_bindgen]
+pub fn set_enforcement_history_config(config_json: &str) -> Result<String, JsValue> {
+    let config: aegis_core::engine::enforcement_history::EnforcementHistoryConfig = serde_json::from_str(config_json).map_err(to_js_err)?;
+    with_engine(|e| e.set_enforcement_history_config(config).map(|_| "ok".to_string()))
+}
+
+#[wasm_bindgen]
+pub fn get_enforcement_history_config() -> Result<String, JsValue> {
+    with_engine(|e| e.get_enforcement_history_config()
+        .map(|c| serde_json::to_string(&c).unwrap_or_default()))
+}
+
+#[wasm_bindgen]
+pub fn enforcement_trends(limit: Option<usize>) -> Result<String, JsValue> {
+    with_engine(|e| e.enforcement_trends(limit.unwrap_or(100))
+        .map(|t| serde_json::to_string(&t).unwrap_or_default()))
+}
+
+// === Subscribe (1) ===
+#[wasm_bindgen]
+pub fn subscribe(event_types_json: &str) -> Result<String, JsValue> {
+    let type_strings: Vec<String> = serde_json::from_str(event_types_json).map_err(to_js_err)?;
+    let types: Vec<WatchEventType> = type_strings.iter()
+        .map(|s| match s.to_lowercase().as_str() {
+            "tupleadded" => Ok(WatchEventType::TupleAdded),
+            "tupleremoved" => Ok(WatchEventType::TupleRemoved),
+            "policyversioncreated" => Ok(WatchEventType::PolicyVersionCreated),
+            "policyrolledback" => Ok(WatchEventType::PolicyRolledBack),
+            "integrityfinding" => Ok(WatchEventType::IntegrityFinding),
+            "analysiscompleted" => Ok(WatchEventType::AnalysisCompleted),
+            "ratelimitwarning" => Ok(WatchEventType::RateLimitWarning),
+            _ => Err(JsValue::from_str(&format!("unknown event type: {}", s))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    with_engine(|e| {
+        let sub = e.subscribe(types);
+        Ok(serde_json::json!({"subscription_id": sub.id().to_string()}).to_string())
+    })
 }

@@ -25,6 +25,15 @@ impl Default for SchedulerConfig {
     }
 }
 
+/// JSON-deserializable configuration for creating an analysis schedule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AnalysisScheduleConfig {
+    pub name: String,
+    pub interval_seconds: u64,
+    pub queries: Vec<crate::types::analysis::CheckQuery>,
+    pub compare_schema: Option<crate::types::Schema>,
+}
+
 /// A scheduled analysis definition.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AnalysisSchedule {

@@ -1,6 +1,6 @@
 import type { AegisConfig, Tuple, WorkerRequest, WorkerResponse } from "./types";
 
-export type { AegisConfig, Tuple, CheckResult, AuditEntry, ExplainV2Response, WhoCanAccessResponse, AccessDiffResponse, PolicyVersion } from "./types";
+export type { AegisConfig, Tuple, CheckResult, AuditEntry, ExplainV2Response, WhoCanAccessResponse, AccessDiffResponse, PolicyVersion, PolicyDraft, ValidationReport, PublishResult, AnalysisSchedule, AnalysisRun, EnforcementHistoryConfig, EnforcementTrends, EnforcementEvent } from "./types";
 
 type PendingRequest = {
   resolve: (value: any) => void;
@@ -184,6 +184,165 @@ export class AegisEngine {
     }
     const m = await import("../rust/pkg/aegis_browser.js") as any;
     m.rollback_policy(version);
+  }
+
+  // ── V7 Policy Lifecycle ──
+
+  async createPolicyDraft(name: string, description: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "createPolicyDraft", id: this.nextId(), name, description });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.create_policy_draft?.(name, description) ?? JSON.stringify({ error: "not available" });
+  }
+
+  async updatePolicyDraft(draftId: string, schemaJson: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "updatePolicyDraft", id: this.nextId(), draftId, schemaJson });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.update_policy_draft?.(draftId, schemaJson) ?? JSON.stringify({ error: "not available" });
+  }
+
+  async validatePolicyDraft(draftId: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "validatePolicyDraft", id: this.nextId(), draftId });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.validate_policy_draft?.(draftId) ?? JSON.stringify({ error: "not available" });
+  }
+
+  async submitPolicyDraftForReview(draftId: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "submitPolicyDraftForReview", id: this.nextId(), draftId });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.submit_policy_draft_for_review?.(draftId) ?? JSON.stringify({ error: "not available" });
+  }
+
+  async approvePolicyDraft(draftId: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "approvePolicyDraft", id: this.nextId(), draftId });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.approve_policy_draft?.(draftId) ?? JSON.stringify({ error: "not available" });
+  }
+
+  async rejectPolicyDraft(draftId: string, rejectionReason: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "rejectPolicyDraft", id: this.nextId(), draftId, rejectionReason });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.reject_policy_draft?.(draftId, rejectionReason) ?? JSON.stringify({ error: "not available" });
+  }
+
+  async publishPolicyDraft(draftId: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "publishPolicyDraft", id: this.nextId(), draftId });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.publish_policy_draft?.(draftId) ?? JSON.stringify({ error: "not available" });
+  }
+
+  async archivePolicyDraft(draftId: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "archivePolicyDraft", id: this.nextId(), draftId });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.archive_policy_draft?.(draftId) ?? JSON.stringify({ error: "not available" });
+  }
+
+  async listPolicyDrafts(filterStatus?: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "listPolicyDrafts", id: this.nextId(), filterStatus });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.list_policy_drafts?.(filterStatus ?? null) ?? JSON.stringify({ error: "not available" });
+  }
+
+  // ── V7 Scheduler ──
+
+  async createAnalysisSchedule(name: string, intervalSeconds: number, queriesJson: string, compareSchemaJson?: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "createAnalysisSchedule", id: this.nextId(), name, intervalSeconds, queriesJson, compareSchemaJson });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.create_analysis_schedule?.(name, intervalSeconds, queriesJson, compareSchemaJson ?? null) ?? JSON.stringify({ error: "not available" });
+  }
+
+  async listAnalysisSchedules(): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "listAnalysisSchedules", id: this.nextId() });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.list_analysis_schedules?.() ?? JSON.stringify({ error: "not available" });
+  }
+
+  async deleteAnalysisSchedule(scheduleId: string): Promise<boolean> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "deleteAnalysisSchedule", id: this.nextId(), scheduleId });
+      return (res as any).ok;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.delete_analysis_schedule?.(scheduleId) ?? false;
+  }
+
+  async runAnalysisNow(scheduleId?: string): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "runAnalysisNow", id: this.nextId(), scheduleId });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.run_analysis_now?.(scheduleId ?? null) ?? JSON.stringify({ error: "not available" });
+  }
+
+  async getAnalysisRuns(limit?: number): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "getAnalysisRuns", id: this.nextId(), limit });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.get_analysis_runs?.(limit ?? 100) ?? JSON.stringify({ error: "not available" });
+  }
+
+  // ── V7 Enforcement History ──
+
+  async setEnforcementHistoryConfig(configJson: string): Promise<void> {
+    if (this.useWorker && this.worker) {
+      await this.send({ type: "setEnforcementHistoryConfig", id: this.nextId(), configJson });
+      return;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    m.set_enforcement_history_config?.(configJson);
+  }
+
+  async getEnforcementHistoryConfig(): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "getEnforcementHistoryConfig", id: this.nextId() });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.get_enforcement_history_config?.() ?? JSON.stringify({ error: "not available" });
+  }
+
+  async enforcementTrends(limit?: number): Promise<string> {
+    if (this.useWorker && this.worker) {
+      const res = await this.send({ type: "enforcementTrends", id: this.nextId(), limit });
+      return (res as any).result;
+    }
+    const m = await import("../rust/pkg/aegis_browser.js") as any;
+    return m.enforcement_trends?.(limit ?? 100) ?? JSON.stringify({ error: "not available" });
   }
 
   destroy(): void {

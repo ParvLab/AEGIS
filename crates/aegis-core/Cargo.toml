@@ -5,6 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Aegis embedded authorization runtime core library"
+authors = ["Aegis Authors <opensource@aegis-auth.dev>"]
+homepage = "https://github.com/aegis-auth/aegis"
+documentation = "https://docs.rs/aegis-core"
+readme = "README.md"
+keywords = ["authorization", "rebac", "zanzibar", "access-control", "security"]
+categories = ["authentication", "database"]
 
 
 
@@ -71,6 +77,11 @@ path = "benches/check.rs"
 name = "cache"
 harness = false
 path = "benches/cache.rs"
+
+[[bench]]
+name = "partition"
+harness = false
+path = "benches/partition.rs"
 
 [features]
 default = ["sqlite"]

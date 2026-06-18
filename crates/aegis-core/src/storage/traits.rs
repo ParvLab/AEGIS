@@ -1,6 +1,9 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use crate::error::AegisResult;
+use crate::engine::enforcement_history::EnforcementEvent;
+use crate::engine::policy_lifecycle::PolicyDraft;
+use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
+use crate::error::{AegisError, AegisResult};
 use crate::types::{
     AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationParams, PartitionId,
     Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
@@ -255,6 +258,41 @@ pub trait StorageBackend: Send + Sync {
 
     /// Load the schema JSON for a specific policy version.
     fn load_policy_version(&self, version: u32) -> AegisResult<Option<String>>;
+
+    /// Save a policy draft to storage.
+    fn save_policy_draft(&self, _draft: &PolicyDraft) -> AegisResult<()> {
+        Err(AegisError::UnsupportedStorageOperation("save_policy_draft not supported by this backend".into()))
+    }
+
+    /// Load a policy draft by ID from storage.
+    fn load_policy_draft(&self, _id: &str) -> AegisResult<Option<PolicyDraft>> {
+        Err(AegisError::UnsupportedStorageOperation("load_policy_draft not supported by this backend".into()))
+    }
+
+    /// Delete a policy draft from storage.
+    fn delete_policy_draft(&self, _id: &str) -> AegisResult<bool> {
+        Err(AegisError::UnsupportedStorageOperation("delete_policy_draft not supported by this backend".into()))
+    }
+
+    /// Save an analysis schedule to storage.
+    fn save_analysis_schedule(&self, _schedule: &AnalysisSchedule) -> AegisResult<()> {
+        Err(AegisError::UnsupportedStorageOperation("save_analysis_schedule not supported by this backend".into()))
+    }
+
+    /// Delete an analysis schedule from storage.
+    fn delete_analysis_schedule(&self, _id: &str) -> AegisResult<bool> {
+        Err(AegisError::UnsupportedStorageOperation("delete_analysis_schedule not supported by this backend".into()))
+    }
+
+    /// Save an analysis run to storage.
+    fn save_analysis_run(&self, _run: &AnalysisRun) -> AegisResult<()> {
+        Err(AegisError::UnsupportedStorageOperation("save_analysis_run not supported by this backend".into()))
+    }
+
+    /// Save an enforcement event to storage.
+    fn save_enforcement_event(&self, _event: &EnforcementEvent) -> AegisResult<()> {
+        Err(AegisError::UnsupportedStorageOperation("save_enforcement_event not supported by this backend".into()))
+    }
 }
 
 /// A storage transaction supporting atomic multi-tuple writes within a partition.

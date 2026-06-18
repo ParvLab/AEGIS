@@ -219,6 +219,7 @@ impl GraphEngine {
             if cfg.max_rows > 0 && events.len() as u64 >= cfg.max_rows {
                 events.pop_front();
             }
+            let _ = self.storage.save_enforcement_event(&event);
             events.push_back(event);
         }
 
