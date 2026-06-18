@@ -9,6 +9,7 @@ on:
 jobs:
   check:
     strategy:
+      fail-fast: false
       matrix:
         rust: [1.85, stable, nightly]
         os: [ubuntu-latest, windows-latest, macOS-latest]
@@ -18,12 +19,15 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ matrix.rust }}
+          components: rustfmt
 
       - name: Format check
         run: cargo fmt --all -- --check
+        continue-on-error: ${{ matrix.rust == 'nightly' }}
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+        continue-on-error: ${{ matrix.rust == 'nightly' }}
 
       - name: Build
         run: cargo build --workspace
