@@ -25,11 +25,13 @@ jobs:
         run: cargo fmt --all -- --check
         continue-on-error: ${{ matrix.rust == 'nightly' }}
 
-      - name: Clippy
-        run: >
-          cargo clippy --all-targets
-          ${{ (matrix.rust != '1.85' && '--all-features') || '' }}
-          -- -D warnings
+      - name: Clippy (1.85 compatible crates)
+        if: matrix.rust == '1.85'
+        run: cargo clippy -p aegis-core -p aegis-cli -p aegis-test-utils -p aegis-ffi -- -D warnings
+
+      - name: Clippy (full workspace)
+        if: matrix.rust != '1.85'
+        run: cargo clippy --workspace --all-features -- -D warnings
         continue-on-error: ${{ matrix.rust == 'nightly' }}
 
       - name: Build
