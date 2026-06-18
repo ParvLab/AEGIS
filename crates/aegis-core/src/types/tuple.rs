@@ -3,6 +3,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Estimated overhead for JSON serialization framing (brackets, commas, quotes).
+const SERIALIZATION_OVERHEAD: usize = 128;
+
 /// The atomic unit of the authorization graph.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelationshipTuple {
@@ -11,6 +14,8 @@ pub struct RelationshipTuple {
     pub object: ResourceId,
     pub created_at: DateTime<Utc>,
     pub metadata: Option<HashMap<String, String>>,
+    pub valid_until: Option<DateTime<Utc>>,
+    pub condition: Option<String>,
 }
 
 impl RelationshipTuple {
@@ -21,6 +26,8 @@ impl RelationshipTuple {
             object,
             created_at: Utc::now(),
             metadata: None,
+            valid_until: None,
+            condition: None,
         }
     }
 
@@ -31,13 +38,77 @@ impl RelationshipTuple {
         metadata: HashMap<String, String>,
     ) -> Result<Self, MetadataValidationError> {
         validate_metadata(&metadata)?;
-        Ok(Self {
+        let tuple = Self {
             subject,
             relation,
             object,
             created_at: Utc::now(),
             metadata: Some(metadata),
-        })
+            valid_until: None,
+            condition: None,
+        };
+        tuple.ensure_size()?;
+        Ok(tuple)
+    }
+
+    pub fn with_expiry(
+        subject: SubjectId,
+        relation: Relation,
+        object: ResourceId,
+        valid_until: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            subject,
+            relation,
+            object,
+            created_at: Utc::now(),
+            metadata: None,
+            valid_until: Some(valid_until),
+            condition: None,
+        }
+    }
+
+    pub fn with_condition(
+        subject: SubjectId,
+        relation: Relation,
+        object: ResourceId,
+        condition: String,
+    ) -> Self {
+        Self {
+            subject,
+            relation,
+            object,
+            created_at: Utc::now(),
+            metadata: None,
+            valid_until: None,
+            condition: Some(condition),
+        }
+    }
+
+    /// Check that the serialized tuple size does not exceed the maximum.
+    fn ensure_size(&self) -> Result<(), MetadataValidationError> {
+        let estimated = self.estimated_serialized_size();
+        if estimated > MAX_TUPLE_SERIALIZED_SIZE {
+            return Err(MetadataValidationError::TupleTooLarge(estimated));
+        }
+        Ok(())
+    }
+
+    /// Rough estimate of serialized size (must be <= true serialized size).
+    fn estimated_serialized_size(&self) -> usize {
+        let mut size = SERIALIZATION_OVERHEAD;
+        size += self.subject.as_str().len();
+        size += self.relation.as_str().len();
+        size += self.object.as_str().len();
+        if let Some(ref meta) = self.metadata {
+            for (k, v) in meta {
+                size += k.len() + v.len() + 8;
+            }
+        }
+        if let Some(ref cond) = self.condition {
+            size += cond.len();
+        }
+        size
     }
 
     /// The canonical key for this tuple (subject + relation + object).
@@ -69,6 +140,17 @@ pub enum TupleAction {
 const MAX_METADATA_PAIRS: usize = 16;
 const MAX_METADATA_KEY_LENGTH: usize = 64;
 const MAX_METADATA_VALUE_LENGTH: usize = 512;
+/// Maximum serialized size of a relationship tuple in bytes.
+const MAX_TUPLE_SERIALIZED_SIZE: usize = 65_536; // 64 KiB
+
+/// Validate that a tuple's subject, relation, and object are all well-formed.
+/// Returns `Ok(())` if all three pass validation, or the first `ValidationError` encountered.
+pub fn validate_tuple(subject: &str, relation: &str, object: &str) -> Result<(), crate::types::ValidationError> {
+    SubjectId::new(subject).map(|_| ())?;
+    Relation::new(relation).map(|_| ())?;
+    ResourceId::new(object).map(|_| ())?;
+    Ok(())
+}
 
 pub fn validate_metadata(
     metadata: &HashMap<String, String>,
@@ -121,6 +203,9 @@ pub enum MetadataValidationError {
 
     #[error("metadata value too long: max {max} characters, got {actual}")]
     ValueTooLong { max: usize, actual: usize },
+
+    #[error("tuple too large: estimated {0} bytes, max 65536")]
+    TupleTooLarge(usize),
 }
 
 #[cfg(test)]
@@ -184,6 +269,19 @@ mod tests {
         )
         .unwrap_err();
         assert!(matches!(err, MetadataValidationError::InvalidKey(_)));
+    }
+
+    #[test]
+    fn tuple_with_condition_constructor() {
+        let tuple = RelationshipTuple::with_condition(
+            SubjectId::new("user:1").unwrap(),
+            Relation::new("editor").unwrap(),
+            ResourceId::new("repo:a").unwrap(),
+            "role eq admin".to_string(),
+        );
+        assert_eq!(tuple.condition, Some("role eq admin".to_string()));
+        assert!(tuple.metadata.is_none());
+        assert!(tuple.valid_until.is_none());
     }
 
     #[test]

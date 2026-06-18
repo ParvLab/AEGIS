@@ -1,0 +1,23 @@
+[package]
+name = "aegis-pyo3"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Aegis Python bindings via PyO3"
+authors = ["Aegis Authors <opensource@aegis-auth.dev>"]
+homepage = "https://github.com/aegis-auth/aegis"
+documentation = "https://docs.rs/aegis-pyo3"
+readme = "README.md"
+keywords = ["authorization", "rebac", "zanzibar", "access-control", "security"]
+categories = ["authentication", "database"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+pyo3 = { workspace = true }
+chrono = "0.4"
+serde_json = "1"
+uuid.workspace = true

@@ -40,12 +40,4 @@ impl LintResult {
     }
 }
 
-/// Constraints for a schema migration.
-#[derive(Debug, Clone)]
-pub struct MigrationScript {
-    pub from_version: u32,
-    pub to_version: u32,
-    pub description: &'static str,
-    pub up: fn() -> String,
-    pub down: fn() -> String,
-}
+

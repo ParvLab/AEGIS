@@ -1,0 +1,39 @@
+name: Benchmarks
+
+on:
+  schedule:
+    - cron: '0 6 * * 1'  # weekly on Monday
+  workflow_dispatch:
+
+jobs:
+  native:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Run native benchmarks (criterion)
+        run: cargo bench --package aegis-core --no-default-features --features sqlite
+      - name: Upload benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-reports
+          path: target/criterion/
+
+  wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack
+      - name: WASM benchmarks
+        run: |
+          cd crates/aegis-core
+          wasm-pack test --chrome --headless -- --no-default-features --features wasm
+      - name: Bundle size check
+        run: |
+          cd packages/aegis-browser/rust
+          wasm-pack build --target web
+          ls -lh pkg/aegis_browser_bg.wasm

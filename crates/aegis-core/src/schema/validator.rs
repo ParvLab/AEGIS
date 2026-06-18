@@ -1,6 +1,110 @@
 use crate::error::{AegisError, AegisResult};
-use crate::types::schema::{Schema, SchemaCompatibilityReport};
+use crate::types::schema::{Effect, Schema, SchemaCompatibilityReport};
 use std::collections::HashSet;
+
+/// Lint result from schema analysis.
+#[derive(Debug, Clone, Default)]
+pub struct LintReport {
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub passed: bool,
+}
+
+impl LintReport {
+    pub fn is_clean(&self) -> bool {
+        self.passed && self.warnings.is_empty()
+    }
+}
+
+/// Run lint checks on a schema, returning warnings and errors.
+/// When `strict` is true, warnings are promoted to errors.
+pub fn lint_schema(schema: &Schema, strict: bool) -> LintReport {
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+
+    for (type_name, type_def) in &schema.types {
+        // Check for missing documentation on relations
+        for (rel_name, rel_def) in &type_def.relations {
+            if rel_def.description.is_none() || rel_def.description.as_deref().unwrap_or("").is_empty() {
+                let msg = format!("relation '{rel_name}' on type '{type_name}' has no description");
+                if strict { errors.push(msg); } else { warnings.push(msg); }
+            }
+        }
+
+        // Check for missing documentation on permissions
+        for (perm_name, perm_def) in &type_def.permissions {
+            if perm_def.description.is_none() || perm_def.description.as_deref().unwrap_or("").is_empty() {
+                let msg = format!("permission '{perm_name}' on type '{type_name}' has no description");
+                if strict { errors.push(msg); } else { warnings.push(msg); }
+            }
+        }
+
+        // Check for overly broad permissions (wildcard *)
+        for (perm_name, perm_def) in &type_def.permissions {
+            let combined = perm_def.union_of.join(" ");
+            if combined.contains('*') {
+                let msg = format!("permission '{perm_name}' on type '{type_name}' uses wildcard '*' — overly broad");
+                if strict { errors.push(msg); } else { warnings.push(msg); }
+            }
+        }
+
+        // Check for Deny permissions that reference undefined relations
+        for (perm_name, perm_def) in &type_def.permissions {
+            if perm_def.effect == Effect::Deny {
+                for rel_ref in &perm_def.union_of {
+                    if !type_def.relations.contains_key(rel_ref) {
+                        let msg = format!("deny permission '{perm_name}' on type '{type_name}' references undefined relation '{rel_ref}'");
+                        if strict { errors.push(msg); } else { warnings.push(msg); }
+                    }
+                }
+            }
+        }
+
+        // Check for empty roles (no permissions) — generate a warning
+        for (role_name, role_def) in &type_def.roles {
+            if role_def.permissions.is_empty() {
+                let msg = format!("role '{role_name}' on type '{type_name}' has no permissions assigned");
+                if strict { errors.push(msg); } else { warnings.push(msg); }
+            }
+        }
+
+        // Check condition syntax validity on permissions
+        for (perm_name, perm_def) in &type_def.permissions {
+            if let Some(ref cond) = perm_def.condition {
+                if let Err(e) = crate::engine::condition::parse_condition(cond) {
+                    let msg = format!("permission '{perm_name}' on type '{type_name}' has invalid condition syntax: {e}");
+                    if strict { errors.push(msg); } else { warnings.push(msg); }
+                }
+            }
+        }
+    }
+
+    // Check for unused types (types with no relations/permissions or never referenced)
+    for type_name in schema.types.keys() {
+        let type_def = &schema.types[type_name];
+        let has_content = !type_def.relations.is_empty() || !type_def.permissions.is_empty();
+        if !has_content {
+            let msg = format!("type '{type_name}' is defined but has no relations or permissions");
+            if strict { errors.push(msg); } else { warnings.push(msg); }
+        } else if schema.types.len() > 1 {
+            let is_referenced = schema.types.iter().filter(|(k, _)| *k != type_name).any(|(_, t)| {
+                t.relations.values().any(|r| r.inherit_from.iter().any(|s| s == type_name))
+                    || t.permissions.values().any(|p| p.union_of.iter().any(|s| s == type_name))
+            });
+            if !is_referenced {
+                let msg = format!("type '{type_name}' is defined but never referenced by any other type's relations or permissions");
+                if strict { errors.push(msg); } else { warnings.push(msg); }
+            }
+        }
+    }
+
+    let passed = errors.is_empty();
+    LintReport {
+        warnings,
+        errors,
+        passed,
+    }
+}
 
 /// Check whether a new schema is compatible with the existing stored data.
 /// This is a dry-run validation: no changes are committed.
@@ -171,6 +275,104 @@ types:
         let report = check_schema_compatibility(&schema_v1(), &schema_v2_removes_editor());
         assert!(!report.compatible);
         assert!(report.breaking.iter().any(|m| m.contains("editor")));
+    }
+
+    #[test]
+    fn lint_schema_clean() {
+        let schema = make_schema(
+            r#"
+types:
+  repo:
+    relations:
+      owner:
+        inherit_from: [user]
+        description: "The owner of the repository"
+      viewer:
+        inherit_from: [user]
+        description: "A viewer of the repository"
+    permissions:
+      read:
+        union_of: [viewer, owner]
+        description: "Can read the repository"
+      write:
+        union_of: [owner]
+        description: "Can write to the repository"
+"#,
+        );
+        let report = lint_schema(&schema, false);
+        assert!(report.is_clean(), "expected clean lint: {:?}", report.warnings);
+    }
+
+    #[test]
+    fn lint_schema_missing_descriptions() {
+        let schema = make_schema(
+            r#"
+types:
+  repo:
+    relations:
+      owner:
+        inherit_from: [user]
+    permissions:
+      read:
+        union_of: [owner]
+"#,
+        );
+        let report = lint_schema(&schema, false);
+        assert!(!report.warnings.is_empty());
+        assert!(report.warnings.iter().any(|w| w.contains("owner") && w.contains("description")));
+        assert!(report.warnings.iter().any(|w| w.contains("read") && w.contains("description")));
+    }
+
+
+
+    #[test]
+    fn lint_schema_condition_syntax() {
+        use crate::types::schema::{PermissionDef, RelationDef, TypeDef};
+        let mut types = std::collections::HashMap::new();
+        let mut relations = std::collections::HashMap::new();
+        relations.insert("owner".to_string(), RelationDef {
+            inherit_from: vec!["user".to_string()],
+            description: Some("owner".to_string()),
+        });
+        let mut permissions = std::collections::HashMap::new();
+        permissions.insert("admin".to_string(), PermissionDef {
+            union_of: vec!["owner".to_string()],
+            condition: Some("role eq admin".to_string()),
+            description: Some("admin".to_string()),
+            ..Default::default()
+        });
+        permissions.insert("invalid".to_string(), PermissionDef {
+            union_of: vec!["owner".to_string()],
+            condition: Some("bad syntax here".to_string()),
+            description: Some("invalid".to_string()),
+            ..Default::default()
+        });
+        types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
+        let schema = Schema {
+            schema_version: 1,
+            namespace: "test".to_string(),
+            types,
+        };
+        let report = lint_schema(&schema, false);
+        assert!(report.warnings.iter().any(|w| w.contains("condition")), "expected condition syntax warning: errors={:?} warnings={:?}", report.errors, report.warnings);
+    }
+
+    #[test]
+    fn lint_schema_strict() {
+        let schema = make_schema(
+            r#"
+types:
+  repo:
+    relations:
+      owner:
+        inherit_from: [user]
+    permissions:
+      read:
+        union_of: [owner]
+"#,
+        );
+        let report = lint_schema(&schema, true);
+        assert!(!report.errors.is_empty());
     }
 
     #[test]

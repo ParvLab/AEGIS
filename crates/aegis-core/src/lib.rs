@@ -10,17 +10,30 @@
 //! - **storage**: Pluggable StorageBackend trait (SQLite, PostgreSQL, RocksDB, IndexedDB)
 //! - **testing**: Test harness (TestAegis) + fixture loader for integration tests
 
+pub mod engine;
 pub mod error;
 pub mod schema;
 pub mod storage;
+pub mod telemetry;
+#[cfg(any(test, feature = "test-utils"))]
 pub mod testing;
 pub mod types;
+pub mod util;
 
 /// Re-export the most commonly used types at the crate root.
+pub use crate::engine::gdpr::{GdprConfig, GdprManager, SubjectDataExport};
+pub use crate::engine::ratelimit::{RateLimitConfig, RateLimitOp, TokenBucketRateLimiter};
+pub use crate::engine::condition::ConditionEvalContext;
+pub use crate::engine::enforcement_history::{EnforcementEvent, EnforcementHistoryConfig, EnforcementTrends, SamplingMode};
+pub use crate::engine::policy_lifecycle::{DraftStatus, PolicyDraft, PublishResult, ValidationReport};
+pub use crate::engine::scheduler::{AnalysisRun, AnalysisRunStatus, AnalysisSchedule, SchedulerConfig};
+pub use crate::engine::watch::{WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
+pub use crate::engine::GraphEngine;
 pub use crate::error::{AegisError, AegisResult};
 pub use crate::types::{
-    CheckResult, ConsistencyMode, Relation, RelationshipTuple, ResourceId, Revision, RevisionToken,
-    SubjectId, TupleKey, WriteResult,
+    AccessReviewEntry, AuditEntry, CheckResult, ConsistencyMode, ExplainResult, ExplainTrace,
+    FailClosedMode, HealthReport, PaginatedTuples, PaginationParams, Relation, RelationshipTuple,
+    ResourceId, Revision, RevisionToken, SubjectId, TupleKey, WriteResult,
 };
 
 /// Library version constant.
@@ -73,7 +86,7 @@ mod integration_tests {
         assert!(!denied.allowed);
 
         // List
-        let list = aegis.list_by_object(&ResourceId::new("workspace:acme").unwrap(), None);
+        let list = aegis.list_by_object(&ResourceId::new("workspace:acme").unwrap(), None, None);
         assert_eq!(list.len(), 1);
 
         // Delete
@@ -131,7 +144,7 @@ mod integration_tests {
         assert!(!cross.allowed);
 
         // Each tenant has its own tuples
-        let alpha_tuples = aegis.list_by_subject(&SubjectId::new("user:alpha1").unwrap(), None);
+        let alpha_tuples = aegis.list_by_subject(&SubjectId::new("user:alpha1").unwrap(), None, None);
         assert_eq!(alpha_tuples.len(), 1);
         assert_eq!(alpha_tuples[0].object.as_str(), "tenant:alpha");
     }

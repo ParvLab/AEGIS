@@ -1,0 +1,29 @@
+[package]
+name = "aegis-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Aegis authorization engine CLI"
+authors = ["Aegis Authors <opensource@aegis-auth.dev>"]
+homepage = "https://github.com/aegis-auth/aegis"
+documentation = "https://docs.rs/aegis-cli"
+readme = "README.md"
+keywords = ["authorization", "rebac", "zanzibar", "access-control", "security"]
+categories = ["authentication", "database"]
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+uuid.workspace = true
+chrono.workspace = true
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yml.workspace = true
+anyhow = "1"
+sha2 = "0.10"
+rustyline = "14"
+dirs = "5"
+
+[features]
+rocksdb = ["aegis-core/rocksdb"]

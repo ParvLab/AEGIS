@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Aegis Offline Demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 800px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 1.4rem; }
+  section { border: 1px solid #ccc; border-radius: 6px; padding: 12px; margin: 12px 0; }
+  h2 { font-size: 1.1rem; margin: 0 0 8px; }
+  label { display: inline-block; width: 80px; }
+  input { margin: 4px 0; }
+  button { margin: 4px 4px 4px 0; }
+  pre { background: #f5f5f5; padding: 8px; border-radius: 4px; overflow-x: auto; font-size: 0.85rem; }
+  #status { color: #666; font-size: 0.85rem; margin-left: 8px; }
+  #error { color: #c00; }
+</style>
+</head>
+<body>
+<h1>Aegis Offline Demo</h1>
+<p id="status">Loading WASM...</p>
+
+<section>
+  <h2>1. Initialize</h2>
+  <button id="btnInit">Init Engine</button>
+  <span id="initResult"></span>
+</section>
+
+<section>
+  <h2>2. Write Relation</h2>
+  <label>Subject:</label> <input id="subj" value="user:alice" size="20"><br>
+  <label>Relation:</label> <input id="rel" value="reader" size="20"><br>
+  <label>Object:</label> <input id="obj" value="doc:report" size="20"><br>
+  <button id="btnWrite">Write</button>
+  <span id="writeResult"></span>
+</section>
+
+<section>
+  <h2>3. Check Permission</h2>
+  <label>Subject:</label> <input id="checkSubj" value="user:alice" size="20"><br>
+  <label>Permission:</label> <input id="checkPerm" value="read" size="20"><br>
+  <label>Object:</label> <input id="checkObj" value="doc:report" size="20"><br>
+  <button id="btnCheck">Check</button>
+  <span id="checkResult"></span>
+</section>
+
+<section>
+  <h2>4. List by Object</h2>
+  <label>Object:</label> <input id="listObj" value="doc:report" size="20"><br>
+  <button id="btnListObj">List</button>
+  <pre id="listObjResult"></pre>
+</section>
+
+<section>
+  <h2>5. Export / Import</h2>
+  <button id="btnExport">Export JSON</button>
+  <button id="btnImport">Import Sample</button>
+  <pre id="exportResult"></pre>
+</section>
+
+<script type="module">
+import init, * as wasm from '../../rust/pkg/aegis_browser.js';
+
+const statusEl = document.getElementById('status');
+
+function log(id, msg) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = msg;
+}
+
+async function initEngine() {
+  try {
+    const schema = JSON.stringify({
+      namespaces: [
+        {
+          name: "doc",
+          relations: {
+            owner: {},
+            writer: { union: ["owner"] },
+            reader: { union: ["writer"] }
+          }
+        }
+      ]
+    });
+    wasm.init_sync(schema, true);
+    log('initResult', 'ok');
+    statusEl.textContent = 'Ready';
+  } catch (e) {
+    log('initResult', 'error: ' + e);
+  }
+}
+
+async function writeRelation() {
+  try {
+    const subj = document.getElementById('subj').value;
+    const rel = document.getElementById('rel').value;
+    const obj = document.getElementById('obj').value;
+    const rev = wasm.write_relation(subj, rel, obj);
+    log('writeResult', 'ok rev=' + rev);
+  } catch (e) {
+    log('writeResult', 'error: ' + e);
+  }
+}
+
+async function checkPermission() {
+  try {
+    const subj = document.getElementById('checkSubj').value;
+    const perm = document.getElementById('checkPerm').value;
+    const obj = document.getElementById('checkObj').value;
+    const allowed = wasm.check(subj, perm, obj);
+    log('checkResult', allowed ? 'ALLOWED' : 'DENIED');
+  } catch (e) {
+    log('checkResult', 'error: ' + e);
+  }
+}
+
+async function listByObject() {
+  try {
+    const obj = document.getElementById('listObj').value;
+    const json = wasm.list_by_object(obj);
+    document.getElementById('listObjResult').textContent = JSON.stringify(JSON.parse(json), null, 2);
+  } catch (e) {
+    document.getElementById('listObjResult').textContent = 'Error: ' + e;
+  }
+}
+
+async function exportJson() {
+  try {
+    const json = wasm.export_json();
+    document.getElementById('exportResult').textContent = json;
+  } catch (e) {
+    document.getElementById('exportResult').textContent = 'Error: ' + e;
+  }
+}
+
+async function importSample() {
+  try {
+    const sample = JSON.stringify([
+      { subject: "user:bob", relation: "owner", object: "doc:notes" },
+      { subject: "user:charlie", relation: "reader", object: "doc:notes" }
+    ]);
+    wasm.import_json(sample);
+    document.getElementById('exportResult').textContent = 'Imported 2 tuples';
+  } catch (e) {
+    document.getElementById('exportResult').textContent = 'Error: ' + e;
+  }
+}
+
+await init();
+statusEl.textContent = 'WASM loaded. Click Init Engine.';
+
+document.getElementById('btnInit').addEventListener('click', initEngine);
+document.getElementById('btnWrite').addEventListener('click', writeRelation);
+document.getElementById('btnCheck').addEventListener('click', checkPermission);
+document.getElementById('btnListObj').addEventListener('click', listByObject);
+document.getElementById('btnExport').addEventListener('click', exportJson);
+document.getElementById('btnImport').addEventListener('click', importSample);
+</script>
+</body>
+</html>

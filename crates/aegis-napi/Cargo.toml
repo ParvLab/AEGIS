@@ -1,0 +1,27 @@
+[package]
+name = "aegis-napi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Aegis NAPI bindings for Node.js"
+authors = ["Aegis Authors <opensource@aegis-auth.dev>"]
+homepage = "https://github.com/aegis-auth/aegis"
+documentation = "https://docs.rs/aegis-napi"
+readme = "README.md"
+keywords = ["authorization", "rebac", "zanzibar", "access-control", "security"]
+categories = ["authentication", "database"]
+
+[build-dependencies]
+napi-build = "2"
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+chrono = "0.4"
+napi = { version = "2", features = ["napi8", "serde-json"] }
+napi-derive = "2"
+serde_json.workspace = true
+uuid.workspace = true
+
+[lib]
+crate-type = ["cdylib"]

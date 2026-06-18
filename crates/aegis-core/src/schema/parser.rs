@@ -1,11 +1,13 @@
 use crate::error::{AegisError, AegisResult};
 use crate::schema::types::{LintDiagnostic, LintResult, LintSeverity};
-use crate::types::schema::{PermissionDef, RawSchema, RawTypeDef, RelationDef, Schema, TypeDef};
+use crate::types::schema::{
+    DenyDef, Effect, PermissionDef, RawSchema, RawTypeDef, RelationDef, RoleDef, Schema, TypeDef,
+};
 use std::collections::{HashMap, HashSet};
 
 /// Parse a YAML string into a validated Schema.
 pub fn parse_schema(yaml: &str) -> AegisResult<Schema> {
-    let raw: RawSchema = serde_yaml::from_str(yaml)
+    let raw: RawSchema = serde_yml::from_str(yaml)
         .map_err(|e| AegisError::SchemaValidation(format!("invalid YAML: {e}")))?;
 
     let mut types = HashMap::new();
@@ -17,11 +19,15 @@ pub fn parse_schema(yaml: &str) -> AegisResult<Schema> {
     for (type_name, raw_type) in raw_types {
         let relations = parse_relations(&raw_type)?;
         let permissions = parse_permissions(&raw_type)?;
+        let roles = parse_roles(&raw_type);
+        let deny = parse_deny(&raw_type);
         types.insert(
             type_name,
             TypeDef {
                 relations,
                 permissions,
+                roles,
+                deny,
             },
         );
     }
@@ -76,6 +82,7 @@ fn parse_permissions(raw_type: &RawTypeDef) -> AegisResult<HashMap<String, Permi
                 name.clone(),
                 PermissionDef {
                     union_of,
+                    effect: raw_perm.effect.unwrap_or(Effect::Allow),
                     condition: raw_perm.condition.clone(),
                     description: raw_perm.description.clone(),
                 },
@@ -83,6 +90,36 @@ fn parse_permissions(raw_type: &RawTypeDef) -> AegisResult<HashMap<String, Permi
         }
     }
     Ok(permissions)
+}
+
+fn parse_roles(raw_type: &RawTypeDef) -> HashMap<String, RoleDef> {
+    let mut roles = HashMap::new();
+    if let Some(ref raw_roles) = raw_type.roles {
+        for (name, raw_role) in raw_roles {
+            roles.insert(
+                name.clone(),
+                RoleDef {
+                    permissions: raw_role.permissions.clone().unwrap_or_default(),
+                    inherits_from: raw_role.inherits_from.clone().unwrap_or_default(),
+                    description: raw_role.description.clone(),
+                },
+            );
+        }
+    }
+    roles
+}
+
+fn parse_deny(raw_type: &RawTypeDef) -> Vec<DenyDef> {
+    let mut deny = Vec::new();
+    if let Some(ref raw_deny) = raw_type.deny {
+        for d in raw_deny {
+            deny.push(DenyDef {
+                relations: d.relations.clone().unwrap_or_default(),
+                description: d.description.clone(),
+            });
+        }
+    }
+    deny
 }
 
 /// Lint a schema and return diagnostics.
@@ -150,7 +187,15 @@ pub fn lint_schema(schema: &Schema) -> LintResult {
         // Check for permission references to undefined relations
         for (perm_name, perm_def) in &type_def.permissions {
             for rel_ref in &perm_def.union_of {
-                if !type_def.relations.contains_key(rel_ref) {
+                if rel_ref == "*" {
+                    diagnostics.push(LintDiagnostic {
+                        severity: LintSeverity::Warning,
+                        message: format!(
+                            "permission '{perm_name}' on type '{type_name}' uses wildcard '*' — overly broad, use with explicit justification"
+                        ),
+                        location: Some(format!("types.{type_name}.permissions.{perm_name}")),
+                    });
+                } else if !type_def.relations.contains_key(rel_ref) {
                     diagnostics.push(LintDiagnostic {
                         severity: LintSeverity::Error,
                         message: format!(
@@ -161,6 +206,93 @@ pub fn lint_schema(schema: &Schema) -> LintResult {
                 }
             }
         }
+
+        // Check condition syntax on permissions
+        for (perm_name, perm_def) in &type_def.permissions {
+            if let Some(ref cond) = perm_def.condition {
+                if let Err(e) = crate::engine::condition::parse_condition(cond) {
+                    diagnostics.push(LintDiagnostic {
+                        severity: LintSeverity::Error,
+                        message: format!(
+                            "permission '{perm_name}' on type '{type_name}' has invalid condition syntax: {e}"
+                        ),
+                        location: Some(format!("types.{type_name}.permissions.{perm_name}.condition")),
+                    });
+                }
+            }
+        }
+
+        // Check if any role references a permission that doesn't exist on this type
+        for (role_name, role_def) in &type_def.roles {
+            for perm_ref in &role_def.permissions {
+                if !type_def.permissions.contains_key(perm_ref) {
+                    diagnostics.push(LintDiagnostic {
+                        severity: LintSeverity::Warning,
+                        message: format!(
+                            "role '{role_name}' on type '{type_name}' references undefined permission '{perm_ref}'"
+                        ),
+                        location: Some(format!("types.{type_name}.roles.{role_name}")),
+                    });
+                }
+            }
+        }
+
+        // Check if any deny rule references a relation that doesn't exist on this type
+        for deny_def in &type_def.deny {
+            for rel_ref in &deny_def.relations {
+                if !type_def.relations.contains_key(rel_ref) {
+                    diagnostics.push(LintDiagnostic {
+                        severity: LintSeverity::Error,
+                        message: format!(
+                            "deny rule on type '{type_name}' references undefined relation '{rel_ref}'"
+                        ),
+                        location: Some(format!("types.{type_name}.deny")),
+                    });
+                }
+            }
+        }
+
+        // Check for circular role inheritance
+        for role_name in type_def.roles.keys() {
+            let mut visited = HashSet::new();
+            if has_circular_role_inheritance(role_name, &type_def.roles, &mut visited) {
+                diagnostics.push(LintDiagnostic {
+                    severity: LintSeverity::Error,
+                    message: format!(
+                        "circular role inheritance detected for role '{role_name}' on type '{type_name}'"
+                    ),
+                    location: Some(format!("types.{type_name}.roles.{role_name}")),
+                });
+            }
+        }
+    }
+
+    // Check for unused types
+    for type_name in schema.types.keys() {
+        if let Some(type_def) = schema.types.get(type_name) {
+            let has_content = !type_def.relations.is_empty() || !type_def.permissions.is_empty();
+            if !has_content {
+                diagnostics.push(LintDiagnostic {
+                    severity: LintSeverity::Warning,
+                    message: format!("type '{type_name}' is defined but has no relations or permissions"),
+                    location: Some(format!("types.{type_name}")),
+                });
+            } else if schema.types.len() > 1 {
+                let is_referenced = schema.types.iter().filter(|(k, _)| *k != type_name).any(|(_, t)| {
+                    t.relations.values().any(|r| r.inherit_from.iter().any(|s| s == type_name))
+                        || t.permissions.values().any(|p| p.union_of.iter().any(|s| s == type_name))
+                });
+                if !is_referenced {
+                    diagnostics.push(LintDiagnostic {
+                        severity: LintSeverity::Warning,
+                        message: format!(
+                            "type '{type_name}' is defined but never referenced by any other type's relations or permissions"
+                        ),
+                        location: Some(format!("types.{type_name}")),
+                    });
+                }
+            }
+            }
     }
 
     LintResult::with_diagnostics(diagnostics)
@@ -169,6 +301,25 @@ pub fn lint_schema(schema: &Schema) -> LintResult {
 fn validate_schema(schema: &Schema) -> AegisResult<LintResult> {
     let lint = lint_schema(schema);
     Ok(lint)
+}
+
+fn has_circular_role_inheritance(
+    role_name: &str,
+    roles: &HashMap<String, crate::types::schema::RoleDef>,
+    visited: &mut HashSet<String>,
+) -> bool {
+    if !visited.insert(role_name.to_string()) {
+        return true;
+    }
+    if let Some(role_def) = roles.get(role_name) {
+        for parent in &role_def.inherits_from {
+            if has_circular_role_inheritance(parent, roles, visited) {
+                return true;
+            }
+        }
+    }
+    visited.remove(role_name);
+    false
 }
 
 fn has_circular_relations(
@@ -273,6 +424,7 @@ types:
                 union_of: vec![],
                 condition: None,
                 description: None,
+                ..Default::default()
             },
         );
         types.insert(
@@ -280,6 +432,7 @@ types:
             TypeDef {
                 relations,
                 permissions,
+                ..Default::default()
             },
         );
         let schema = Schema {
@@ -322,6 +475,7 @@ types:
                 union_of: vec!["owner".to_string()],
                 condition: None,
                 description: None,
+                ..Default::default()
             },
         );
         types.insert(
@@ -329,6 +483,7 @@ types:
             TypeDef {
                 relations,
                 permissions,
+                ..Default::default()
             },
         );
         let schema = Schema {
@@ -342,7 +497,14 @@ types:
             .iter()
             .filter(|d| d.message.contains("never referenced"))
             .collect();
-        assert_eq!(orphan_warnings.len(), 1);
+        assert_eq!(orphan_warnings.len(), 1, "expected 1 orphan warning, got {}: {:?}", orphan_warnings.len(), orphan_warnings);
+        // With only one type and it has relations/permissions, no unused type warning
+        let unused_types: Vec<_> = result
+            .diagnostics
+            .iter()
+            .filter(|d| d.message.contains("never referenced"))
+            .collect();
+        assert_eq!(unused_types.len(), 1, "expected 1 orphan relation warning, got {}: {:?}", unused_types.len(), unused_types);
     }
 
     #[test]
@@ -363,6 +525,7 @@ types:
                 union_of: vec!["owner".to_string(), "nonexistent".to_string()],
                 condition: None,
                 description: None,
+                ..Default::default()
             },
         );
         types.insert(
@@ -370,6 +533,7 @@ types:
             TypeDef {
                 relations,
                 permissions,
+                ..Default::default()
             },
         );
         let schema = Schema {

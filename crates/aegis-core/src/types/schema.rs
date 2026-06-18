@@ -10,10 +10,12 @@ pub struct Schema {
 }
 
 /// Definition of a single resource type in the schema.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TypeDef {
     pub relations: HashMap<String, RelationDef>,
     pub permissions: HashMap<String, PermissionDef>,
+    pub roles: HashMap<String, RoleDef>,
+    pub deny: Vec<DenyDef>,
 }
 
 /// Defines which subject types can hold this relation, and what relations it inherits from.
@@ -25,14 +27,87 @@ pub struct RelationDef {
     pub description: Option<String>,
 }
 
+/// The effect of a permission or deny rule.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Effect {
+    Allow,
+    Deny,
+}
+
+impl Default for Effect {
+    fn default() -> Self {
+        Self::Allow
+    }
+}
+
 /// Defines a computed permission from a set of relations.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PermissionDef {
     /// Relations that satisfy this permission (e.g. ["viewer", "editor", "owner"]).
     pub union_of: Vec<String>,
-    /// Optional ABAC conditions (V3+).
+    /// Whether this permission grants Allow or Deny.
+    #[serde(default)]
+    pub effect: Effect,
+    /// Optional ABAC conditions.
     pub condition: Option<String>,
     /// Human-readable description of this permission.
+    pub description: Option<String>,
+}
+
+/// Defines a role and its mapped permissions.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct RoleDef {
+    pub permissions: Vec<String>,
+    /// Parent roles this role inherits from.
+    /// e.g. `admin` inherits from `editor` means admin gets all editor permissions.
+    #[serde(default)]
+    pub inherits_from: Vec<String>,
+    pub description: Option<String>,
+}
+
+impl RoleDef {
+    /// Returns the transitive closure of all permission names for this role,
+    /// including permissions inherited from parent roles via `inherits_from`.
+    /// Uses the provided `roles` map to resolve the inheritance chain.
+    /// Returns `None` if a circular dependency is detected.
+    pub fn resolved_permissions(
+        &self,
+        role_name: &str,
+        all_roles: &std::collections::HashMap<String, RoleDef>,
+    ) -> Option<Vec<String>> {
+        let mut result = std::collections::BTreeSet::new();
+        let mut visited = std::collections::HashSet::new();
+        visited.insert(role_name.to_string());
+        self.collect_permissions(&mut result, &mut visited, all_roles)?;
+        Some(result.into_iter().collect())
+    }
+
+    fn collect_permissions(
+        &self,
+        acc: &mut std::collections::BTreeSet<String>,
+        visited: &mut std::collections::HashSet<String>,
+        all_roles: &std::collections::HashMap<String, RoleDef>,
+    ) -> Option<()> {
+        for p in &self.permissions {
+            acc.insert(p.clone());
+        }
+        for parent in &self.inherits_from {
+            if !visited.insert(parent.clone()) {
+                // Circular dependency detected
+                return None;
+            }
+            if let Some(parent_def) = all_roles.get(parent) {
+                parent_def.collect_permissions(acc, visited, all_roles)?;
+            }
+        }
+        Some(())
+    }
+}
+
+/// Defines an explicit deny rule for a relation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DenyDef {
+    pub relations: Vec<String>,
     pub description: Option<String>,
 }
 
@@ -43,12 +118,16 @@ pub(crate) struct RawSchema {
     pub schema_version: Option<u32>,
     pub namespace: Option<String>,
     pub types: Option<HashMap<String, RawTypeDef>>,
+    pub roles: Option<HashMap<String, RawRoleDef>>,
+    pub deny: Option<Vec<RawDenyDef>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RawTypeDef {
     pub relations: Option<HashMap<String, RawRelationDef>>,
     pub permissions: Option<HashMap<String, RawPermissionDef>>,
+    pub roles: Option<HashMap<String, RawRoleDef>>,
+    pub deny: Option<Vec<RawDenyDef>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -60,7 +139,22 @@ pub(crate) struct RawRelationDef {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct RawPermissionDef {
     pub union_of: Option<Vec<String>>,
+    pub effect: Option<Effect>,
     pub condition: Option<String>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RawRoleDef {
+    pub permissions: Option<Vec<String>>,
+    #[serde(default)]
+    pub inherits_from: Option<Vec<String>>,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct RawDenyDef {
+    pub relations: Option<Vec<String>>,
     pub description: Option<String>,
 }
 
@@ -174,6 +268,7 @@ mod tests {
                 ],
                 condition: None,
                 description: Some("Can read the repository".to_string()),
+                ..Default::default()
             },
         );
         repo_permissions.insert(
@@ -182,6 +277,7 @@ mod tests {
                 union_of: vec!["editor".to_string(), "owner".to_string()],
                 condition: None,
                 description: None,
+                ..Default::default()
             },
         );
         repo_permissions.insert(
@@ -190,6 +286,7 @@ mod tests {
                 union_of: vec!["owner".to_string()],
                 condition: None,
                 description: None,
+                ..Default::default()
             },
         );
 
@@ -198,6 +295,7 @@ mod tests {
             TypeDef {
                 relations: repo_relations,
                 permissions: repo_permissions,
+                ..Default::default()
             },
         );
 

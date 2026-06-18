@@ -5,13 +5,93 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 description = "Aegis embedded authorization runtime core library"
+authors = ["Aegis Authors <opensource@aegis-auth.dev>"]
+homepage = "https://github.com/aegis-auth/aegis"
+documentation = "https://docs.rs/aegis-core"
+readme = "README.md"
+keywords = ["authorization", "rebac", "zanzibar", "access-control", "security"]
+categories = ["authentication", "database"]
+
+
 
 [dependencies]
 serde.workspace = true
-serde_yaml.workspace = true
+serde_yml.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 chrono.workspace = true
+rusqlite = { workspace = true, optional = true }
+r2d2 = { workspace = true, optional = true }
+r2d2_sqlite = { workspace = true, optional = true }
+serde_json.workspace = true
+async-trait = { workspace = true }
+sha2 = "0.10"
+ed25519-dalek = { version = "2", features = ["digest"] }
+rand = "0.8"
+hex = "0.4"
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"], optional = true }
+deadpool-postgres = { version = "0.14", features = ["serde"], optional = true }
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"], optional = true }
+tokio-postgres-rustls = { version = "0.12", optional = true }
+rustls = { version = "0.23", optional = true }
+webpki-roots = { version = "1", optional = true }
+rocksdb = { workspace = true, optional = true }
+mysql_async = { version = "0.37", features = ["chrono"], optional = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, optional = true }
+subtle = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
+opentelemetry-otlp = { workspace = true, optional = true }
+tracing-opentelemetry = { workspace = true, optional = true }
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+libc = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.2", features = ["js"] }
+wasm-bindgen = { version = "0.2" }
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "IdbDatabase", "IdbFactory", "IdbOpenDbRequest", "IdbRequest",
+    "IdbTransaction", "IdbTransactionMode", "IdbObjectStore",
+    "IdbVersionChangeEvent", "DomException", "Window",
+    "Performance", "console",
+] }
 
 [dev-dependencies]
-serde_json = "1"
+fastrand = "2"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+criterion = "0.5"
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[[bench]]
+name = "check"
+harness = false
+path = "benches/check.rs"
+
+[[bench]]
+name = "cache"
+harness = false
+path = "benches/cache.rs"
+
+[[bench]]
+name = "partition"
+harness = false
+path = "benches/partition.rs"
+
+[features]
+default = ["sqlite"]
+sqlite = ["dep:rusqlite", "dep:r2d2", "dep:r2d2_sqlite"]
+hot-reload = []
+postgres = ["tokio-postgres", "deadpool-postgres", "tokio", "tokio-postgres-rustls", "rustls", "webpki-roots"]
+mysql = ["dep:mysql_async", "tokio"]
+rocksdb = ["dep:rocksdb"]
+telemetry = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry", "dep:tracing-subscriber"]
+test-utils = ["sqlite"]
+wasm = ["async-storage"]
+async-storage = []
+

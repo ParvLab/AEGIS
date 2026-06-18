@@ -2,18 +2,44 @@
 resolver = "2"
 members = [
     "crates/aegis-core",
+    "crates/aegis-cli",
+    "crates/aegis-napi",
     "crates/aegis-test-utils",
+    "crates/aegis-ffi",
+    "crates/aegis-pyo3",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-license = "MIT"
+license = "Apache-2.0"
 repository = "https://github.com/aegis-auth/aegis"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_yaml = "0.9"
+serde_yml = "0.0"
+subtle = "2"
 thiserror = "2"
-uuid = { version = "1", features = ["v4", "serde"] }
+uuid = { version = "1", features = ["v4", "serde", "js"] }
 chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.39", features = ["bundled"] }
+r2d2 = "0.8"
+r2d2_sqlite = "0.34"
+serde_json = "1"
+rocksdb = "0.24"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "registry"] }
+opentelemetry = { version = "0.32", features = ["metrics"] }
+opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "trace", "metrics"] }
+opentelemetry_sdk = { version = "0.32", default-features = false, features = ["rt-tokio", "trace", "metrics", "testing"] }
+tracing-opentelemetry = "0.32"
+libc = "0.2"
+async-trait = "0.1"
+pyo3 = { version = "0.23", features = ["experimental-async", "chrono", "abi3-py39"] }
+
+[profile.release]
+panic = "abort"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+opt-level = 3

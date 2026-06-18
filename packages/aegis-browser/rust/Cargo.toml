@@ -1,0 +1,27 @@
+[workspace]
+
+[package]
+name = "aegis-browser"
+version = "0.1.0"
+edition = "2024"
+description = "Aegis authorization engine WASM bindings for browser"
+license = "Apache-2.0"
+repository = "https://github.com/aegis-auth/aegis"
+authors = ["Aegis Authors <opensource@aegis-auth.dev>"]
+homepage = "https://github.com/aegis-auth/aegis"
+documentation = "https://docs.rs/aegis-browser"
+readme = "README.md"
+keywords = ["authorization", "rebac", "zanzibar", "access-control", "security"]
+categories = ["authentication", "database"]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+aegis-core = { path = "../../../crates/aegis-core", default-features = false, features = ["wasm"] }
+wasm-bindgen = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+js-sys = "0.3"
+wasm-bindgen-futures = "0.4"
+uuid = { version = "1", features = ["v4"] }

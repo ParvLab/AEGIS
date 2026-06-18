@@ -1,0 +1,25 @@
+[package]
+name = "aegis-ffi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Aegis C FFI bindings for cross-language SDKs (Go, Zig, etc.)"
+authors = ["Aegis Authors <opensource@aegis-auth.dev>"]
+homepage = "https://github.com/aegis-auth/aegis"
+documentation = "https://docs.rs/aegis-ffi"
+readme = "README.md"
+keywords = ["authorization", "rebac", "zanzibar", "access-control", "security"]
+categories = ["authentication", "database"]
+
+[dependencies]
+aegis-core = { path = "../aegis-core" }
+libc = "0.2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+uuid.workspace = true
+
+[lib]
+name = "aegis_ffi"
+crate-type = ["cdylib", "staticlib"]

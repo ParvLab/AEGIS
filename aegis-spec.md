@@ -17,22 +17,21 @@
 10. [Storage & Persistence Layer](#10-storage--persistence-layer)
 11. [Durability, Backup & Disaster Recovery](#11-durability-backup--disaster-recovery)
 12. [SDK Reference](#12-sdk-reference)
-13. [Deployment Modes](#13-deployment-modes)
+13. [Architecture Patterns](#13-architecture-patterns)
 14. [Security Model](#14-security-model)
 15. [Scalability Strategy](#15-scalability-strategy)
-16. [AI Agent Authorization](#16-ai-agent-authorization)
-17. [Multi-Tenancy](#17-multi-tenancy)
-18. [Observability & Tracing](#18-observability--tracing)
-19. [Developer Experience](#19-developer-experience)
-20. [Development Roadmap](#20-development-roadmap)
-21. [Real-World Use Cases](#21-real-world-use-cases)
-22. [Integration & E2E Test Plan](#22-integration--e2e-test-plan)
+16. [Multi-Tenancy](#16-multi-tenancy)
+17. [Observability & Tracing](#17-observability--tracing)
+18. [Developer Experience](#18-developer-experience)
+19. [Development Roadmap](#19-development-roadmap)
+20. [Real-World Use Cases](#20-real-world-use-cases)
+21. [Integration & E2E Test Plan](#21-integration--e2e-test-plan)
 
 ---
 
 ## 1. Project Summary
 
-**Aegis** is an embedded, distributed, relationship-based authorization runtime (ReBAC). It is inspired by production-grade systems like Google Zanzibar and SpiceDB, but built with a fundamentally different philosophy:
+**Aegis** is an embedded, relationship-based authorization runtime (ReBAC). It is inspired by production-grade systems like Google Zanzibar and SpiceDB, but built with a fundamentally different philosophy:
 
 > *Authorization should feel like a library, not infrastructure.*
 
@@ -41,7 +40,7 @@ Most authorization systems force developers to maintain a separate auth service,
 Aegis is appropriate for:
 
 - SaaS platforms with workspaces, teams, and role hierarchies
-- AI systems requiring scoped agent permissions and memory isolation
+
 - Collaborative editors with per-document sharing models
 - Developer platforms managing API keys, environments, and service access
 - Multi-tenant systems requiring strict graph-level tenant isolation
@@ -94,7 +93,7 @@ Aegis runs inside the application process itself. Permission checks are local fu
 | **Durability** | Authorization data must persist across restarts, crashes, and migrations |
 | **Local Evaluation** | Checks are fast because they run in-process, not over the network |
 | **Concurrent Safety** | Safe for multi-threaded access with clear locking semantics |
-| **Progressive Scalability** | Start embedded; scale to distributed without changing the API |
+| **Embedded-first** | Purely embedded, no servers, ports, or infrastructure |
 
 ---
 
@@ -107,7 +106,7 @@ Aegis runs inside the application process itself. Permission checks are local fu
 - Policy definitions and inheritance rules
 - Authorization traces and access explanations
 - Multi-tenant permission graphs
-- AI agent capability scoping
+
 
 ### What Aegis Does NOT Manage
 
@@ -172,11 +171,7 @@ The contract is: **auth provider gives Aegis an identity; Aegis decides what tha
 
 | Tool | Purpose |
 |---|---|
-| Docker | Container packaging for all deployment modes |
-| Kubernetes | Orchestration for distributed and hybrid deployments |
-| PersistentVolumeClaim | SQLite persistence in containerized environments |
-| WAL (Write-Ahead Log) | Storage-level concurrency (SQLite); replication stream (future) |
-| CRDT | Future multi-region graph consistency |
+| WAL (Write-Ahead Log) | Storage-level concurrency (SQLite) |
 
 ---
 
@@ -277,7 +272,6 @@ The contract is: **auth provider gives Aegis an identity; Aegis decides what tha
 **7. Event Log (future)**
 - Append-only relationship event stream
 - Enables graph reconstruction, rollback, and sync
-- CRDT delta sync layer
 
 ---
 
@@ -290,7 +284,6 @@ An identity is any principal that can hold a relationship. Identities are typed 
 ```
 user:123
 team:engineering
-agent:planner
 service:billing
 apikey:abc123
 bot:deploy-agent
@@ -318,7 +311,6 @@ subject   relation   object
 ─────────────────────────────
 user:123  editor     repo:fluxbus
 team:eng  owner      workspace:core
-agent:p   invoke     tool:filesystem
 ```
 
 The full tuple structure in storage:
@@ -356,29 +348,23 @@ types:
   repo:
     relations:
       owner:
-        - user
-        - team#member        # team members inherit owner relation
+        inherit_from: [user, team#member]        # team members inherit owner relation
 
       editor:
-        - owner              # owners are always editors
-        - collaborator
+        inherit_from: [owner, collaborator]              # owners are always editors
 
       viewer:
-        - editor             # editors are always viewers
-        - public
+        inherit_from: [editor, public]             # editors are always viewers
 
     permissions:
       read:
-        - viewer
-        - editor
-        - owner
+        union_of: [viewer, editor, owner]
 
       write:
-        - editor
-        - owner
+        union_of: [editor, owner]
 
       delete:
-        - owner
+        union_of: [owner]
 ```
 
 ### Indexes
@@ -403,9 +389,7 @@ Three core indexes maintained for fast lookup:
 | **Contextual Roles** | Supported | Role is scoped to a resource, not global |
 | **Multi-Tenant Authorization** | Supported | Via tenant-scoped graph namespacing |
 | **Recursive Relationships** | Supported | Deep graph traversal with cycle detection |
-| **AI Agent Permissions** | Supported | Scoped tool access, ephemeral grants |
 | **ABAC** (Attribute-Based) | Planned (V3) | Policy conditions on relationship metadata |
-| **Capability-Based Access** | Planned (V4) | Token-bound, ephemeral capability delegation |
 
 ### RBAC via ReBAC Pattern
 
@@ -538,7 +522,7 @@ Aegis provides **revision-based snapshot isolation** inspired by Google Zanzibar
 |---|---|---|
 | `minimize_latency` (default) | Reads from latest available local snapshot. May be slightly stale in multi-instance deployments. | Hot-path permission checks |
 | `at_revision(token)` | Reads from a snapshot at least as fresh as the given revision token. Guarantees read-your-writes. | After a relationship write, check reflects it |
-| `fully_consistent` | Reads the absolute latest committed state. Highest latency in distributed setups. | Audit, compliance, administrative checks |
+| \`fully_consistent\` | Reads the absolute latest committed state. Highest latency. | Audit, compliance, administrative checks |
 
 ### Revision Token
 
@@ -703,35 +687,11 @@ const report = await auth.checkSchema({ schema: "./new-schema.yaml" })
 | **Version tracking** | Schema version field in DB; migration scripts numbered |
 | **Rollback** | Each migration has a reverse script for rollback (tested) |
 
-### Container Deployments
-
-**Docker:**
-```
-Container
- ├── App (Node.js / Go / etc.)
- ├── Aegis Runtime
- ├── Aegis Connection Manager
- └── /data/aegis.db  ← mounted persistent volume
-```
-
-**Kubernetes:**
-```yaml
-volumes:
-  - name: aegis-data
-    persistentVolumeClaim:
-      claimName: aegis-pvc
-volumeMounts:
-  - mountPath: /data
-    name: aegis-data
-```
-
-Container restarts do not lose the graph because storage is on the persistent volume, not in container memory.
-
 ---
 
 ## 11. Durability, Backup & Disaster Recovery
 
-Authorization data is mission-critical. Loss of the permission graph results in either universal access (catastrophic) or universal lockout (equally catastrophic). The following strategies are mandatory for production deployments.
+Authorization data is mission-critical. Loss of the permission graph results in either universal access (catastrophic) or universal lockout (equally catastrophic). The following strategies are mandatory for production.
 
 ### Backup
 
@@ -785,7 +745,7 @@ The most powerful durability primitive in Aegis. Instead of storing only current
 [rev:1]  ADD    user:123  editor  repo:fluxbus
 [rev:2]  ADD    team:eng  owner   workspace:core
 [rev:3]  REMOVE user:456  viewer  repo:core
-[rev:4]  ADD    agent:p   invoke  tool:filesystem
+
 ```
 
 Benefits of event log architecture:
@@ -1131,11 +1091,11 @@ router.put(
 
 ---
 
-## 13. Deployment Modes
+## 13. Architecture Patterns
 
-### Mode 1: Embedded (Default)
+### Pattern 1: Embedded (Default)
 
-The application and Aegis run in the same process. Storage is either local (SQLite/RocksDB) or external (PostgreSQL).
+The application and Aegis run in the same process. Aegis is added as a library dependency (`cargo add`, `npm install`, `pip install`). Storage is either local (SQLite/RocksDB) or external (PostgreSQL).
 
 ```
 Application Process
@@ -1148,34 +1108,6 @@ Application Process
 ```
 
 **Best for:** startups, SaaS products, developer tools, local-first apps.
-
-### Mode 2: Distributed / Cluster
-
-Multiple application instances share a central Aegis-aware storage layer. Optional Aegis coordination layer for distributed caching and watch streams.
-
-```
-Applications (N instances)
-       ↓
- Aegis Cluster (coordination layer)
-       ↓
- Distributed Storage (PostgreSQL / CockroachDB)
-```
-
-**Best for:** enterprises, large-scale SaaS, multi-region systems.
-
-### Mode 3: Hybrid Edge
-
-Central graph with edge replicas for low-latency offline evaluation.
-
-```
-Central Graph (authoritative)
-       ↓
-  Edge Replicas (read-only, synced via CRDT)
-       ↓
-  Local Evaluation (near-user, offline-capable)
-```
-
-**Best for:** CDN-native apps, edge runtimes, IoT, mobile-first platforms.
 
 ---
 
@@ -1268,7 +1200,6 @@ Every write to the graph is:
 - Graph sharding by tenant or resource namespace
 - Distributed recursive evaluation with work dispatch
 - Consistency tokens for snapshot-consistent reads across shards
-- CRDT-based replication streams via WAL
 - Partial graph sync for edge nodes
 
 ### Performance Optimizations
@@ -1282,88 +1213,11 @@ Every write to the graph is:
 | Parallel Evaluation | Concurrent sibling branch evaluation in Rust async |
 | Short-circuit | First `allow` in OR branches terminates remaining checks via structured cancellation |
 | Cycle Detection | Prevents infinite loops in circular graphs |
-
-### CRDT-Based Graph Sync (V3+)
-
-Multi-node deployments use an **OR-Set CRDT** (Observed-Removed Set) over relationship tuples for convergent synchronization:
-
-- Each tuple `(subject, relation, object)` is a unique element in the set
-- Deletes are tracked via tombstones (add-wins semantics)
-- Merge is commutative, associative, and idempotent
-- Delta-state sync: only transmit differences between nodes
-- SQLite remains authoritative transactional store; CRDT layer syncs between instances
-
-```
-Node A (primary)
-  │
-  ├── CRDT delta ──→ Node B (edge)
-  │
-  └── CRDT delta ──→ Node C (edge)
-
-All nodes converge to the same state given the same operations.
 ```
 
 ---
 
-## 16. AI Agent Authorization
-
-Aegis provides first-class support for AI-native permission models — a capability not present in traditional authorization systems.
-
-### Identity Types for AI
-
-```
-agent:planner
-agent:assistant
-agent:coder
-service:memory-store
-```
-
-### Relationship Examples
-
-```
-agent:planner    invoke  tool:filesystem
-agent:assistant  read    memory:workspace-alpha
-agent:coder      write   repo:fluxbus
-agent:planner    read    memory:user-123
-```
-
-### Scoped Tool Access
-
-Agents only access the tools explicitly granted to them via relationships. No implicit inheritance from human user permissions.
-
-### Ephemeral Permissions (V4)
-
-Temporary permission grants with TTL:
-
-```typescript
-await auth.grantEphemeral({
-  subject:    "agent:planner",
-  relation:   "invoke",
-  object:     "tool:external-api",
-  expiresIn:  "15m"
-})
-```
-
-Automatically revoked after expiry without manual cleanup. Ephemeral grants produce a dedicated event log entry and are visible in the audit trail.
-
-### Capability Graphs (V4)
-
-Capability delegation chains for multi-agent systems:
-
-```
-user:123 delegates read:memory to agent:orchestrator
-agent:orchestrator sub-delegates read:memory to agent:sub-planner
-```
-
-Delegation depth is policy-controlled to prevent privilege escalation.
-
-### Memory Isolation
-
-Each agent's accessible memory is defined by relationships, not runtime state. Switching context (user session, workspace) does not implicitly grant new memory access.
-
----
-
-## 17. Multi-Tenancy
+## 16. Multi-Tenancy
 
 ### Graph Scoping
 
@@ -1404,7 +1258,7 @@ Tenant admins have no power over other tenants. Super-admins are a separate iden
 
 ---
 
-## 18. Observability & Tracing
+## 17. Observability & Tracing
 
 ### Permission Tracing
 
@@ -1542,7 +1396,7 @@ const auth = new Aegis({
 
 ---
 
-## 19. Developer Experience
+## 18. Developer Experience
 
 ### REPL (Interactive Shell)
 
@@ -1654,7 +1508,7 @@ const auth = new Aegis({
       // Clean up related external state
     },
     onCheck: ({ subject, relation, object, allowed }) => {
-      // Analytics, audit, anomaly detection
+      // Analytics, audit
     }
   }
 })
@@ -1662,7 +1516,7 @@ const auth = new Aegis({
 
 ---
 
-## 20. Development Roadmap
+## 19. Development Roadmap
 
 ### V1 — Foundation
 
@@ -1684,50 +1538,28 @@ const auth = new Aegis({
 - Policy linting CLI
 - Test helpers / fixtures
 - Input validation & constraints
-- Docker support
 
-### V2 — Distributed Foundation
+### V2 — Multi-Model Authorization (Complete)
 
-- Event log (append-only relationship mutations)
-- PostgreSQL backend
-- Watch streams (subscribe to graph changes)
-- Graph synchronization between instances
-- Edge read replicas (read-only, synced)
-- Distributed decision cache
-- OpenTelemetry integration
-- Structured logging
-- Audit log retention & archival
-- GDPR compliance APIs (deleteSubject, exportSubject, cascading ownership)
-- Webhook / event hooks
-- Schema hot-reload
-- Go SDK + Python SDK
-- MySQL backend
+V2 expands Aegis from a ReBAC engine into a complete multi-model authorization runtime,
+adding RBAC, ACL, ABAC conditions, deny semantics, tenant isolation, and time-based controls.
 
-### V3 — Scale
+Implemented V2 features:
 
-- CRDT-based graph replication
-- Distributed traversal dispatch
-- Multi-region consistency tokens
-- Partial graph sync for edge nodes
-- Consistency-level controls per check (minimize_latency, at_revision, fully_consistent)
-- ABAC (attribute-based conditions on relationship metadata)
-- WAL-based sync between instances
-- RocksDB backend
-- Rate limiting & abuse prevention
-
-### V4 — AI-Native
-
-- AI-native authorization primitives
-- Ephemeral permission grants (TTL-based)
-- Capability delegation chains
-- Multi-agent trust graphs
-- Memory-aware permission scoping
-- Agent audit trails
-- Capability-based access tokens
+- **RBAC helpers**: `assign_role()`, `unassign_role()`, `check_role()`, `get_roles()` in `engine/rbac.rs`
+- **ACL helpers**: `grant()`, `revoke()`, `list_acls()` in `engine/acl.rs`
+- **ABAC condition engine**: `parse_condition()` and `evaluate_condition()` supporting `Eq`, `Neq`, `In`, `Gt`, `Lt`, `Exists`, `NotExists` operators, composite `AND`/`OR`/`NOT` expressions, and time predicates (`Before`, `After`, `DayOfWeek`)
+- **Deny semantics**: Explicit deny rules via `DenyDef` in schema YAML `deny` block; deny pass in `check_inner()` that overrides allow decisions
+- **Permission-level Effect::Deny**: Permissions can declare `effect: Deny` to invert their union_of semantics
+- **Explain deny awareness**: `explain()` includes the deny pass for accurate results
+- **Schema roles**: `roles` block with `RoleDef` mapping role names to permission lists (declarative, validated)
+- **Tuple extensions**: `valid_until: Option<DateTime<Utc>>` on `RelationshipTuple`; constructor helper `with_expiry()`
+- **Schema validator updates**: Effect-aware permission validation, empty-role warnings, deny relation cross-reference linting
+- **23 V2 integration tests** covering RBAC lifecycle, ACL CRUD, deny precedence, Effect::Deny, composite AND/OR/NOT conditions, schema YAML parsing, tuple struct extensions, passive expiry filtering, future expiry allowing, explain deny awareness, and dry-run with V2 features
 
 ---
 
-## 21. Real-World Use Cases
+## 20. Real-World Use Cases
 
 ### SaaS Platform
 
@@ -1765,23 +1597,9 @@ apikey:abc   read     environment:production
 → API key read-only access scoped to production
 ```
 
-### AI Agent System
-
-```
-agent:planner    invoke   tool:browser
-agent:planner    read     memory:workspace-123
-agent:researcher invoke   tool:search
-agent:researcher read     memory:workspace-123
-agent:coder      write    repo:feature-branch
-
-→ each agent only has access to its scoped tools and memory
-→ no implicit cross-agent permission inheritance
-→ all access is auditable and explainable
-```
-
 ---
 
-## 22. Integration & E2E Test Plan
+## 21. Integration & E2E Test Plan
 
 ### Integration Tests
 
@@ -1828,9 +1646,7 @@ End-to-end tests validate the full system across SDK boundaries, language runtim
 | E2E-004 | SQLite backend persistence | Write tuples, restart process, verify tuples survive | All tuples present after restart |
 | E2E-005 | PostgreSQL backend persistence | Write tuples, restart process, verify tuples survive | All tuples present after restart |
 | E2E-006 | Multi-tenancy isolation | Write same resource name in two tenants, cross-tenant check | Cross-tenant check returns denied |
-| E2E-007 | Docker restart | Docker container with mounted volume, write, restart, verify | Data persists across container restart |
-| E2E-008 | K8s PVC persistence | Kubernetes pod with PVC, write, pod restart | Data persists across pod restart |
-| E2E-009 | Backup + restore | Create backup, delete graph, restore from backup | Graph state matches pre-delete state |
+| E2E-007 | Backup + restore | Create backup, delete graph, restore from backup | Graph state matches pre-delete state |
 | E2E-010 | Export + import | Export graph to JSON, import into new instance | New instance has same graph state |
 | E2E-011 | Event log reconstruction | Enable event log, write 100 tuples, recover from events | Graph state at final revision matches original |
 | E2E-012 | Point-in-time recovery | Write 10 tuples, record revision at step 5, recover to revision 5 | Graph state matches what existed at revision 5 |
@@ -1843,10 +1659,6 @@ End-to-end tests validate the full system across SDK boundaries, language runtim
 | E2E-019 | Watch subscription | Subscribe to changes on an object, write a tuple, verify event received | Event received with correct subject/relation/object |
 | E2E-020 | Audit log queries | Perform writes/deletes, query audit log by time range | All relevant entries returned with correct timestamps |
 | E2E-021 | GDPR user deletion with transfer | Delete user with `ownershipPolicy: "transfer"` | Ownership transferred, user's other relations removed |
-| E2E-022 | Ephemeral grant expiry (V4) | Grant ephemeral permission, wait for TTL, check | Check returns denied after expiry |
-| E2E-023 | Capability delegation chain (V4) | User delegates to agent, agent sub-delegates | Sub-agent has access (within depth limit) |
-| E2E-024 | CRDT sync (V3+) | Two nodes with CRDT sync, write on node A, read on node B | Node B converges to same state |
-| E2E-025 | Edge replica read-only | Write to central, read from edge replica | Edge replica returns same result as central for reads |
 
 ### Test Environment Matrix
 
@@ -1854,9 +1666,8 @@ End-to-end tests validate the full system across SDK boundaries, language runtim
 |---|---|---|---|
 | CI (unit) | In-memory SQLite | Embedded | Fast integration tests |
 | CI (integration) | SQLite file on disk | Embedded | Persistence and concurrent access |
-| CI (e2e) | PostgreSQL (Docker) | Embedded | Cross-backend compatibility |
+| CI (e2e) | PostgreSQL | Embedded | Cross-backend compatibility |
 | Staging | PostgreSQL | Distributed (2 instances) | Multi-instance consistency |
-| Staging (edge) | SQLite + CRDT | Hybrid (central + edge) | CRDT sync correctness |
 | Performance | RocksDB | Embedded | Throughput and latency benchmarks |
 
 ### Edge Cases Coverage
@@ -1907,7 +1718,6 @@ All Aegis errors extend a base `AegisError` type:
 | Multi-server production | PostgreSQL (shared) |
 | High-write throughput | RocksDB |
 | Browser / edge runtime | IndexedDB |
-| Multi-region | PostgreSQL + CRDT replication (V3) |
 
 ---
 
@@ -1922,7 +1732,7 @@ All Aegis errors extend a base `AegisError` type:
 - [ ] OpenTelemetry metrics and tracing integrated
 - [ ] Audit log retention policy defined and documented
 - [ ] Schema reviewed for least-privilege principles
-- [ ] Ephemeral agent grants use TTL where appropriate
+
 - [ ] All input validated (subject/relation/object format)
 - [ ] WAL mode enabled for SQLite (local filesystem only)
 - [ ] Write rate limits configured for production

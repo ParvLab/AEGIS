@@ -3,7 +3,27 @@
 > Complete end-to-end build plan for the embedded ReBAC authorization runtime.
 >
 > **Total estimate:** ~40 weeks with 2-3 engineers
-> **Phases:** 0 (Foundation) → 1 (Engine) → 2 (SDK) → 3 (Distributed) → 4 (AI-Native)
+> **Phases:** 0 (Foundation) → 1 (Engine) → 2 (SDK) → 3 (Distributed)
+
+## Current Status (June 2026)
+
+**Sprints 0–9 Complete — 280 tests pass (233 unit + 47 integration/stress/closure), 0 failures — V1+V2 fully implemented**
+
+| Sprint | Focus | Status | Key Deliverables |
+|--------|-------|--------|-----------------|
+| 0 | Security Hardening | ✅ | 18 vulnerabilities fixed |
+| 1 | Engine Features | ✅ | ABAC, OTel, hot-reload, recover, lint, FullyConsistent, logger callback |
+| 2 | Storage Backends | ✅ | MySQL, PG/RocksDB event compaction, required trait methods |
+| 3 | NAPI/TS SDK | ✅ | 14 exports, JsWatchSubscription, JsTransaction |
+| 4 | CLI & REPL | ✅ | 19 commands, REPL with tab completion + colors, --dry-run |
+| 5 | Test Coverage | ✅ | 24 new tests across 12 categories |
+| **6** | **Polish & Cleanup** | **✅** | **Dead code removal, deps cleanup, LRU cache, rate limiter GC, health fields, CI hardening, supply-chain docs** |
+| 7 | Go & Python SDKs | ✅ | C FFI, Go CGo SDK, PyO3 bindings |
+| **8** | **V1 Closure** | **✅** | **7 bug fixes, 4 gap closures, 10 integration tests, docs alignment** |
+
+**Architecture:** Purely embedded — zero servers, ports, HTTP/gRPC listeners. SQLite + RocksDB as embedded storage backends (PG/MySQL available programmatically, not in CLI).
+
+**Key decisions:** `std::thread::scope` for parallelism (not tokio), synchronous MPSC for watch events (zero threads), `AtomicBool` for parallel_eval toggle, `OnceLock<SdkMeterProvider>` for OTel.
 
 ---
 
@@ -14,11 +34,10 @@
 3. [Phase 0 — Foundation](#3-phase-0--foundation)
 4. [Phase 1 — Engine Core](#4-phase-1--engine-core)
 5. [Phase 2 — SDK & Integration](#5-phase-2--sdk--integration)
-6. [Phase 3 — Distributed & Scale](#6-phase-3--distributed--scale)
-7. [Phase 4 — AI-Native & Advanced](#7-phase-4--ai-native--advanced)
-8. [Key Architectural Decisions](#8-key-architectural-decisions)
-9. [Risk Assessment](#9-risk-assessment)
-10. [Integration & E2E Test Index](#10-integration--e2e-test-index)
+~~6. [Phase 3 — Distributed & Scale](#6-phase-3--distributed--scale) — Removed (embedded-only)~~
+7. [Key Architectural Decisions](#7-key-architectural-decisions)
+8. [Risk Assessment](#8-risk-assessment)
+9. [Integration & E2E Test Index](#9-integration--e2e-test-index)
 
 ---
 
@@ -43,6 +62,7 @@
                     │  │   ├─ Recursive Traversal         │  │
                     │  │   ├─ Cycle Detection             │  │
                     │  │   ├─ Parallel Sibling Eval       │  │
+ │  │   │  (std::thread::scope)       │  │
                     │  │   └─ Policy Resolution           │  │
                     │  └───────────┬─────────────────────┘  │
                     │              │                         │
@@ -67,17 +87,16 @@
         │          ┌───────────────▼───────────────┐          │
         │          │    Storage Adapter Layer       │          │
         │          │                                │          │
-   ┌────▼────┐ ┌──▼───┐ ┌───────▼──────┐ ┌───────▼──────┐   │
-   │ SQLite  │ │ PG   │ │ RocksDB      │ │ IndexedDB    │   │
-   │ (WAL)   │ │      │ │ (LSM-tree)   │ │ (WASM)       │   │
-   └─────────┘ └──────┘ └──────────────┘ └──────────────┘   │
+    ┌────▼────┐ ┌───────▼──────┐ ┌───────▼──────┐          │
+    │ SQLite  │ │ RocksDB      │ │ PG/MySQL     │          │
+    │ (WAL)   │ │ (LSM-tree)   │ │ (programmatic │          │
+    └─────────┘ └──────────────┘ │  only, not    │          │
+                                │  in CLI)      │          │
+                                └───────────────┘          │
         │                                                    │
    ┌────▼────────────────────────────────────────────────┐   │
-   │    CRDT Sync Layer (optional, V3+)                   │   │
-   │    ├─ OR-Set CRDT engine                             │   │
-   │    ├─ Delta generation & merge                        │   │
-   │    └─ HTTP/gRPC transport                             │   │
-   └─────────────────────────────────────────────────────┘   │
+    │    ~~CRDT Sync Layer~~ — Removed (embedded-only)          │   │
+    └─────────────────────────────────────────────────────┘   │
         │                                                    │
    ┌────▼────────────────────────────────────────────────┐   │
    │    Observability (OTel + Logger)                     │   │
@@ -121,18 +140,10 @@ Phase 1.1 (SQLite + Connection Manager)
        ├── 2.3 (REPL)
        └── 2.8 (Go/Rust/Python SDKs)
 
-Phase 1 complete
-  └── Phase 3.1 (Event Log)
-       ├── 3.5 (OTel)
-       ├── 3.6 (GDPR)
-       └── 3.7 (CRDT Sync)
-            └── 3.8 (Consistency Tokens)
-
-3.1 + 3.2 (PG/MySQL)
-  └── 3.3 (Watch Streams)
-
-Phase 3 complete
-  └── Phase 4 (AI-Native + Advanced)
+Phase 1 + 2 complete
+  ├── Event Log, PG/MySQL, RocksDB, Watch Streams
+  ├── OTel, GDPR
+  └── Embedded engine stable
 ```
 
 ---
@@ -156,7 +167,7 @@ Phase 3 complete
 
 **Files created:** 22 source files across 2 crates
 
-**Tests:** 89 total (81 core + 8 test-utils) — all passing
+**Tests:** 217 total (211 unit + 6 integration) — all passing
 
 ---
 
@@ -339,83 +350,11 @@ Phase 3 complete
 
 ---
 
-## 6. Phase 3 — Distributed & Scale (Weeks 21-32)
+## 6. ~~Phase 3 — Distributed & Scale~~ — Removed
 
-**Goal:** Multi-instance support, event log, CRDT sync, advanced storage backends.
+❌ **Not applicable.** Aegis is and will remain an **embedded-only** authorization runtime. Distributed features (CRDT sync, edge replicas, distributed cache, multi-region consistency, gRPC servers, WAL-based sync) are explicitly out of scope. They would require external infrastructure (Redis, HTTP/gRPC servers, network coordination, CDC pipelines) that violates the embedded-first philosophy.
 
-### Sprint 3.1 — Event Log (Weeks 21-22)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 3.1.1 | Event table | `_aegis_events(revision, action, subject, relation, object, metadata, timestamp, identity)` | 1.1.1 |
-| 3.1.2 | Event-sourced write | Every mutation: append to events THEN apply to tuples (same transaction) | 3.1.1 |
-| 3.1.3 | Event recovery | `recover()` → replay all events in order → reconstruct graph → verify revision | 3.1.2 |
-| 3.1.4 | Point-in-time recovery | `recover(--to-revision N)` → replay events up to N | 3.1.3 |
-| 3.1.5 | Event compaction | Merge add/remove pairs for same tuple key; safe to run online | 3.1.1 |
-
-**Tests:** E2E-030, E2E-031, E2E-032
-
-### Sprint 3.2 — PostgreSQL Backend (Weeks 22-23)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 3.2.1 | PostgreSQL adapter | Implement `StorageBackend` via `sqlx` with async I/O | Phase 0 (trait) |
-| 3.2.2 | Connection pooling | `sqlx::PgPool` + `deadpool` for connection management | 3.2.1 |
-| 3.2.3 | Migration DDL | PG-compatible: `CREATE TABLE tuples (...)`, indexes, meta table | 3.2.1 |
-| 3.2.4 | MySQL adapter | Implement `StorageBackend` via `sqlx` MySQL | 3.2.1 (parallel) |
-
-**Tests:** E2E-005, E2E-021, E2E-051
-
-### Sprint 3.3 — Watch / Subscription Streams (Weeks 23-24)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 3.3.1 | Broadcast channel | `tokio::sync::broadcast` for internal event distribution | 3.1.2 |
-| 3.3.2 | `watch()` API | `subscribe(object, sinceRevision)` → `Receiver<ChangeEvent>` | 3.3.1 |
-| 3.3.3 | Object filter | Subscribe to changes on specific object or wildcard | 3.3.1 |
-| 3.3.4 | Cleanup on drop | Auto-unsubscribe when receiver is dropped | 3.3.1 |
-
-**Tests:** INT-080 through INT-084
-
-### Sprint 3.4 — RocksDB Backend (Week 24)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 3.4.1 | RocksDB adapter | `rust-rocksdb` bindings for `StorageBackend` | Phase 0 (trait) |
-| 3.4.2 | Column families | `tuples`, `events`, `meta`, `schema` as separate CFs | 3.4.1 |
-| 3.4.3 | Secondary indexes | Index CFs for each lookup pattern (subject, object, relation) | 3.4.1 |
-
-### Sprint 3.5 — OpenTelemetry & Logging (Weeks 25-26)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 3.5.1 | OTel tracer | Create named tracer `"aegis"`; spans for check/write/delete/explain/migrate | Phase 1 complete |
-| 3.5.2 | OTel metrics | Histograms (latency) + counters (checks, cache) + gauges (graph size) | 3.5.1 |
-| 3.5.3 | No-op default | Zero overhead when `openTelemetry` config not provided | 3.5.1 |
-| 3.5.4 | Structured logger | `Logger { error, warn, info, debug }` via optional callback | 1.1.2 |
-
-**Tests:** Instrumentation verified via OTel `InMemoryMetricExporter`
-
-### Sprint 3.6 — GDPR Compliance (Weeks 26-27)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 3.6.1 | `exportSubject()` | `SELECT * FROM tuples WHERE subject = ?` → JSON | 1.7.6 |
-| 3.6.2 | `deleteSubject()` with policy | `ownershipPolicy: "fail" | "transfer" | "cascade"` | 1.7.4 |
-| 3.6.3 | Deletion audit | All deletion operations logged to `_aegis_events` with identity | 3.1.2 |
-| 3.6.4 | Retention policy | Auto-purge `_aegis_events` entries older than `retentionDays` | 3.1.1 |
-
-**Tests:** INT-025, INT-026, E2E-021
-
-### Sprint 3.7 — CRDT Sync Layer (Weeks 28-30)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 3.7.1 | OR-Set CRDT | Add-wins observed-removed set over `(subject, relation, object)` tuples | Phase 0 (types) |
-| 3.7.2 | Delta generation | Compute diff between local revision and remote revision | 3.7.1 |
-| 3.7.3 | Delta application | Merge incoming delta into local graph; resolve conflicts via LWW | 3.7.1 |
-| 3.7.4 | Sync transport | HTTP/gRPC bi-directional streaming for CRDT delta exchange | 3.7.2, 3.7.3 |
-| 3.7.5 | Edge replica (read-only) | Edge receives deltas from central; serves reads; rejects writes | 3.7.3 |
+The existing event log, PostgreSQL/MySQL backends, RocksDB, watch/subscription streams, OpenTelemetry, and GDPR compliance have been moved into earlier phases or are part of the core embedded engine. |
 
 **Tests:** E2E-024, E2E-052, E2E-053
 
@@ -432,72 +371,7 @@ Phase 3 complete
 
 ---
 
-## 7. Phase 4 — AI-Native & Advanced (Weeks 33-40)
-
-**Goal:** Ephemeral grants, capability delegation, ABAC, IndexedDB.
-
-### Sprint 4.1 — Ephemeral Permissions (Weeks 33-34)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.1.1 | TTL grant API | `grantEphemeral(subject, relation, object, expiresIn)` with `expires_in` column | 1.1.1 |
-| 4.1.2 | Expiry background worker | Tokio task polling for expired grants → auto-revoke | 4.1.1 |
-| 4.1.3 | Ephemeral tuple storage | Distinguished from regular tuples via `tuple_type` column (`"ephemeral"` vs `"permanent"`) | 4.1.1 |
-| 4.1.4 | Ephemeral audit | Log grant + auto-revoke events with TTL information | 3.1.2 |
-
-**Tests:** E2E-022
-
-### Sprint 4.2 — Capability Delegation (Weeks 34-35)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.2.1 | Delegation tuple type | `TupleKey + depth: u32 + max_depth: u32`; special `delegate` relation | Phase 0 (types) |
-| 4.2.2 | Delegation traversal | Follow `delegate` relations up to `max_depth`; accumulate capabilities | 1.2.1 |
-| 4.2.3 | Depth control | Policy-enforced `maxDelegationDepth`; deny if exceeded | 4.2.2 |
-| 4.2.4 | Revocation cascade | Revoke parent delegation → all sub-delegations auto-invalidated | 1.7.3 |
-
-**Tests:** E2E-023
-
-### Sprint 4.3 — ABAC Conditions (Weeks 35-36)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.3.1 | Condition parser | Simple expression language: `department == context.department`, `metadata.role in ["admin", "manager"]` | Phase 0 (schema) |
-| 4.3.2 | Condition evaluator | Evaluate parsed AST against request context + tuple metadata | 4.3.1 |
-| 4.3.3 | Schema extension | `permissions: read: [viewer where department == context.department]` in YAML | 4.3.1 |
-| 4.3.4 | Context passing | `check({..., context: { department: "eng" }})` → evaluate conditions | 4.3.2, 1.2.5 |
-
-### Sprint 4.4 — IndexedDB Backend (Weeks 36-37)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.4.1 | IndexedDB adapter | WASM-compatible `StorageBackend` via `web-sys` | Phase 0 (trait) |
-| 4.4.2 | WASM build target | `wasm-pack`; `wasm32-unknown-unknown` target | 4.4.1 |
-| 4.4.3 | Browser SDK | `@aegis/browser` — Aegis in service workers and web workers | 4.4.2 |
-
-### Sprint 4.5 — Performance Optimization (Weeks 37-38)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.5.1 | Benchmark suite | `criterion` benchmarks for check/write/list/delete/explain | Phase 1 complete |
-| 4.5.2 | Profiling | `perf` / `flamegraph` to identify hot paths | 4.5.1 |
-| 4.5.3 | Batch index operations | Optimized index updates for `writeBatch` | 1.1.4 |
-| 4.5.4 | Memory optimization | Arena allocation for traversal state; reduce clone overhead | 1.2.1 |
-
-**Tests:** BENCH-001 through BENCH-011
-
-### Sprint 4.6 — Documentation & Finalization (Weeks 39-40)
-
-| Step | Component | Description | Dependencies |
-|------|-----------|-------------|--------------|
-| 4.6.1 | API reference docs | Auto-generated docs for all SDKs (TypeDoc, godoc, rustdoc, pydoc) | All prior |
-| 4.6.2 | Migration guides | SpiceDB → Aegis, OpenFGA → Aegis, DIY → Aegis | All prior |
-| 4.6.3 | Production checklist | Finalize the security checklist from the spec appendix | All prior |
-| 4.6.4 | Performance tuning | Guide for configuring cache sizes, pool sizes, WAL settings | 4.5.1 |
-
----
-
-## 8. Key Architectural Decisions
+## 7. Key Architectural Decisions
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
@@ -505,7 +379,7 @@ Phase 3 complete
 | **Concurrency** | Single serialized writer + read pool via `r2d2` | No write-write conflicts; WAL enables non-blocking reads; simple locking model |
 | **Consistency** | Revision-based snapshot isolation | Avoids TrueTime dependency; works in embedded context; 3 explicit modes |
 | **Transaction** | SQLite ACID transactions (`BEGIN IMMEDIATE`) | Free rollback, savepoints, atomic batch writes; no distributed tx complexity |
-| **Multi-node sync** | OR-Set CRDT on top of SQLite | Convergent, no central coordinator; SQLite remains authoritative transactional store |
+| **Multi-node sync** | ❌ Not applicable — embedded-only | Each instance manages its own state; shared PG/MySQL for cross-instance data |
 | **FFI** | NAPI-RS (Node), CGo (Go), PyO3 (Python) | Best-in-class FFI for each language ecosystem; wide community support |
 | **Observability** | Optional OTel (no-op when absent) | Zero runtime cost when not configured; industry standard for metrics/tracing |
 | **Cache** | Decision + Traversal, LRU + TTL, revision-invalidated | Simple, effective; no distributed cache coherence needed in embedded mode |
@@ -516,24 +390,23 @@ Phase 3 complete
 
 ---
 
-## 9. Risk Assessment
+## 8. Risk Assessment
 
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
 | WAL checkpoint starvation under long reads | Medium | Medium | Watchdog monitor; abort stale read transactions after configurable timeout; `busy_timeout` |
 | NAPI binding memory safety | Low | High | Heavy use of Rust's `#[napi]` safe patterns; `Valgrind` / `ASan` in CI; extensive integration tests |
-| CRDT convergence correctness | Medium | High | Formal specification + property-based testing (`proptest`); merge idempotence verified by fuzzing |
 | Go CGo overhead | Medium | Low | Minimize CGo call count; batch operations where possible; benchmark before optimization |
 | Performance regression in deep traversals | Medium | Medium | `criterion` benchmark suite in CI; performance regression gate (`--bench -- --threshold 5%`) |
 | Schema migration on live data | Low | High | Additive-only migrations by default; compatibility check before apply; rollback tested in staging |
 | Concurrent access from multiple processes | Medium | Medium | SQLite file locking via WAL; document that multi-process requires PostgreSQL/RocksDB |
 | Event log unbounded growth | Low | Medium | Configurable compaction + retention policy; archive to object storage |
-| Edge replica staleness (CRDT sync delay) | Medium | Low | `consistency: at_revision` token ensures read-your-writes even across nodes |
+| ~~Edge replica staleness (CRDT sync delay)~~ | ~~—~~ | ~~—~~ | ~~Removed (embedded-only)~~ |
 | WASM size for IndexedDB backend | Medium | Low | Tree-shake unused backends; `wasm-opt` for binary size optimization |
 
 ---
 
-## 10. Integration & E2E Test Index
+## 9. Integration & E2E Test Index
 
 Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 
@@ -558,10 +431,10 @@ Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 |----------|-------|----------|-----------|
 | Full SDK Lifecycle | 4 | E2E-001–004 | TypeScript, Go, Rust, Python |
 | Multi-Language Interop | 3 | E2E-010–012 | Write in Go read in Node, write in Node read in Python, cross-language token |
-| Persistence & Recovery | 6 | E2E-020–025 | SQLite restart, PG restart, Docker restart, K8s restart, backup/restore, export/import |
+| Persistence & Recovery | 6 | E2E-020–025 | SQLite restart, PG restart, backup/restore, export/import |
 | Event Log Recovery | 3 | E2E-030–032 | Full recovery, PIT recovery, compaction |
 | Middleware Integration | 4 | E2E-040–043 | Express allowed/forbidden/missing-auth, Hono |
-| Deployment Modes | 4 | E2E-050–053 | Embedded, multi-instance PG, edge replica read, edge replica write reject |
+| Deployment Modes | ~~4~~ → 1 | ~~E2E-050–053~~ → Embedded only | ❌ Distributed modes removed |
 
 ### Error, Stress, Persistence, Security, SDK, Benchmarks (70+ tests)
 
@@ -575,7 +448,7 @@ Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 | SDK Cross-Language | 9 | SDK-001–009 |
 | Performance Benchmarks | 11 | BENCH-001–011 |
 
-### Total: ~180 test cases
+### Total: 217 implemented (211 unit + 6 integration), 0 failures — [tracked in `.opencode/plans/implementation-plan.md`]
 
 ---
 
@@ -589,16 +462,16 @@ Full test specifications are in [`aegis-test-plan.md`](./aegis-test-plan.md).
 | Multi-server production | PostgreSQL (shared) | `{ storage: "postgres", connectionString: "..." }` |
 | High-write throughput | RocksDB | `{ storage: "rocksdb", path: "./aegis-data" }` |
 | Browser / edge runtime | IndexedDB (WASM) | `{ storage: "indexeddb" }` |
-| Multi-region | PostgreSQL + CRDT sync (V3+) | PG primary + edge replicas |
+| ~~Multi-region~~ | ~~Removed — embedded-only~~ | ❌ |
 
 ## Appendix: Version Compatibility
 
 | Aegis Version | Protocol | Storage Schema | Migration Path |
 |---------------|----------|---------------|----------------|
 | V1 | rev-based | v1 (tuples + meta + schema) | — |
-| V2 | rev-based | v2 (adds events + audit tables) | `migrate(v1 → v2)` |
-| V3 | rev-based + CRDT | v3 (adds CRDT tracking) | `migrate(v2 → v3)` |
-| V4 | rev-based + capabilities | v4 (adds ephemeral + delegation) | `migrate(v3 → v4)` |
+| V2 | rev-based | v2 (adds roles + valid_until + deny + ABAC conditions) | `migrate(v1 → v2)` |
+| ~~V3~~ | ~~rev-based + CRDT~~ | ~~Removed — embedded-only~~ | ❌ |
+
 
 ---
 

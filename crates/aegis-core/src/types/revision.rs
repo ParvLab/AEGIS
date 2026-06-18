@@ -90,6 +90,85 @@ pub struct CheckResult {
     pub revision: Revision,
 }
 
+/// A single step in an explain trace.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplainTrace {
+    pub subject: String,
+    pub relation: String,
+    pub object: String,
+}
+
+/// Detailed explanation of a permission check decision.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExplainResult {
+    pub allowed: bool,
+    pub revision: Revision,
+    pub trace: Vec<ExplainTrace>,
+    pub resolved_via: String,
+    pub duration_ms: u64,
+}
+
+/// Connection pool statistics.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionStats {
+    pub read_active: u32,
+    pub read_idle: u32,
+    pub write_busy: bool,
+}
+
+/// Health status of the engine and its components.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthReport {
+    pub healthy: bool,
+    pub revision: Revision,
+    pub schema_version: u32,
+    pub backend: String,
+    pub backend_healthy: bool,
+    pub telemetry_healthy: bool,
+    pub cache_hit_rate: f64,
+    pub cache_entries: usize,
+    pub storage_integrity: bool,
+    pub error: Option<String>,
+    // Metrics
+    pub total_checks: u64,
+    pub allowed_checks: u64,
+    pub denied_checks: u64,
+    pub error_checks: u64,
+    pub cache_size: u64,
+    pub cache_hit_ratio: f64,
+    // Sprint 6.4: Additional health fields
+    pub integrity_status: String,
+    pub uptime_ms: u64,
+    pub storage_version: Option<String>,
+    pub connections: ConnectionStats,
+    pub wal_size_mb: Option<f64>,
+    /// ISO 8601 timestamp or elapsed description of last integrity check.
+    pub last_integrity_check: Option<String>,
+}
+
+/// Access review entry: describes how a subject relates to a resource.
+#[derive(Debug, Clone, Serialize)]
+pub struct AccessReviewEntry {
+    pub subject: String,
+    pub relation: String,
+    pub resource: String,
+    pub via: Vec<String>,
+    pub expires_at: Option<chrono::DateTime<Utc>>,
+}
+
+/// Configuration for fail-closed vs fail-open behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FailClosedMode {
+    DenyOnError,
+    AllowOnError,
+}
+
+impl Default for FailClosedMode {
+    fn default() -> Self {
+        Self::DenyOnError
+    }
+}
+
 /// Represents a single audit log entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
@@ -100,6 +179,7 @@ pub struct AuditEntry {
     pub object: String,
     pub timestamp: DateTime<Utc>,
     pub metadata: Option<std::collections::HashMap<String, String>>,
+    pub identity: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -120,6 +200,27 @@ pub struct PaginationCursor {
 pub struct PaginationParams {
     pub limit: u64,
     pub cursor: Option<PaginationCursor>,
+}
+
+impl PaginationParams {
+    /// Maximum number of results per page.
+    pub const MAX_LIMIT: u64 = 10_000;
+
+    /// Create a new PaginationParams with limit capped at MAX_LIMIT.
+    pub fn new(limit: u64, cursor: Option<PaginationCursor>) -> Self {
+        Self {
+            limit: limit.min(Self::MAX_LIMIT),
+            cursor,
+        }
+    }
+
+    /// Cap the limit at MAX_LIMIT (used when deserializing from untrusted input).
+    pub fn capped(self) -> Self {
+        Self {
+            limit: self.limit.min(Self::MAX_LIMIT),
+            cursor: self.cursor,
+        }
+    }
 }
 
 impl Default for PaginationParams {

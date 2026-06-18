@@ -28,7 +28,7 @@
 |---|---|---|---|
 | **Unit** | Individual functions, schema parser, validator | Every commit | In-memory SQLite |
 | **Integration** | Component interactions (write + check + transaction + cache) | Every commit | File-based SQLite |
-| **E2E** | Full SDK lifecycle across language runtimes | Every PR | PostgreSQL (Docker) |
+| **E2E** | Full SDK lifecycle across language runtimes | Every PR | PostgreSQL |
 | **Stress** | Concurrent access, large graphs, edge cases | Nightly | RocksDB / SQLite |
 | **Recovery** | Backup/restore, event log replay, crash recovery | Weekly | File-based SQLite |
 
@@ -88,17 +88,14 @@ rmSync(dir, { recursive: true, force: true })
 
 ### PostgreSQL (E2E)
 
-```yaml
-# docker-compose.test.yml
-services:
-  postgres:
-    image: postgres:16-alpine
-    environment:
-      POSTGRES_DB: aegis_test
-      POSTGRES_USER: aegis
-      POSTGRES_PASSWORD: aegis_test
-    ports:
-      - "5432:5432"
+PostgreSQL service required for E2E tests. Start via:
+
+```bash
+docker run -d --name aegis-pg \
+  -e POSTGRES_DB=aegis_test \
+  -e POSTGRES_USER=aegis \
+  -e POSTGRES_PASSWORD=aegis_test \
+  -p 5432:5432 postgres:16-alpine
 ```
 
 ### RocksDB (Stress)
@@ -242,10 +239,8 @@ const auth = new Aegis({
 |----|------|-------|--------|
 | E2E-020 | SQLite process restart | Init, write 10 tuples, close, re-init same DB | All 10 tuples present |
 | E2E-021 | PostgreSQL process restart | Same as E2E-020 with PostgreSQL | All 10 tuples present |
-| E2E-022 | Docker restart with volume | Docker container with mounted SQLite, write, restart | Data persists |
-| E2E-023 | K8s pod restart with PVC | Kubernetes pod with PVC, write, delete pod, recreate | Data persists |
-| E2E-024 | Backup and restore | Create backup, delete graph, restore | Full graph state restored |
-| E2E-025 | Export and import to new instance | Export graph as JSON, import to empty instance | New instance has identical state |
+| E2E-022 | Backup and restore | Create backup, delete graph, restore | Full graph state restored |
+| E2E-023 | Export and import to new instance | Export graph as JSON, import to empty instance | New instance has identical state |
 
 ### 4.4 Event Log Recovery
 
@@ -270,8 +265,6 @@ const auth = new Aegis({
 |----|------|-------|--------|
 | E2E-050 | Embedded single-process | Application with embedded Aegis, perform operations | All operations succeed in-process |
 | E2E-051 | Multi-instance shared PostgreSQL | 2 app instances sharing same PostgreSQL backend | Both instances see same data |
-| E2E-052 | Edge replica (read-only) | Central write, edge replica reads | Edge returns correct data |
-| E2E-053 | Edge replica rejects writes | Attempt write on edge replica | Write rejected with error |
 
 ---
 
@@ -414,13 +407,19 @@ schema:
   types:
     repo:
       relations:
-        owner: [user, team#member]
-        editor: [owner, collaborator]
-        viewer: [editor, public]
+        owner:
+          inherit_from: [user, team#member]
+        editor:
+          inherit_from: [owner, collaborator]
+        viewer:
+          inherit_from: [editor, public]
       permissions:
-        read: [viewer, editor, owner]
-        write: [editor, owner]
-        delete: [owner]
+        read:
+          union_of: [viewer, editor, owner]
+        write:
+          union_of: [editor, owner]
+        delete:
+          union_of: [owner]
 
 tuples:
   - subject: "user:123"
@@ -446,17 +445,23 @@ schema:
   types:
     org:
       relations:
-        member: [user]
+        member:
+          inherit_from: [user]
     workspace:
       relations:
-        parent: [org, workspace]
-        member: [user, team#member]
+        parent:
+          inherit_from: [org, workspace]
+        member:
+          inherit_from: [user, team#member]
     repo:
       relations:
-        parent: [workspace, repo]
-        viewer: [parent#member]
+        parent:
+          inherit_from: [workspace, repo]
+        viewer:
+          inherit_from: [parent#member]
       permissions:
-        read: [viewer]
+        read:
+          union_of: [viewer]
 
 tuples:
   - subject: "user:1"  relation: "member" object: "org:root"
@@ -478,11 +483,14 @@ schema:
   types:
     tenant:
       relations:
-        member: [user]
+        member:
+          inherit_from: [user]
     workspace:
       relations:
-        parent: [tenant]
-        member: [tenant#member, user]
+        parent:
+          inherit_from: [tenant]
+        member:
+          inherit_from: [tenant#member, user]
 
 tuples:
   # Tenant alpha
@@ -502,7 +510,8 @@ schema:
   types:
     node:
       relations:
-        linked: [node]
+        linked:
+          inherit_from: [node]
 
 tuples:
   - subject: "node:a" relation: "linked" object: "node:b"
