@@ -1,3 +1,5 @@
+#![allow(clippy::not_unsafe_ptr_arg_deref)]
+
 use std::ffi::{CStr, CString};
 use std::panic::{self, AssertUnwindSafe};
 use std::sync::Mutex;

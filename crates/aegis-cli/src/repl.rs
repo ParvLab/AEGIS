@@ -430,20 +430,18 @@ fn cmd_check(state: &ReplState, args: &[&str]) -> Result<()> {
                 "revision": result.revision.as_u64(),
             }))?
         );
+    } else if result.allowed {
+        println!(
+            "  {} ALLOWED (revision={})",
+            green("✓"),
+            result.revision.as_u64()
+        );
     } else {
-        if result.allowed {
-            println!(
-                "  {} ALLOWED (revision={})",
-                green("✓"),
-                result.revision.as_u64()
-            );
-        } else {
-            println!(
-                "  {} DENIED (revision={})",
-                red("✗"),
-                result.revision.as_u64()
-            );
-        }
+        println!(
+            "  {} DENIED (revision={})",
+            red("✗"),
+            result.revision.as_u64()
+        );
     }
     Ok(())
 }
@@ -521,21 +519,19 @@ fn cmd_list(state: &ReplState, args: &[&str]) -> Result<()> {
     )?;
     if state.json_mode {
         println!("{}", serde_json::to_string(&tuples)?);
+    } else if tuples.is_empty() {
+        println!("  {} No tuples found", yellow("!"));
     } else {
-        if tuples.is_empty() {
-            println!("  {} No tuples found", yellow("!"));
-        } else {
-            for t in &tuples {
-                println!(
-                    "  {} {} {} {}",
-                    green("•"),
-                    t.subject.as_str(),
-                    t.relation.as_str(),
-                    t.object.as_str()
-                );
-            }
-            println!("  {} results tuple(s)", bold(&tuples.len().to_string()));
+        for t in &tuples {
+            println!(
+                "  {} {} {} {}",
+                green("•"),
+                t.subject.as_str(),
+                t.relation.as_str(),
+                t.object.as_str()
+            );
         }
+        println!("  {} results tuple(s)", bold(&tuples.len().to_string()));
     }
     Ok(())
 }
@@ -702,24 +698,22 @@ fn cmd_audit(state: &ReplState, args: &[&str]) -> Result<()> {
         .query_audit(&object, from_rev, to_rev, &pagination)?;
     if state.json_mode {
         println!("{}", serde_json::to_string_pretty(&entries)?);
+    } else if entries.is_empty() {
+        println!("  {} No audit entries found", yellow("!"));
     } else {
-        if entries.is_empty() {
-            println!("  {} No audit entries found", yellow("!"));
-        } else {
-            for e in &entries {
-                let action = match e.action {
-                    TupleMutation::Add => green("ADD"),
-                    TupleMutation::Remove => red("DEL"),
-                };
-                println!(
-                    "  [{}] {} {} {} (rev={})",
-                    action,
-                    e.subject,
-                    e.relation,
-                    e.object,
-                    e.revision.as_u64()
-                );
-            }
+        for e in &entries {
+            let action = match e.action {
+                TupleMutation::Add => green("ADD"),
+                TupleMutation::Remove => red("DEL"),
+            };
+            println!(
+                "  [{}] {} {} {} (rev={})",
+                action,
+                e.subject,
+                e.relation,
+                e.object,
+                e.revision.as_u64()
+            );
         }
     }
     Ok(())
@@ -734,21 +728,19 @@ fn cmd_export(state: &ReplState, args: &[&str]) -> Result<()> {
     let tuples = state.engine.export_subject(&subject)?;
     if state.json_mode {
         println!("{}", serde_json::to_string_pretty(&tuples)?);
+    } else if tuples.is_empty() {
+        println!("  {} No tuples found for subject", yellow("!"));
     } else {
-        if tuples.is_empty() {
-            println!("  {} No tuples found for subject", yellow("!"));
-        } else {
-            for t in &tuples {
-                println!(
-                    "  {} {} {} {}",
-                    green("•"),
-                    t.subject.as_str(),
-                    t.relation.as_str(),
-                    t.object.as_str()
-                );
-            }
-            println!("  {} tuple(s)", tuples.len());
+        for t in &tuples {
+            println!(
+                "  {} {} {} {}",
+                green("•"),
+                t.subject.as_str(),
+                t.relation.as_str(),
+                t.object.as_str()
+            );
         }
+        println!("  {} tuple(s)", tuples.len());
     }
     Ok(())
 }
@@ -812,12 +804,10 @@ fn cmd_unwatch(state: &mut ReplState) -> Result<()> {
         } else {
             println!("  {} Stopped watching", green("✓"));
         }
+    } else if state.json_mode {
+        println!(r#"{{"status":"not_watching"}}"#);
     } else {
-        if state.json_mode {
-            println!(r#"{{"status":"not_watching"}}"#);
-        } else {
-            println!("  {} Not currently watching", yellow("!"));
-        }
+        println!("  {} Not currently watching", yellow("!"));
     }
     Ok(())
 }
@@ -871,27 +861,25 @@ fn cmd_query(state: &ReplState, args: &[&str]) -> Result<()> {
 
     if state.json_mode {
         println!("{}", serde_json::to_string(&result)?);
+    } else if result.tuples.is_empty() {
+        println!("  {} No matching tuples", yellow("!"));
     } else {
-        if result.tuples.is_empty() {
-            println!("  {} No matching tuples", yellow("!"));
-        } else {
-            let has_more = result.next_cursor.is_some();
+        let has_more = result.next_cursor.is_some();
+        println!(
+            "  {} {} tuple(s) found",
+            bold(&result.tuples.len().to_string()),
+            if has_more { "(more available)" } else { "" }
+        );
+        for t in &result.tuples {
             println!(
-                "  {} {} tuple(s) found",
-                bold(&result.tuples.len().to_string()),
-                if has_more { "(more available)" } else { "" }
+                "  {:20} {:15} {}",
+                t.subject.as_str(),
+                t.relation.as_str(),
+                t.object.as_str()
             );
-            for t in &result.tuples {
-                println!(
-                    "  {:20} {:15} {}",
-                    t.subject.as_str(),
-                    t.relation.as_str(),
-                    t.object.as_str()
-                );
-            }
-            if let Some(cursor) = &result.next_cursor {
-                println!("  {} Cursor at offset {}", yellow("!"), cursor.offset);
-            }
+        }
+        if let Some(cursor) = &result.next_cursor {
+            println!("  {} Cursor at offset {}", yellow("!"), cursor.offset);
         }
     }
     Ok(())
@@ -1022,12 +1010,13 @@ fn cmd_restore(state: &ReplState, args: &[&str]) -> Result<()> {
     }
     let version = backup.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
 
-    if version >= 2
-        && let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str())
-        && !sy.is_empty()
-    {
-        let schema = parse_schema(sy).context("failed to parse schema from backup")?;
-        state.engine.reload_schema(schema)?;
+    if version >= 2 {
+        if let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str()) {
+            if !sy.is_empty() {
+                let schema = parse_schema(sy).context("failed to parse schema from backup")?;
+                state.engine.reload_schema(schema)?;
+            }
+        }
     }
 
     let tuples: Vec<RelationshipTuple> = serde_json::from_value(
@@ -1233,21 +1222,19 @@ fn cmd_export_subject_repl(state: &ReplState, args: &[&str]) -> Result<()> {
     let tuples = state.engine.export_subject(&subject)?;
     if state.json_mode {
         println!("{}", serde_json::to_string_pretty(&tuples)?);
+    } else if tuples.is_empty() {
+        println!("  {} No tuples found for subject", yellow("!"));
     } else {
-        if tuples.is_empty() {
-            println!("  {} No tuples found for subject", yellow("!"));
-        } else {
-            for t in &tuples {
-                println!(
-                    "  {} {} {} {}",
-                    green("•"),
-                    t.subject.as_str(),
-                    t.relation.as_str(),
-                    t.object.as_str()
-                );
-            }
-            println!("  {} tuple(s)", tuples.len());
+        for t in &tuples {
+            println!(
+                "  {} {} {} {}",
+                green("•"),
+                t.subject.as_str(),
+                t.relation.as_str(),
+                t.object.as_str()
+            );
         }
+        println!("  {} tuple(s)", tuples.len());
     }
     Ok(())
 }
@@ -1411,13 +1398,11 @@ fn cmd_policy_draft(state: &mut ReplState, args: &[&str]) -> Result<()> {
             let drafts = state.engine.list_policy_drafts(filter)?;
             if state.json_mode {
                 println!("{}", serde_json::to_string_pretty(&drafts)?);
+            } else if drafts.is_empty() {
+                println!("  {} No drafts found", yellow("!"));
             } else {
-                if drafts.is_empty() {
-                    println!("  {} No drafts found", yellow("!"));
-                } else {
-                    for d in &drafts {
-                        println!("  {} {}  [{}]  {}", green("•"), d.id, d.status, d.name);
-                    }
+                for d in &drafts {
+                    println!("  {} {}  [{}]  {}", green("•"), d.id, d.status, d.name);
                 }
             }
         }
@@ -1463,18 +1448,16 @@ fn cmd_schedule(state: &mut ReplState, args: &[&str]) -> Result<()> {
             let schedules = state.engine.list_analysis_schedules()?;
             if state.json_mode {
                 println!("{}", serde_json::to_string_pretty(&schedules)?);
+            } else if schedules.is_empty() {
+                println!("  {} No schedules found", yellow("!"));
             } else {
-                if schedules.is_empty() {
-                    println!("  {} No schedules found", yellow("!"));
-                } else {
-                    for s in &schedules {
-                        println!(
-                            "  {} {}  ({}s interval)",
-                            green("•"),
-                            s.name,
-                            s.interval_seconds
-                        );
-                    }
+                for s in &schedules {
+                    println!(
+                        "  {} {}  ({}s interval)",
+                        green("•"),
+                        s.name,
+                        s.interval_seconds
+                    );
                 }
             }
         }
@@ -1513,22 +1496,20 @@ fn cmd_schedule(state: &mut ReplState, args: &[&str]) -> Result<()> {
             let runs = state.engine.get_analysis_runs(limit)?;
             if state.json_mode {
                 println!("{}", serde_json::to_string_pretty(&runs)?);
+            } else if runs.is_empty() {
+                println!("  {} No runs found", yellow("!"));
             } else {
-                if runs.is_empty() {
-                    println!("  {} No runs found", yellow("!"));
-                } else {
-                    for r in &runs {
-                        println!(
-                            "  {} {}  [{}]",
-                            green("•"),
-                            r.id,
-                            if r.status == AnalysisRunStatus::Completed {
-                                "completed"
-                            } else {
-                                "failed"
-                            }
-                        );
-                    }
+                for r in &runs {
+                    println!(
+                        "  {} {}  [{}]",
+                        green("•"),
+                        r.id,
+                        if r.status == AnalysisRunStatus::Completed {
+                            "completed"
+                        } else {
+                            "failed"
+                        }
+                    );
                 }
             }
         }

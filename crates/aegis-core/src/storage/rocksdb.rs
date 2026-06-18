@@ -12,7 +12,7 @@ use crate::types::{
     TupleMutation,
 };
 use chrono::{DateTime, Utc};
-use rocksdb::{BlockBasedOptions, Cache, ColumnFamily, DB, Direction, IteratorMode, Options};
+use rocksdb::{BlockBasedOptions, Cache, DB, Direction, IteratorMode, Options};
 use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -1124,32 +1124,44 @@ impl StorageBackend for RocksDbStorage {
         &self,
         partition_id: &PartitionId,
     ) -> AegisResult<Box<dyn StorageTransaction>> {
-        let cf_tuples = self
-            .db
-            .cf_handle(CF_TUPLES)
-            .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?;
-        let cf_idx = self
-            .db
-            .cf_handle(CF_IDX_OBJECT)
-            .ok_or_else(|| AegisError::StorageConnection("missing idx_object cf".into()))?;
-        let cf_events = self
-            .db
-            .cf_handle(CF_EVENTS)
-            .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
-        let cf_meta = self
-            .db
-            .cf_handle(CF_META)
-            .ok_or_else(|| AegisError::StorageConnection("missing meta cf".into()))?;
+        let cf_tuples: &'static rocksdb::ColumnFamily = unsafe {
+            &*(self
+                .db
+                .cf_handle(CF_TUPLES)
+                .ok_or_else(|| AegisError::StorageConnection("missing tuples cf".into()))?
+                as *const rocksdb::ColumnFamily)
+        };
+        let cf_idx: &'static rocksdb::ColumnFamily = unsafe {
+            &*(self
+                .db
+                .cf_handle(CF_IDX_OBJECT)
+                .ok_or_else(|| AegisError::StorageConnection("missing idx_object cf".into()))?
+                as *const rocksdb::ColumnFamily)
+        };
+        let cf_events: &'static rocksdb::ColumnFamily = unsafe {
+            &*(self
+                .db
+                .cf_handle(CF_EVENTS)
+                .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?
+                as *const rocksdb::ColumnFamily)
+        };
+        let cf_meta: &'static rocksdb::ColumnFamily = unsafe {
+            &*(self
+                .db
+                .cf_handle(CF_META)
+                .ok_or_else(|| AegisError::StorageConnection("missing meta cf".into()))?
+                as *const rocksdb::ColumnFamily)
+        };
 
         let identity = self.actor_identity.lock().unwrap().clone();
         Ok(Box::new(RocksDbTransaction {
             db: self.db.clone(),
             partition_id: partition_id.as_str().to_string(),
             batch: rocksdb::WriteBatch::default(),
-            cf_tuples: cf_tuples.clone(),
-            cf_idx: cf_idx.clone(),
-            cf_events: cf_events.clone(),
-            cf_meta: cf_meta.clone(),
+            cf_tuples,
+            cf_idx,
+            cf_events,
+            cf_meta,
             node_id: self.node_id,
             revision_mutex: std::sync::Arc::new(std::sync::Mutex::new(())),
             actor_identity: identity,
@@ -1911,10 +1923,10 @@ pub struct RocksDbTransaction {
     db: Arc<DB>,
     partition_id: String,
     batch: rocksdb::WriteBatch,
-    cf_tuples: rocksdb::ColumnFamily,
-    cf_idx: rocksdb::ColumnFamily,
-    cf_events: rocksdb::ColumnFamily,
-    cf_meta: rocksdb::ColumnFamily,
+    cf_tuples: &'static rocksdb::ColumnFamily,
+    cf_idx: &'static rocksdb::ColumnFamily,
+    cf_events: &'static rocksdb::ColumnFamily,
+    cf_meta: &'static rocksdb::ColumnFamily,
     node_id: Uuid,
     revision_mutex: std::sync::Arc<std::sync::Mutex<()>>,
     actor_identity: Option<String>,
@@ -2097,28 +2109,33 @@ impl StorageTransaction for RocksDbTransaction {
 
     fn commit(self: Box<Self>) -> AegisResult<Revision> {
         let mut s = *self;
-        let _guard = s
-            .revision_mutex
-            .lock()
-            .map_err(|_| AegisError::Internal("revision mutex poisoned".into()))?;
+        let revision = {
+            let _guard = s
+                .revision_mutex
+                .lock()
+                .map_err(|_| AegisError::Internal("revision mutex poisoned".into()))?;
 
-        // Read current revision atomically
-        let rev =
-            s.db.get_cf(&s.cf_meta, META_REVISION.as_bytes())
-                .map_err(|e| AegisError::StorageQuery(e.to_string()))?
-                .map(|v| u64::from_le_bytes(v.as_slice().try_into().unwrap_or([0; 8])))
-                .unwrap_or(0);
-        let new_rev = rev
-            .checked_add(1)
-            .ok_or_else(|| AegisError::Internal("revision overflow".into()))?;
-        let revision = Revision::new(new_rev);
+            // Read current revision atomically
+            let rev =
+                s.db.get_cf(&s.cf_meta, META_REVISION.as_bytes())
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?
+                    .map(|v| u64::from_le_bytes(v.as_slice().try_into().unwrap_or([0; 8])))
+                    .unwrap_or(0);
+            let new_rev = rev
+                .checked_add(1)
+                .ok_or_else(|| AegisError::Internal("revision overflow".into()))?;
+            Revision::new(new_rev)
+        }; // _guard dropped here
 
         // Write pending events with final revision
         s.write_pending_events(revision)?;
 
         // Update revision in batch
-        s.batch
-            .put_cf(&s.cf_meta, META_REVISION.as_bytes(), &new_rev.to_le_bytes());
+        s.batch.put_cf(
+            &s.cf_meta,
+            META_REVISION.as_bytes(),
+            &revision.as_u64().to_le_bytes(),
+        );
 
         // Write the batch atomically
         s.db.write(s.batch)
