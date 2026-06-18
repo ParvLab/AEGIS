@@ -19,7 +19,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: ${{ matrix.rust }}
-          components: rustfmt
+          components: rustfmt, clippy
 
       - name: Format check
         run: cargo fmt --all -- --check
