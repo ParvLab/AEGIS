@@ -594,10 +594,7 @@ mod tests {
             .delete_subject_with_policy(&subject, "fail", None)
             .unwrap_err();
         assert!(
-            match err {
-                crate::error::AegisError::OperationNotPermitted(_) => true,
-                _ => false,
-            },
+            matches!(err, crate::error::AegisError::OperationNotPermitted(_)),
             "expected OperationNotPermitted, got {:?}",
             err
         );

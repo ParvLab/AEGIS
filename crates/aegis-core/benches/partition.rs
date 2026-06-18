@@ -48,12 +48,12 @@ fn setup_partitions() -> GraphEngine {
     let engine = GraphEngine::new(Box::new(storage), schema);
 
     for pi in 0..NUM_PARTITIONS {
-        let pid = PartitionId::new(&format!("p{:04}", pi)).unwrap();
+        let pid = PartitionId::new(format!("p{:04}", pi)).unwrap();
         engine.with_partition(pid.clone()).unwrap();
 
         for ti in 0..TUPLES_PER_PARTITION {
-            let subject = SubjectId::new(&format!("user:{}", ti)).unwrap();
-            let repo = ResourceId::new(&format!("repo:bench{}", ti)).unwrap();
+            let subject = SubjectId::new(format!("user:{}", ti)).unwrap();
+            let repo = ResourceId::new(format!("repo:bench{}", ti)).unwrap();
             engine
                 .write(&RelationshipTuple::new(
                     subject,

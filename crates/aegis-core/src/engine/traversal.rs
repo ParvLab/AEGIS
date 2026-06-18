@@ -69,6 +69,7 @@ pub fn bfs_traversal(
 }
 
 /// BFS traversal with context for tuple condition evaluation.
+#[allow(clippy::too_many_arguments)]
 pub fn bfs_traversal_with_context(
     partition_id: &PartitionId,
     storage: &dyn StorageBackend,
@@ -96,6 +97,7 @@ pub fn bfs_traversal_with_context(
 }
 
 /// BFS traversal with configurable depth and visit limits.
+#[allow(clippy::too_many_arguments)]
 pub fn bfs_traversal_with_limits(
     partition_id: &PartitionId,
     storage: &dyn StorageBackend,
@@ -128,6 +130,7 @@ pub fn bfs_traversal_with_limits(
 ///
 /// `per_branch_max_visits` limits how many tuples each branch may explore before
 /// being pruned. This prevents a single deep branch from dominating the traversal budget.
+#[allow(clippy::too_many_arguments)]
 pub fn bfs_traversal_with_limits_and_context(
     partition_id: &PartitionId,
     storage: &dyn StorageBackend,

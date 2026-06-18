@@ -376,6 +376,7 @@ impl SqliteStorage {
     }
 
     /// Append an event to the event log, computing hash-chained integrity fields.
+    #[allow(clippy::too_many_arguments)]
     fn append_event(
         conn: &Connection,
         revision: Revision,
@@ -2190,6 +2191,7 @@ impl SqliteTransaction {
         SqliteStorage::bump_revision(conn)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_event(
         &self,
         revision: Revision,
@@ -3277,10 +3279,9 @@ mod tests {
                 .is_empty()
         );
         assert!(
-            store
+            !store
                 .has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a"))
                 .unwrap()
-                == false
         );
     }
 

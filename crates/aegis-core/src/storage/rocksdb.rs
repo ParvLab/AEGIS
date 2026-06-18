@@ -1,3 +1,6 @@
+use crate::engine::enforcement_history::EnforcementEvent;
+use crate::engine::policy_lifecycle::PolicyDraft;
+use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
     BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
@@ -66,7 +69,7 @@ impl RocksDbStorage {
         opts.create_if_missing(true);
 
         // Configure block cache (8 MiB per column family)
-        let cache = Cache::new(8 * 1024 * 1024);
+        let cache = Cache::new_lru_cache(8 * 1024 * 1024);
         let mut block_opts = BlockBasedOptions::default();
         block_opts.set_block_cache(&cache);
         block_opts.set_block_size(4 * 1024); // 4 KiB blocks
@@ -808,7 +811,7 @@ impl StorageBackend for RocksDbStorage {
             .ok_or_else(|| AegisError::StorageConnection("missing idx_object cf".into()))?;
 
         let iter = if let Some(ref snap) = snapshot {
-            snap.prefix_iterator_cf(&cf_idx, &prefix)
+            snap.iterator_cf(&cf_idx, IteratorMode::From(&prefix, Direction::Forward))
         } else {
             self.db.prefix_iterator_cf(&cf_idx, &prefix)
         };
@@ -871,7 +874,7 @@ impl StorageBackend for RocksDbStorage {
         };
 
         let iter = if let Some(ref snap) = snapshot {
-            snap.prefix_iterator_cf(&cf, &prefix)
+            snap.iterator_cf(&cf, IteratorMode::From(&prefix, Direction::Forward))
         } else {
             self.db.prefix_iterator_cf(&cf, &prefix)
         };
@@ -939,7 +942,10 @@ impl StorageBackend for RocksDbStorage {
             // Use the object index for efficient filtering
             let pid_prefix_bytes = pid_prefix.as_bytes();
             let iter: Box<dyn Iterator<Item = Result<_, _>>> = if let Some(ref snap) = snapshot {
-                Box::new(snap.prefix_iterator_cf(&cf_idx, pid_prefix_bytes))
+                Box::new(snap.iterator_cf(
+                    &cf_idx,
+                    IteratorMode::From(pid_prefix_bytes, Direction::Forward),
+                ))
             } else {
                 Box::new(self.db.prefix_iterator_cf(&cf_idx, pid_prefix_bytes))
             };
@@ -1034,7 +1040,10 @@ impl StorageBackend for RocksDbStorage {
             let pid_prefix_bytes = pid_prefix.as_bytes();
             let iter: Box<dyn Iterator<Item = Result<(Box<[u8]>, Box<[u8]>), _>>> =
                 if let Some(ref snap) = snapshot {
-                    Box::new(snap.prefix_iterator_cf(&cf_tuples, pid_prefix_bytes))
+                    Box::new(snap.iterator_cf(
+                        &cf_tuples,
+                        IteratorMode::From(pid_prefix_bytes, Direction::Forward),
+                    ))
                 } else {
                     Box::new(self.db.prefix_iterator_cf(&cf_tuples, pid_prefix_bytes))
                 };
@@ -1137,10 +1146,10 @@ impl StorageBackend for RocksDbStorage {
             db: self.db.clone(),
             partition_id: partition_id.as_str().to_string(),
             batch: rocksdb::WriteBatch::default(),
-            cf_tuples,
-            cf_idx,
-            cf_events,
-            cf_meta,
+            cf_tuples: cf_tuples.clone(),
+            cf_idx: cf_idx.clone(),
+            cf_events: cf_events.clone(),
+            cf_meta: cf_meta.clone(),
             node_id: self.node_id,
             revision_mutex: std::sync::Arc::new(std::sync::Mutex::new(())),
             actor_identity: identity,
@@ -1161,7 +1170,6 @@ impl StorageBackend for RocksDbStorage {
             .cf_handle(CF_EVENTS)
             .ok_or_else(|| AegisError::StorageConnection("missing events cf".into()))?;
 
-        let offset = pagination.cursor.as_ref().map(|c| c.offset).unwrap_or(0);
         let limit = pagination.limit as usize;
 
         let from_rev = from_revision.map(|r| r.as_u64());
@@ -1915,7 +1923,7 @@ pub struct RocksDbTransaction {
 }
 
 impl RocksDbTransaction {
-    fn write_pending_events(&self, revision: Revision) -> AegisResult<()> {
+    fn write_pending_events(&mut self, revision: Revision) -> AegisResult<()> {
         let now = Utc::now().to_rfc3339();
         let mut previous_hash = self.get_last_event_hash()?;
         for (action, subject, relation, object, metadata) in &self.pending_events {
@@ -1954,7 +1962,7 @@ impl RocksDbTransaction {
     }
 
     fn put_tuple_to_batch(
-        &self,
+        &mut self,
         partition_id: &str,
         subject: &str,
         relation: &str,
@@ -1969,7 +1977,7 @@ impl RocksDbTransaction {
     }
 
     fn delete_tuple_from_batch(
-        &self,
+        &mut self,
         partition_id: &str,
         subject: &str,
         relation: &str,
@@ -2088,7 +2096,7 @@ impl StorageTransaction for RocksDbTransaction {
     }
 
     fn commit(self: Box<Self>) -> AegisResult<Revision> {
-        let s = *self;
+        let mut s = *self;
         let _guard = s
             .revision_mutex
             .lock()

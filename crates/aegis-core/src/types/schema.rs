@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn schema_missing_type_returns_none() {
         let s = sample_schema();
-        assert!(s.has_relation("nonexistent", "owner") == false);
+        assert!(!s.has_relation("nonexistent", "owner"));
         assert!(s.relations_for_permission("nonexistent", "read").is_none());
     }
 }

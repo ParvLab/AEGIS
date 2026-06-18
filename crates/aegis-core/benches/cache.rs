@@ -45,8 +45,8 @@ fn setup_engine_with_cache(capacity: usize) -> GraphEngine {
     let engine = GraphEngine::new(Box::new(storage), schema).with_cache_capacity(capacity);
 
     for i in 0..500 {
-        let subject = SubjectId::new(&format!("user:{}", i)).unwrap();
-        let repo = ResourceId::new(&format!("repo:bench{}", i)).unwrap();
+        let subject = SubjectId::new(format!("user:{}", i)).unwrap();
+        let repo = ResourceId::new(format!("repo:bench{}", i)).unwrap();
         engine
             .write(&RelationshipTuple::new(
                 subject,
@@ -70,8 +70,8 @@ fn bench_cache_lru_zipfian(c: &mut Criterion) {
             } else {
                 fastrand::usize(100..500)
             };
-            let subject = SubjectId::new(&format!("user:{}", idx)).unwrap();
-            let repo = ResourceId::new(&format!("repo:bench{}", idx)).unwrap();
+            let subject = SubjectId::new(format!("user:{}", idx)).unwrap();
+            let repo = ResourceId::new(format!("repo:bench{}", idx)).unwrap();
             let result = engine.check(black_box(&subject), "read", black_box(&repo), None);
             black_box(result)
         })

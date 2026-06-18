@@ -601,7 +601,6 @@ fn v2_m10_abac_dry_run_with_context() {
 }
 
 /// ── V2.5 Role hierarchy ──────────────────────────────────────────────────────
-
 fn make_schema_role_hierarchy() -> Schema {
     let yaml = r#"
 schemaVersion: 2
@@ -738,7 +737,6 @@ fn v2_5_role_hierarchy_check_role_resolves_inheritance() {
 }
 
 /// ── V2.5 Subject-set resolution ──────────────────────────────────────────────
-
 fn make_schema_subject_set() -> Schema {
     let yaml = r#"
 schemaVersion: 2

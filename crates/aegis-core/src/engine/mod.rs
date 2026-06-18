@@ -2743,12 +2743,12 @@ types:
                 .write(&RelationshipTuple::new(
                     subject.clone(),
                     Relation::new("owner").unwrap(),
-                    ResourceId::new(&format!("repo:watch{i}")).unwrap(),
+                    ResourceId::new(format!("repo:watch{i}")).unwrap(),
                 ))
                 .unwrap();
         }
         let mut count = 0;
-        while let Ok(_) = sub.try_recv() {
+        while sub.try_recv().is_ok() {
             count += 1;
         }
         assert_eq!(count, 3);
@@ -2985,8 +2985,8 @@ types:
             let lock = Arc::clone(&write_lock);
             handles.push(std::thread::spawn(move || {
                 let _guard = lock.lock().unwrap();
-                let subject = SubjectId::new(&format!("user:writer{i}")).unwrap();
-                let resource = ResourceId::new(&format!("repo:writer{i}")).unwrap();
+                let subject = SubjectId::new(format!("user:writer{i}")).unwrap();
+                let resource = ResourceId::new(format!("repo:writer{i}")).unwrap();
                 engine.write(&RelationshipTuple::new(
                     subject,
                     Relation::new("owner").unwrap(),
@@ -3008,8 +3008,8 @@ types:
         for i in 0..5 {
             let engine = Arc::clone(&engine);
             writer_handles.push(std::thread::spawn(move || {
-                let subject = SubjectId::new(&format!("user:rw{i}")).unwrap();
-                let resource = ResourceId::new(&format!("repo:rw{i}")).unwrap();
+                let subject = SubjectId::new(format!("user:rw{i}")).unwrap();
+                let resource = ResourceId::new(format!("repo:rw{i}")).unwrap();
                 engine.write(&RelationshipTuple::new(
                     subject,
                     Relation::new("owner").unwrap(),
@@ -3021,7 +3021,7 @@ types:
         for i in 0..10 {
             let engine = Arc::clone(&engine);
             reader_handles.push(std::thread::spawn(move || {
-                let subject = SubjectId::new(&format!("user:reader{i}")).unwrap();
+                let subject = SubjectId::new(format!("user:reader{i}")).unwrap();
                 let resource = ResourceId::new("repo:any").unwrap();
                 let _ = engine.check(&subject, "read", &resource, None);
             }));
@@ -3076,8 +3076,8 @@ types:
             .unwrap();
         let depth = 5;
         for i in 1..depth {
-            let current = ResourceId::new(&format!("repo:level{i}")).unwrap();
-            let as_subject = SubjectId::new(&format!("repo:level{}", i - 1)).unwrap();
+            let current = ResourceId::new(format!("repo:level{i}")).unwrap();
+            let as_subject = SubjectId::new(format!("repo:level{}", i - 1)).unwrap();
             engine
                 .write(&RelationshipTuple::new(
                     as_subject,
@@ -3096,7 +3096,7 @@ types:
         let engine = make_engine();
         let resource = ResourceId::new("repo:siblings").unwrap();
         for i in 0..100 {
-            let subject = SubjectId::new(&format!("user:sib{i}")).unwrap();
+            let subject = SubjectId::new(format!("user:sib{i}")).unwrap();
             engine
                 .write(&RelationshipTuple::new(
                     subject,
@@ -3154,7 +3154,7 @@ types:
         let engine = make_engine();
         let subject = SubjectId::new("user:page").unwrap();
         for i in 0..100 {
-            let resource = ResourceId::new(&format!("repo:page{i}")).unwrap();
+            let resource = ResourceId::new(format!("repo:page{i}")).unwrap();
             engine
                 .write(&RelationshipTuple::new(
                     subject.clone(),

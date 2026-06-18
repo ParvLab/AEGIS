@@ -53,8 +53,8 @@ fn setup_engine() -> GraphEngine {
 
     // Seed tuples
     for i in 0..1000 {
-        let subject = SubjectId::new(&format!("user:{}", i)).unwrap();
-        let repo = ResourceId::new(&format!("repo:bench{}", i)).unwrap();
+        let subject = SubjectId::new(format!("user:{}", i)).unwrap();
+        let repo = ResourceId::new(format!("repo:bench{}", i)).unwrap();
         engine
             .write(&RelationshipTuple::new(
                 subject,

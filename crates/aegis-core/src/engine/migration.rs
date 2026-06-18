@@ -4,6 +4,7 @@ use crate::types::MigrationResult;
 use crate::types::schema::{Schema, SchemaCompatibilityReport};
 
 /// A single schema migration step.
+#[allow(clippy::type_complexity)]
 pub struct MigrationStep {
     pub version: u32,
     pub description: String,
@@ -27,6 +28,7 @@ impl MigrationRunner {
     }
 
     /// Register a migration step.
+    #[allow(clippy::type_complexity)]
     pub fn register(
         &mut self,
         version: u32,

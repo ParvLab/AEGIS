@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 /// `event_hash = sha256(previous_hash || revision(le) || action || subject || relation || object || partition_id || metadata || timestamp || identity)`
 ///
 /// The genesis event has `previous_hash = ""`.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_event_hash(
     previous_hash: &str,
     revision: i64,
