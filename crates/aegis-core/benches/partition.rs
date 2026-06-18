@@ -1,9 +1,9 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use aegis_core::engine::GraphEngine;
-use aegis_core::types::schema::{PermissionDef, RelationDef, Schema, TypeDef};
-use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
+use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
+use aegis_core::types::schema::{PermissionDef, RelationDef, Schema, TypeDef};
 use aegis_core::types::*;
 use std::collections::HashMap;
 
@@ -19,7 +19,10 @@ fn setup_partitions() -> GraphEngine {
             let mut relations = HashMap::new();
             relations.insert(
                 "owner".to_string(),
-                RelationDef { inherit_from: vec![], description: None },
+                RelationDef {
+                    inherit_from: vec![],
+                    description: None,
+                },
             );
             let mut permissions = HashMap::new();
             permissions.insert(
@@ -29,7 +32,14 @@ fn setup_partitions() -> GraphEngine {
                     ..Default::default()
                 },
             );
-            types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
+            types.insert(
+                "repo".to_string(),
+                TypeDef {
+                    relations,
+                    permissions,
+                    ..Default::default()
+                },
+            );
             types
         },
     };
@@ -85,12 +95,15 @@ fn bench_partition_check_throughput(c: &mut Criterion) {
 
     c.bench_function("partition_check", |b| {
         b.iter(|| {
-            let result =
-                engine.check(black_box(&subject), "read", black_box(&resource), None);
+            let result = engine.check(black_box(&subject), "read", black_box(&resource), None);
             black_box(result)
         })
     });
 }
 
-criterion_group!(benches, bench_partition_write_throughput, bench_partition_check_throughput);
+criterion_group!(
+    benches,
+    bench_partition_write_throughput,
+    bench_partition_check_throughput
+);
 criterion_main!(benches);

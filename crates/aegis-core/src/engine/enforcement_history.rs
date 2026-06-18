@@ -107,13 +107,22 @@ impl RateTracker {
 
 impl GraphEngine {
     /// Configure enforcement history recording.
-    pub fn set_enforcement_history_config(&self, config: EnforcementHistoryConfig) -> AegisResult<()> {
+    pub fn set_enforcement_history_config(
+        &self,
+        config: EnforcementHistoryConfig,
+    ) -> AegisResult<()> {
         {
-            let mut cfg = self.enforcement_config.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let mut cfg = self
+                .enforcement_config
+                .lock()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             *cfg = config.clone();
         }
         {
-            let mut rt = self.enforcement_rate_tracker.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let mut rt = self
+                .enforcement_rate_tracker
+                .lock()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             rt.update_max(config.max_events_per_minute);
         }
         Ok(())
@@ -121,14 +130,20 @@ impl GraphEngine {
 
     /// Get the current enforcement history configuration.
     pub fn get_enforcement_history_config(&self) -> AegisResult<EnforcementHistoryConfig> {
-        let cfg = self.enforcement_config.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let cfg = self
+            .enforcement_config
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         Ok(cfg.clone())
     }
 
     /// Query enforcement trends.
     pub fn enforcement_trends(&self, limit: usize) -> AegisResult<EnforcementTrends> {
         let mut events = {
-            let e = self.enforcement_events.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let e = self
+                .enforcement_events
+                .lock()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             e.iter().rev().take(limit).cloned().collect::<Vec<_>>()
         };
         events.reverse();
@@ -137,7 +152,8 @@ impl GraphEngine {
         let denied_count = events.iter().filter(|e| !e.allowed).count() as u64;
         let allowed_count = events.iter().filter(|e| e.allowed).count() as u64;
 
-        let mut resource_counts: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+        let mut resource_counts: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
         for e in &events {
             *resource_counts.entry(e.resource.clone()).or_default() += 1;
         }
@@ -246,9 +262,9 @@ impl GraphEngine {
 mod tests {
     use super::*;
     use crate::engine::GraphEngine;
+    use crate::storage::StorageBackend;
     #[cfg(feature = "sqlite")]
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
-    use crate::storage::StorageBackend;
     use crate::types::*;
     use std::sync::Arc;
 

@@ -24,7 +24,9 @@ impl GraphEngine {
             let key = format!("{}:{}:{}", q.subject, q.permission, q.resource);
             let subject = SubjectId::new(&q.subject)?;
             let resource = ResourceId::new(&q.resource)?;
-            let allowed = self.check(&subject, &q.permission, &resource, None)?.allowed;
+            let allowed = self
+                .check(&subject, &q.permission, &resource, None)?
+                .allowed;
             before_results.insert(key, allowed);
         }
 
@@ -59,9 +61,17 @@ impl GraphEngine {
             };
 
             match (before, after) {
-                (true, false) => { lost += 1; flips.push(flip); }
-                (false, true) => { gained += 1; flips.push(flip); }
-                _ => { unchanged += 1; }
+                (true, false) => {
+                    lost += 1;
+                    flips.push(flip);
+                }
+                (false, true) => {
+                    gained += 1;
+                    flips.push(flip);
+                }
+                _ => {
+                    unchanged += 1;
+                }
             }
         }
 

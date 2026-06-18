@@ -3,14 +3,14 @@ use std::sync::{Arc, Mutex};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 
+use crate::engine::enforcement_history::EnforcementEvent;
+use crate::engine::policy_lifecycle::PolicyDraft;
+use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::memory::InMemoryStorage;
 use crate::storage::traits::{
     BackendType, IntegrityReport, StorageBackend, StorageMeta, TupleFilter,
 };
-use crate::engine::enforcement_history::EnforcementEvent;
-use crate::engine::policy_lifecycle::PolicyDraft;
-use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationParams, PartitionId, Relation,
     RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
@@ -70,8 +70,11 @@ impl StorageCapabilities {
 /// Async storage transaction supporting atomic multi-tuple writes within a partition.
 #[async_trait(?Send)]
 pub trait AsyncStorageTransaction: Send {
-    async fn write(&mut self, partition_id: &PartitionId, tuple: &RelationshipTuple)
-        -> AegisResult<()>;
+    async fn write(
+        &mut self,
+        partition_id: &PartitionId,
+        tuple: &RelationshipTuple,
+    ) -> AegisResult<()>;
 
     async fn delete(&mut self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<()>;
 
@@ -81,10 +84,7 @@ pub trait AsyncStorageTransaction: Send {
 
     async fn release_savepoint(&self, name: &str) -> AegisResult<()>;
 
-    async fn set_actor_identity(
-        &mut self,
-        identity: Option<String>,
-    ) -> Option<String> {
+    async fn set_actor_identity(&mut self, identity: Option<String>) -> Option<String> {
         let _ = identity;
         None
     }
@@ -134,11 +134,7 @@ pub trait AsyncStorageBackend: Send + Sync {
         object: &ResourceId,
     ) -> AegisResult<Revision>;
 
-    async fn has_tuple(
-        &self,
-        partition_id: &PartitionId,
-        key: &TupleKey,
-    ) -> AegisResult<bool>;
+    async fn has_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<bool>;
 
     async fn read_tuple(
         &self,
@@ -203,10 +199,7 @@ pub trait AsyncStorageBackend: Send + Sync {
         consistency: &ConsistencyMode,
     ) -> AegisResult<PaginatedTuples>;
 
-    async fn current_revision(
-        &self,
-        partition_id: &PartitionId,
-    ) -> AegisResult<Revision>;
+    async fn current_revision(&self, partition_id: &PartitionId) -> AegisResult<Revision>;
 
     async fn read_schema_version(&self) -> AegisResult<u32>;
 
@@ -236,10 +229,7 @@ pub trait AsyncStorageBackend: Send + Sync {
         cutoff: DateTime<Utc>,
     ) -> AegisResult<usize>;
 
-    async fn compact_events(
-        &self,
-        partition_id: &PartitionId,
-    ) -> AegisResult<usize>;
+    async fn compact_events(&self, partition_id: &PartitionId) -> AegisResult<usize>;
 
     async fn delete_soft_deleted_tuples_before(
         &self,
@@ -265,44 +255,52 @@ pub trait AsyncStorageBackend: Send + Sync {
         None
     }
 
-    async fn set_actor_identity(
-        &self,
-        identity: Option<String>,
-    ) -> Option<String> {
+    async fn set_actor_identity(&self, identity: Option<String>) -> Option<String> {
         let _ = identity;
         None
     }
 
     async fn close(&self) -> AegisResult<()>;
 
-    async fn verify_audit_chain(
-        &self,
-        partition_id: &PartitionId,
-    ) -> AegisResult<Option<String>> {
+    async fn verify_audit_chain(&self, partition_id: &PartitionId) -> AegisResult<Option<String>> {
         let _ = partition_id;
         Ok(None)
     }
 
     async fn save_policy_draft(&self, _draft: &PolicyDraft) -> AegisResult<()> {
-        Err(AegisError::UnsupportedStorageOperation("async save_policy_draft not supported".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "async save_policy_draft not supported".into(),
+        ))
     }
     async fn load_policy_draft(&self, _id: &str) -> AegisResult<Option<PolicyDraft>> {
-        Err(AegisError::UnsupportedStorageOperation("async load_policy_draft not supported".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "async load_policy_draft not supported".into(),
+        ))
     }
     async fn delete_policy_draft(&self, _id: &str) -> AegisResult<bool> {
-        Err(AegisError::UnsupportedStorageOperation("async delete_policy_draft not supported".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "async delete_policy_draft not supported".into(),
+        ))
     }
     async fn save_analysis_schedule(&self, _schedule: &AnalysisSchedule) -> AegisResult<()> {
-        Err(AegisError::UnsupportedStorageOperation("async save_analysis_schedule not supported".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "async save_analysis_schedule not supported".into(),
+        ))
     }
     async fn delete_analysis_schedule(&self, _id: &str) -> AegisResult<bool> {
-        Err(AegisError::UnsupportedStorageOperation("async delete_analysis_schedule not supported".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "async delete_analysis_schedule not supported".into(),
+        ))
     }
     async fn save_analysis_run(&self, _run: &AnalysisRun) -> AegisResult<()> {
-        Err(AegisError::UnsupportedStorageOperation("async save_analysis_run not supported".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "async save_analysis_run not supported".into(),
+        ))
     }
     async fn save_enforcement_event(&self, _event: &EnforcementEvent) -> AegisResult<()> {
-        Err(AegisError::UnsupportedStorageOperation("async save_enforcement_event not supported".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "async save_enforcement_event not supported".into(),
+        ))
     }
 }
 
@@ -322,8 +320,12 @@ impl InMemoryAsyncStorage {
     }
 }
 
-fn lock_storage(storage: &Arc<Mutex<InMemoryStorage>>) -> AegisResult<std::sync::MutexGuard<'_, InMemoryStorage>> {
-    storage.lock().map_err(|e| crate::error::AegisError::Internal(e.to_string()))
+fn lock_storage(
+    storage: &Arc<Mutex<InMemoryStorage>>,
+) -> AegisResult<std::sync::MutexGuard<'_, InMemoryStorage>> {
+    storage
+        .lock()
+        .map_err(|e| crate::error::AegisError::Internal(e.to_string()))
 }
 
 #[async_trait(?Send)]
@@ -376,11 +378,7 @@ impl AsyncStorageBackend for InMemoryAsyncStorage {
         lock_storage(&self.storage)?.delete_object(partition_id, object)
     }
 
-    async fn has_tuple(
-        &self,
-        partition_id: &PartitionId,
-        key: &TupleKey,
-    ) -> AegisResult<bool> {
+    async fn has_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<bool> {
         lock_storage(&self.storage)?.has_tuple(partition_id, key)
     }
 
@@ -399,8 +397,7 @@ impl AsyncStorageBackend for InMemoryAsyncStorage {
         relation: Option<&Relation>,
         consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        lock_storage(&self.storage)?
-            .list_by_object(partition_id, object, relation, consistency)
+        lock_storage(&self.storage)?.list_by_object(partition_id, object, relation, consistency)
     }
 
     async fn list_by_subject(
@@ -410,8 +407,7 @@ impl AsyncStorageBackend for InMemoryAsyncStorage {
         relation: Option<&Relation>,
         consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        lock_storage(&self.storage)?
-            .list_by_subject(partition_id, subject, relation, consistency)
+        lock_storage(&self.storage)?.list_by_subject(partition_id, subject, relation, consistency)
     }
 
     async fn list_by_relation(
@@ -420,8 +416,7 @@ impl AsyncStorageBackend for InMemoryAsyncStorage {
         object: &ResourceId,
         relation: &Relation,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        lock_storage(&self.storage)?
-            .list_by_relation(partition_id, object, relation)
+        lock_storage(&self.storage)?.list_by_relation(partition_id, object, relation)
     }
 
     async fn query_tuples(
@@ -431,14 +426,10 @@ impl AsyncStorageBackend for InMemoryAsyncStorage {
         pagination: &PaginationParams,
         consistency: &ConsistencyMode,
     ) -> AegisResult<PaginatedTuples> {
-        lock_storage(&self.storage)?
-            .query_tuples(partition_id, filter, pagination, consistency)
+        lock_storage(&self.storage)?.query_tuples(partition_id, filter, pagination, consistency)
     }
 
-    async fn current_revision(
-        &self,
-        partition_id: &PartitionId,
-    ) -> AegisResult<Revision> {
+    async fn current_revision(&self, partition_id: &PartitionId) -> AegisResult<Revision> {
         lock_storage(&self.storage)?.current_revision(partition_id)
     }
 
@@ -472,8 +463,13 @@ impl AsyncStorageBackend for InMemoryAsyncStorage {
         to_revision: Option<Revision>,
         pagination: &PaginationParams,
     ) -> AegisResult<Vec<AuditEntry>> {
-        lock_storage(&self.storage)?
-            .query_audit(partition_id, object, from_revision, to_revision, pagination)
+        lock_storage(&self.storage)?.query_audit(
+            partition_id,
+            object,
+            from_revision,
+            to_revision,
+            pagination,
+        )
     }
 
     async fn integrity_check(&self) -> AegisResult<IntegrityReport> {
@@ -488,10 +484,7 @@ impl AsyncStorageBackend for InMemoryAsyncStorage {
         lock_storage(&self.storage)?.delete_events_before(partition_id, cutoff)
     }
 
-    async fn compact_events(
-        &self,
-        partition_id: &PartitionId,
-    ) -> AegisResult<usize> {
+    async fn compact_events(&self, partition_id: &PartitionId) -> AegisResult<usize> {
         lock_storage(&self.storage)?.compact_events(partition_id)
     }
 
@@ -500,8 +493,7 @@ impl AsyncStorageBackend for InMemoryAsyncStorage {
         partition_id: &PartitionId,
         cutoff: DateTime<Utc>,
     ) -> AegisResult<usize> {
-        lock_storage(&self.storage)?
-            .delete_soft_deleted_tuples_before(partition_id, cutoff)
+        lock_storage(&self.storage)?.delete_soft_deleted_tuples_before(partition_id, cutoff)
     }
 
     async fn recover_from_events(
@@ -519,25 +511,20 @@ impl AsyncStorageBackend for InMemoryAsyncStorage {
         events: &[AuditEntry],
         revision: Revision,
     ) -> AegisResult<()> {
-        lock_storage(&self.storage)?
-            .restore_backup(partition_id, tuples, events, revision)
+        lock_storage(&self.storage)?.restore_backup(partition_id, tuples, events, revision)
     }
 
-    async fn set_actor_identity(
-        &self,
-        identity: Option<String>,
-    ) -> Option<String> {
-        lock_storage(&self.storage).ok()?.set_actor_identity(identity)
+    async fn set_actor_identity(&self, identity: Option<String>) -> Option<String> {
+        lock_storage(&self.storage)
+            .ok()?
+            .set_actor_identity(identity)
     }
 
     async fn close(&self) -> AegisResult<()> {
         lock_storage(&self.storage)?.close()
     }
 
-    async fn verify_audit_chain(
-        &self,
-        partition_id: &PartitionId,
-    ) -> AegisResult<Option<String>> {
+    async fn verify_audit_chain(&self, partition_id: &PartitionId) -> AegisResult<Option<String>> {
         lock_storage(&self.storage)?.verify_audit_chain(partition_id)
     }
 
@@ -581,11 +568,7 @@ impl AsyncStorageTransaction for InMemoryAsyncTransaction {
         Ok(())
     }
 
-    async fn delete(
-        &mut self,
-        partition_id: &PartitionId,
-        key: &TupleKey,
-    ) -> AegisResult<()> {
+    async fn delete(&mut self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<()> {
         let tuple = RelationshipTuple::new(
             key.subject.clone(),
             key.relation.clone(),

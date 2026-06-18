@@ -1,9 +1,9 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use aegis_core::engine::GraphEngine;
-use aegis_core::types::schema::{PermissionDef, RelationDef, Schema, TypeDef};
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::{StorageBackend, TupleFilter};
+use aegis_core::types::schema::{PermissionDef, RelationDef, Schema, TypeDef};
 use aegis_core::types::*;
 use std::collections::HashMap;
 
@@ -16,11 +16,17 @@ fn setup_engine() -> GraphEngine {
             let mut relations = HashMap::new();
             relations.insert(
                 "owner".to_string(),
-                RelationDef { inherit_from: vec![], description: None },
+                RelationDef {
+                    inherit_from: vec![],
+                    description: None,
+                },
             );
             relations.insert(
                 "viewer".to_string(),
-                RelationDef { inherit_from: vec![], description: None },
+                RelationDef {
+                    inherit_from: vec![],
+                    description: None,
+                },
             );
             let mut permissions = HashMap::new();
             permissions.insert(
@@ -30,7 +36,14 @@ fn setup_engine() -> GraphEngine {
                     ..Default::default()
                 },
             );
-            types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
+            types.insert(
+                "repo".to_string(),
+                TypeDef {
+                    relations,
+                    permissions,
+                    ..Default::default()
+                },
+            );
             types
         },
     };
@@ -43,7 +56,11 @@ fn setup_engine() -> GraphEngine {
         let subject = SubjectId::new(&format!("user:{}", i)).unwrap();
         let repo = ResourceId::new(&format!("repo:bench{}", i)).unwrap();
         engine
-            .write(&RelationshipTuple::new(subject, Relation::new("owner").unwrap(), repo))
+            .write(&RelationshipTuple::new(
+                subject,
+                Relation::new("owner").unwrap(),
+                repo,
+            ))
             .unwrap();
     }
     engine

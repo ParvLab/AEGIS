@@ -2,13 +2,13 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use aegis_core::engine::hooks::LogLevel;
+use napi::threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode};
 
+use aegis_core::engine::GraphEngine;
 use aegis_core::engine::condition::ConditionEvalContext;
 use aegis_core::engine::ratelimit::{RateLimitConfig, TokenBucketRateLimiter};
 use aegis_core::engine::watch::{WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
-use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::{StorageBackend, StorageTransaction, TupleFilter};
@@ -47,12 +47,15 @@ fn parse_consistency(s: Option<String>) -> napi::Result<Option<ConsistencyMode>>
         }
         Some(ref val) => {
             if let Some(rev_str) = val.strip_prefix("at_revision:") {
-                let rev_num: u64 = rev_str
-                    .parse()
-                    .map_err(|_| napi::Error::from_reason(format!("invalid consistency: {}", val)))?;
+                let rev_num: u64 = rev_str.parse().map_err(|_| {
+                    napi::Error::from_reason(format!("invalid consistency: {}", val))
+                })?;
                 Ok(Some(ConsistencyMode::AtRevision(Revision::from(rev_num))))
             } else {
-                Err(napi::Error::from_reason(format!("invalid consistency: {}", val)))
+                Err(napi::Error::from_reason(format!(
+                    "invalid consistency: {}",
+                    val
+                )))
             }
         }
     }
@@ -63,7 +66,8 @@ fn validate_tuple(
     relation: &str,
     resource: &str,
 ) -> napi::Result<RelationshipTuple> {
-    let subject_id = SubjectId::new(subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+    let subject_id =
+        SubjectId::new(subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
     let relation_id =
         Relation::new(relation).map_err(|e| napi::Error::from_reason(e.to_string()))?;
     let resource_id =
@@ -231,10 +235,7 @@ fn revision_token_to_nap(token: &aegis_core::types::RevisionToken) -> WriteResul
     WriteResultNAP {
         revision: token.revision.as_u64() as i64,
         node_id: token.node_id.to_string(),
-        timestamp: token
-            .timestamp
-            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-            .to_string(),
+        timestamp: token.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
     }
 }
 
@@ -245,10 +246,7 @@ fn audit_entry_to_nap(entry: &AuditEntry) -> AuditEntryNAP {
         subject: entry.subject.clone(),
         relation: entry.relation.clone(),
         object: entry.object.clone(),
-        timestamp: entry
-            .timestamp
-            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-            .to_string(),
+        timestamp: entry.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         identity: entry.identity.clone(),
     }
 }
@@ -260,7 +258,9 @@ fn tuple_to_nap(tuple: &RelationshipTuple) -> TupleNAP {
         object: tuple.object.as_str().to_string(),
         condition: tuple.condition.clone(),
         metadata: tuple.metadata.clone(),
-        valid_until: tuple.valid_until.map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
+        valid_until: tuple
+            .valid_until
+            .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string()),
     }
 }
 
@@ -301,10 +301,7 @@ fn watch_event_to_nap(event: &WatchEvent) -> WatchEventNAP {
         relation: event.relation.clone(),
         object: event.object.clone(),
         revision: event.revision.as_u64() as i64,
-        timestamp: event
-            .timestamp
-            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-            .to_string(),
+        timestamp: event.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
     }
 }
 
@@ -334,7 +331,11 @@ impl JsAegis {
 // ── Factory ───────────────────────────────────────────────────────────────────────────
 
 #[napi]
-pub fn initialize(path: String, schema_yaml: String, config: Option<EngineConfigNAP>) -> napi::Result<JsAegis> {
+pub fn initialize(
+    path: String,
+    schema_yaml: String,
+    config: Option<EngineConfigNAP>,
+) -> napi::Result<JsAegis> {
     catch_engine_panic(move || {
         let cfg = config.unwrap_or(EngineConfigNAP {
             max_readers: None,
@@ -354,8 +355,8 @@ pub fn initialize(path: String, schema_yaml: String, config: Option<EngineConfig
         storage
             .initialize()
             .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-        let schema = parse_schema(&schema_yaml)
-            .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+        let schema =
+            parse_schema(&schema_yaml).map_err(|e| napi::Error::from_reason(e.to_string()))?;
         let engine = GraphEngine::new(Box::new(storage), schema);
         Ok(JsAegis {
             engine: Arc::new(engine),
@@ -391,10 +392,10 @@ impl JsAegis {
     ) -> napi::Result<CheckResultNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let resource_id = ResourceId::new(&resource)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let cm = parse_consistency(consistency)?;
             let result = self
                 .engine
@@ -418,10 +419,10 @@ impl JsAegis {
     ) -> napi::Result<CheckResultNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let resource_id = ResourceId::new(&resource)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let cm = parse_consistency(consistency)?;
             let ctx = ConditionEvalContext {
                 subject_meta: context.subject_meta.unwrap_or_default(),
@@ -450,10 +451,10 @@ impl JsAegis {
     ) -> napi::Result<CheckResultNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let resource_id = ResourceId::new(&resource)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let cm = parse_consistency(consistency)?;
             let ctx = ConditionEvalContext {
                 subject_meta: context.subject_meta.unwrap_or_default(),
@@ -483,17 +484,19 @@ impl JsAegis {
     ) -> napi::Result<WriteResultNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let relation_id = Relation::new(&relation)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let object_id = ResourceId::new(&resource)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let relation_id =
+                Relation::new(&relation).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let object_id =
+                ResourceId::new(&resource).map_err(|e| napi::Error::from_reason(e.to_string()))?;
 
             let valid_until_dt = match valid_until {
                 Some(ref s) => Some(
                     DateTime::parse_from_rfc3339(s)
-                        .map_err(|e| napi::Error::from_reason(format!("invalid valid_until: {}", e)))?
+                        .map_err(|e| {
+                            napi::Error::from_reason(format!("invalid valid_until: {}", e))
+                        })?
                         .with_timezone(&Utc),
                 ),
                 None => None,
@@ -548,8 +551,8 @@ impl JsAegis {
     ) -> napi::Result<Vec<TupleNAP>> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let object_id = ResourceId::new(&object)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let object_id =
+                ResourceId::new(&object).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let relation_opt = relation
                 .as_deref()
                 .map(Relation::new)
@@ -574,10 +577,10 @@ impl JsAegis {
     ) -> napi::Result<ExplainResultNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let resource_id = ResourceId::new(&resource)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let cm = parse_consistency(consistency)?;
             let result = self
                 .engine
@@ -620,10 +623,10 @@ impl JsAegis {
     ) -> napi::Result<CheckResultNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let resource_id = ResourceId::new(&resource)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let cm = parse_consistency(consistency)?;
             let result = self
                 .engine
@@ -645,8 +648,8 @@ impl JsAegis {
     ) -> napi::Result<Vec<TupleNAP>> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let relation_opt = relation
                 .as_deref()
                 .map(Relation::new)
@@ -669,10 +672,10 @@ impl JsAegis {
     ) -> napi::Result<Vec<TupleNAP>> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let object_id = ResourceId::new(&object)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let relation_id = Relation::new(&relation)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let object_id =
+                ResourceId::new(&object).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let relation_id =
+                Relation::new(&relation).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let tuples = self
                 .engine
                 .list_by_relation(&object_id, &relation_id)
@@ -700,9 +703,9 @@ impl JsAegis {
         self.check_open()?;
         catch_engine_panic(|| {
             let relation = match filter.relation {
-                Some(r) => Some(
-                    Relation::new(&r).map_err(|e| napi::Error::from_reason(e.to_string()))?,
-                ),
+                Some(r) => {
+                    Some(Relation::new(&r).map_err(|e| napi::Error::from_reason(e.to_string()))?)
+                }
                 None => None,
             };
             let tf = TupleFilter {
@@ -720,12 +723,12 @@ impl JsAegis {
                 .map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let pp = PaginationParams {
                 limit: pagination.limit as u64,
-                cursor: pagination.cursor_offset.map(|o| {
-                    aegis_core::types::PaginationCursor {
+                cursor: pagination
+                    .cursor_offset
+                    .map(|o| aegis_core::types::PaginationCursor {
                         offset: o as u64,
                         revision: current_rev,
-                    }
-                }),
+                    }),
             };
             let cm = parse_consistency(consistency)?;
             let result = self
@@ -755,7 +758,9 @@ impl JsAegis {
                 let valid_until_dt = match t.valid_until {
                     Some(ref s) => Some(
                         DateTime::parse_from_rfc3339(s)
-                            .map_err(|e| napi::Error::from_reason(format!("invalid valid_until: {}", e)))?
+                            .map_err(|e| {
+                                napi::Error::from_reason(format!("invalid valid_until: {}", e))
+                            })?
                             .with_timezone(&Utc),
                     ),
                     None => None,
@@ -793,8 +798,8 @@ impl JsAegis {
     pub fn check_schema(&self, schema_yaml: String) -> napi::Result<SchemaCheckReportNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let new_schema = parse_schema(&schema_yaml)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let new_schema =
+                parse_schema(&schema_yaml).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let report = self.engine.check_schema(&new_schema);
             Ok(SchemaCheckReportNAP {
                 compatible: report.compatible,
@@ -808,8 +813,8 @@ impl JsAegis {
     pub fn delete_object(&self, object: String) -> napi::Result<WriteResultNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let object_id = ResourceId::new(&object)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let object_id =
+                ResourceId::new(&object).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let result = self
                 .engine
                 .delete_object(&object_id)
@@ -836,16 +841,18 @@ impl JsAegis {
     ) -> napi::Result<CheckResultNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let relation_id = Relation::new(&relation)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let object_id = ResourceId::new(&resource)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let relation_id =
+                Relation::new(&relation).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let object_id =
+                ResourceId::new(&resource).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let valid_until_dt = match valid_until {
                 Some(ref s) => Some(
                     DateTime::parse_from_rfc3339(s)
-                        .map_err(|e| napi::Error::from_reason(format!("invalid valid_until: {}", e)))?
+                        .map_err(|e| {
+                            napi::Error::from_reason(format!("invalid valid_until: {}", e))
+                        })?
                         .with_timezone(&Utc),
                 ),
                 None => None,
@@ -872,14 +879,11 @@ impl JsAegis {
 
     // S3.3 — export_subject (GDPR)
     #[napi]
-    pub fn export_subject(
-        &self,
-        subject: String,
-    ) -> napi::Result<ExportSubjectResultNAP> {
+    pub fn export_subject(&self, subject: String) -> napi::Result<ExportSubjectResultNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let tuples = self
                 .engine
                 .export_subject(&subject_id)
@@ -910,13 +914,12 @@ impl JsAegis {
     ) -> napi::Result<WriteResultNAP> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let transfer = match transfer_to_subject {
-                Some(s) => Some(
-                    SubjectId::new(&s)
-                        .map_err(|e| napi::Error::from_reason(e.to_string()))?,
-                ),
+                Some(s) => {
+                    Some(SubjectId::new(&s).map_err(|e| napi::Error::from_reason(e.to_string()))?)
+                }
                 None => None,
             };
             let result = self
@@ -938,12 +941,10 @@ impl JsAegis {
     ) -> napi::Result<Vec<AuditEntryNAP>> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let object_id = ResourceId::new(&object)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let from = from_revision
-                .map(|r| aegis_core::types::Revision::from(r as u64));
-            let to =
-                to_revision.map(|r| aegis_core::types::Revision::from(r as u64));
+            let object_id =
+                ResourceId::new(&object).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let from = from_revision.map(|r| aegis_core::types::Revision::from(r as u64));
+            let to = to_revision.map(|r| aegis_core::types::Revision::from(r as u64));
             let pp = PaginationParams {
                 limit: limit as u64,
                 cursor: None,
@@ -998,8 +999,8 @@ impl JsAegis {
     pub fn reload_schema(&self, schema_yaml: String) -> napi::Result<()> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let new_schema = parse_schema(&schema_yaml)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let new_schema =
+                parse_schema(&schema_yaml).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             self.engine
                 .reload_schema(new_schema)
                 .map_err(|e| napi::Error::from_reason(e.to_string()))
@@ -1021,14 +1022,29 @@ impl JsAegis {
         self.check_open()?;
         catch_engine_panic(|| {
             let mut cfg = RateLimitConfig::default();
-            if let Some(v) = checks_per_second { cfg.checks_per_second = v; }
-            if let Some(v) = check_burst { cfg.check_burst = v; }
-            if let Some(v) = writes_per_second { cfg.writes_per_second = v; }
-            if let Some(v) = write_burst { cfg.write_burst = v; }
-            if let Some(v) = max_traversal_depth { cfg.max_traversal_depth = v as usize; }
-            if let Some(v) = max_traversal_visits { cfg.max_traversal_visits = v as usize; }
-            if let Some(v) = max_keys { cfg.max_keys = v as usize; }
-            self.engine.set_rate_limiter(TokenBucketRateLimiter::new(cfg));
+            if let Some(v) = checks_per_second {
+                cfg.checks_per_second = v;
+            }
+            if let Some(v) = check_burst {
+                cfg.check_burst = v;
+            }
+            if let Some(v) = writes_per_second {
+                cfg.writes_per_second = v;
+            }
+            if let Some(v) = write_burst {
+                cfg.write_burst = v;
+            }
+            if let Some(v) = max_traversal_depth {
+                cfg.max_traversal_depth = v as usize;
+            }
+            if let Some(v) = max_traversal_visits {
+                cfg.max_traversal_visits = v as usize;
+            }
+            if let Some(v) = max_keys {
+                cfg.max_keys = v as usize;
+            }
+            self.engine
+                .set_rate_limiter(TokenBucketRateLimiter::new(cfg));
             Ok(())
         })
     }
@@ -1058,19 +1074,20 @@ impl JsAegis {
                     ])
                 })?;
 
-            self.engine.set_logger(move |level: LogLevel, target: &str, msg: &str| {
-                let level_i32 = match level {
-                    LogLevel::Error => 0,
-                    LogLevel::Warn => 1,
-                    LogLevel::Info => 2,
-                    LogLevel::Debug => 3,
-                    LogLevel::Trace => 4,
-                };
-                let _ = tsfn.call(
-                    (level_i32, target.to_string(), msg.to_string()),
-                    ThreadsafeFunctionCallMode::NonBlocking,
-                );
-            });
+            self.engine
+                .set_logger(move |level: LogLevel, target: &str, msg: &str| {
+                    let level_i32 = match level {
+                        LogLevel::Error => 0,
+                        LogLevel::Warn => 1,
+                        LogLevel::Info => 2,
+                        LogLevel::Debug => 3,
+                        LogLevel::Trace => 4,
+                    };
+                    let _ = tsfn.call(
+                        (level_i32, target.to_string(), msg.to_string()),
+                        ThreadsafeFunctionCallMode::NonBlocking,
+                    );
+                });
             Ok(())
         })
     }
@@ -1129,10 +1146,10 @@ impl JsAegis {
     ) -> napi::Result<String> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let subject_id = SubjectId::new(&subject)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
-            let resource_id = ResourceId::new(&resource)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let cm = parse_consistency(consistency)?;
             let result = self
                 .engine
@@ -1154,8 +1171,8 @@ impl JsAegis {
     ) -> napi::Result<String> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let resource_id = ResourceId::new(&resource)
-                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource).map_err(|e| napi::Error::from_reason(e.to_string()))?;
             let pagination = PaginationParams {
                 limit: page_limit.unwrap_or(100.0) as u64,
                 cursor: page_offset.map(|o| PaginationCursor {
@@ -1194,7 +1211,12 @@ impl JsAegis {
                 .map_err(|e| napi::Error::from_reason(format!("invalid schema_after: {}", e)))?;
             let result = self
                 .engine
-                .access_diff(&schema_before, &schema_after, None, max_checks.map(|v| v as u64))
+                .access_diff(
+                    &schema_before,
+                    &schema_after,
+                    None,
+                    max_checks.map(|v| v as u64),
+                )
                 .map_err(|e| napi::Error::from_reason(e.to_string()))?;
             serde_json::to_string(&result)
                 .map_err(|e| napi::Error::from_reason(format!("serialization error: {}", e)))
@@ -1230,11 +1252,7 @@ impl JsAegis {
 #[napi]
 impl JsAegis {
     #[napi]
-    pub fn create_policy_draft(
-        &self,
-        name: String,
-        description: String,
-    ) -> napi::Result<String> {
+    pub fn create_policy_draft(&self, name: String, description: String) -> napi::Result<String> {
         self.check_open()?;
         catch_engine_panic(|| {
             let draft = self
@@ -1247,11 +1265,7 @@ impl JsAegis {
     }
 
     #[napi]
-    pub fn update_policy_draft(
-        &self,
-        id: String,
-        schema_json: String,
-    ) -> napi::Result<String> {
+    pub fn update_policy_draft(&self, id: String, schema_json: String) -> napi::Result<String> {
         self.check_open()?;
         catch_engine_panic(|| {
             let uid = uuid::Uuid::parse_str(&id)
@@ -1313,7 +1327,11 @@ impl JsAegis {
     }
 
     #[napi]
-    pub fn reject_policy_draft(&self, id: String, rejection_reason: String) -> napi::Result<String> {
+    pub fn reject_policy_draft(
+        &self,
+        id: String,
+        rejection_reason: String,
+    ) -> napi::Result<String> {
         self.check_open()?;
         catch_engine_panic(|| {
             let uid = uuid::Uuid::parse_str(&id)
@@ -1365,7 +1383,9 @@ impl JsAegis {
                 .as_deref()
                 .map(|s| match s.to_lowercase().as_str() {
                     "drafting" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Drafting),
-                    "underreview" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::UnderReview),
+                    "underreview" => {
+                        Ok(aegis_core::engine::policy_lifecycle::DraftStatus::UnderReview)
+                    }
                     "approved" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Approved),
                     "rejected" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Rejected),
                     "published" => Ok(aegis_core::engine::policy_lifecycle::DraftStatus::Published),
@@ -1394,8 +1414,9 @@ impl JsAegis {
     ) -> napi::Result<String> {
         self.check_open()?;
         catch_engine_panic(|| {
-            let queries: Vec<aegis_core::types::analysis::CheckQuery> = serde_json::from_str(&queries_json)
-                .map_err(|e| napi::Error::from_reason(format!("invalid queries: {}", e)))?;
+            let queries: Vec<aegis_core::types::analysis::CheckQuery> =
+                serde_json::from_str(&queries_json)
+                    .map_err(|e| napi::Error::from_reason(format!("invalid queries: {}", e)))?;
             let compare_schema = match compare_schema_json {
                 Some(s) => Some(
                     serde_json::from_str(&s)
@@ -1442,7 +1463,10 @@ impl JsAegis {
         self.check_open()?;
         catch_engine_panic(|| {
             let uid = schedule_id
-                .map(|id| uuid::Uuid::parse_str(&id).map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e))))
+                .map(|id| {
+                    uuid::Uuid::parse_str(&id)
+                        .map_err(|e| napi::Error::from_reason(format!("invalid id: {}", e)))
+                })
                 .transpose()?;
             let runs = self
                 .engine
@@ -1523,7 +1547,10 @@ impl JsAegis {
                     "integrityfinding" => Ok(WatchEventType::IntegrityFinding),
                     "analysiscompleted" => Ok(WatchEventType::AnalysisCompleted),
                     "ratelimitwarning" => Ok(WatchEventType::RateLimitWarning),
-                    _ => Err(napi::Error::from_reason(format!("unknown event type: {}", s))),
+                    _ => Err(napi::Error::from_reason(format!(
+                        "unknown event type: {}",
+                        s
+                    ))),
                 })
                 .collect::<napi::Result<Vec<_>>>()?;
             let subscription = self.engine.subscribe(types);

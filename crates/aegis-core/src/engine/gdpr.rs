@@ -6,7 +6,8 @@
 use crate::engine::GraphEngine;
 use crate::error::{AegisError, AegisResult};
 use crate::types::{
-    AuditEntry, ConsistencyMode, PaginationParams, PartitionId, RelationshipTuple, Revision, SubjectId,
+    AuditEntry, ConsistencyMode, PaginationParams, PartitionId, RelationshipTuple, Revision,
+    SubjectId,
 };
 use chrono::{DateTime, Days, Utc};
 use serde::{Deserialize, Serialize};
@@ -76,15 +77,23 @@ impl SignedExport {
 
         // Verify Ed25519 signature
         let pub_key = ed25519_dalek::VerifyingKey::from_bytes(
-            public_key.try_into().map_err(|_| "invalid public key length".to_string())?
-        ).map_err(|e| format!("invalid public key: {e}"))?;
+            public_key
+                .try_into()
+                .map_err(|_| "invalid public key length".to_string())?,
+        )
+        .map_err(|e| format!("invalid public key: {e}"))?;
 
-        Ok(pub_key.verify_strict(
-            &computed_hash.as_bytes(),
-            &ed25519_dalek::Signature::from_bytes(
-                self.signature.as_slice().try_into().map_err(|_| "invalid signature length".to_string())?
-            ),
-        ).is_ok())
+        Ok(pub_key
+            .verify_strict(
+                &computed_hash.as_bytes(),
+                &ed25519_dalek::Signature::from_bytes(
+                    self.signature
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| "invalid signature length".to_string())?,
+                ),
+            )
+            .is_ok())
     }
 }
 
@@ -106,8 +115,17 @@ impl<'a> GdprManager<'a> {
         }
     }
 
-    pub fn new_with_config(engine: &'a GraphEngine, partition_id: PartitionId, config: GdprConfig) -> Self {
-        Self { engine, partition_id, config, signing_key: None }
+    pub fn new_with_config(
+        engine: &'a GraphEngine,
+        partition_id: PartitionId,
+        config: GdprConfig,
+    ) -> Self {
+        Self {
+            engine,
+            partition_id,
+            config,
+            signing_key: None,
+        }
     }
 
     pub fn config(&self) -> &GdprConfig {
@@ -168,20 +186,28 @@ impl<'a> GdprManager<'a> {
     /// Returns active tuples and audit entries for the given subject.
     pub fn export_subject_data(&self, subject: &SubjectId) -> AegisResult<SubjectDataExport> {
         let revision = self.engine.storage().current_revision(&self.partition_id)?;
-        let active_tuples = self.engine.storage().list_by_subject(&self.partition_id, subject, None, &ConsistencyMode::MinimizeLatency)?;
+        let active_tuples = self.engine.storage().list_by_subject(
+            &self.partition_id,
+            subject,
+            None,
+            &ConsistencyMode::MinimizeLatency,
+        )?;
 
         // Query audit entries in pages to avoid OOM, filter by subject
         const PAGE_SIZE: u64 = 1000;
         let mut audit_entries = Vec::new();
         let mut cursor: Option<crate::types::PaginationCursor> = None;
         loop {
-            let page = self
-                .engine
-                .storage()
-                .query_audit(&self.partition_id, None, None, None, &PaginationParams {
+            let page = self.engine.storage().query_audit(
+                &self.partition_id,
+                None,
+                None,
+                None,
+                &PaginationParams {
                     limit: PAGE_SIZE,
                     cursor,
-                })?;
+                },
+            )?;
             let count_before = audit_entries.len();
             audit_entries.extend(page.into_iter().filter(|e| e.subject == subject.as_str()));
             if audit_entries.len() - count_before < PAGE_SIZE as usize {
@@ -225,18 +251,19 @@ impl<'a> GdprManager<'a> {
     ///
     /// Removes all tuples and audit entries involving the subject.
     pub fn right_to_erasure(&self, subject: &SubjectId) -> AegisResult<()> {
-        self.engine.storage().delete_subject(&self.partition_id, subject)?;
+        self.engine
+            .storage()
+            .delete_subject(&self.partition_id, subject)?;
         Ok(())
     }
 
     fn delete_events_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
-        self.engine.storage().delete_events_before(&self.partition_id, cutoff)
+        self.engine
+            .storage()
+            .delete_events_before(&self.partition_id, cutoff)
     }
 
-    fn delete_soft_deleted_tuples_before(
-        &self,
-        cutoff: DateTime<Utc>,
-    ) -> AegisResult<usize> {
+    fn delete_soft_deleted_tuples_before(&self, cutoff: DateTime<Utc>) -> AegisResult<usize> {
         self.engine
             .storage()
             .delete_soft_deleted_tuples_before(&self.partition_id, cutoff)
@@ -255,9 +282,9 @@ impl<'a> GdprManager<'a> {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+    use crate::storage::StorageBackend;
     #[cfg(feature = "sqlite")]
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
-    use crate::storage::StorageBackend;
     use crate::types::*;
 
     fn make_engine_and_partition() -> (GraphEngine, PartitionId) {
@@ -360,7 +387,12 @@ mod tests {
 
         let tuples = engine
             .storage()
-            .list_by_subject(&partition_id, &subject, None, &ConsistencyMode::MinimizeLatency)
+            .list_by_subject(
+                &partition_id,
+                &subject,
+                None,
+                &ConsistencyMode::MinimizeLatency,
+            )
             .unwrap();
         assert_eq!(tuples.len(), 0);
     }
@@ -417,7 +449,10 @@ mod tests {
         assert_eq!(export_alice.active_tuples.len(), 0);
 
         // Bob now has the tuple
-        let bob_tuples = engine.storage().list_by_subject(&partition_id, &bob, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let bob_tuples = engine
+            .storage()
+            .list_by_subject(&partition_id, &bob, None, &ConsistencyMode::MinimizeLatency)
+            .unwrap();
         assert_eq!(bob_tuples.len(), 1);
         assert_eq!(bob_tuples[0].object.as_str(), "repo:fluxbus");
         assert_eq!(bob_tuples[0].relation.as_str(), "owner");
@@ -520,7 +555,15 @@ mod tests {
             .unwrap();
         assert!(result.revision.as_u64() > 0);
 
-        let tuples = engine.storage().list_by_subject(&partition_id, &subject, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let tuples = engine
+            .storage()
+            .list_by_subject(
+                &partition_id,
+                &subject,
+                None,
+                &ConsistencyMode::MinimizeLatency,
+            )
+            .unwrap();
         assert_eq!(tuples.len(), 0);
     }
 

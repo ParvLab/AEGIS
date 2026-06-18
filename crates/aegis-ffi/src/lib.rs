@@ -1,12 +1,12 @@
 use std::ffi::{CStr, CString};
 use std::panic::{self, AssertUnwindSafe};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
+use aegis_core::engine::GraphEngine;
 use aegis_core::engine::hooks;
 use aegis_core::engine::ratelimit::{RateLimitConfig, TokenBucketRateLimiter};
 use aegis_core::engine::watch::{WatchEventType, WatchFilter, WatchSubscription};
-use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::{StorageBackend, StorageTransaction};
@@ -42,7 +42,11 @@ pub struct AegisHealthResult {
 
 // ── Engine lifecycle ──
 
-fn create_engine_base(path: &str, yaml: &str, config_json: *const libc::c_char) -> Result<*mut AegisEngine, String> {
+fn create_engine_base(
+    path: &str,
+    yaml: &str,
+    config_json: *const libc::c_char,
+) -> Result<*mut AegisEngine, String> {
     let mut cfg = SqliteConfig {
         path: path.to_string(),
         max_readers: 4,
@@ -63,10 +67,18 @@ fn create_engine_base(path: &str, yaml: &str, config_json: *const libc::c_char) 
             mmap_size: Option<u64>,
         }
         if let Ok(overrides) = serde_json::from_str::<CfgOverride>(json_str) {
-            if let Some(v) = overrides.max_readers { cfg.max_readers = v; }
-            if let Some(v) = overrides.busy_timeout_ms { cfg.busy_timeout_ms = v; }
-            if let Some(v) = overrides.wal_mode { cfg.wal_mode = v; }
-            if let Some(v) = overrides.mmap_size { cfg.mmap_size = v; }
+            if let Some(v) = overrides.max_readers {
+                cfg.max_readers = v;
+            }
+            if let Some(v) = overrides.busy_timeout_ms {
+                cfg.busy_timeout_ms = v;
+            }
+            if let Some(v) = overrides.wal_mode {
+                cfg.wal_mode = v;
+            }
+            if let Some(v) = overrides.mmap_size {
+                cfg.mmap_size = v;
+            }
         }
     }
 
@@ -163,30 +175,32 @@ pub extern "C" fn aegis_engine_check(
                 allowed: false,
                 revision: 0,
                 error: err,
-            }
+            };
         }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisCheckResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let permission_str = c_str_to_str(permission)?;
-        let resource_str = c_str_to_str(resource)?;
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisCheckResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let permission_str = c_str_to_str(permission)?;
+            let resource_str = c_str_to_str(resource)?;
 
-        let subject_id =
-            SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let resource_id =
-            ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
 
-        let result = eng
-            .check(&subject_id, &permission_str, &resource_id, None)
-            .map_err(|e| error_string(&e.to_string()))?;
+            let result = eng
+                .check(&subject_id, &permission_str, &resource_id, None)
+                .map_err(|e| error_string(&e.to_string()))?;
 
-        Ok(AegisCheckResult {
-            allowed: result.allowed,
-            revision: result.revision.as_u64(),
-            error: std::ptr::null_mut(),
-        })
-    })) {
+            Ok(AegisCheckResult {
+                allowed: result.allowed,
+                revision: result.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
         Ok(Err(err)) => AegisCheckResult {
             allowed: false,
@@ -221,33 +235,35 @@ pub extern "C" fn aegis_engine_write(
             return AegisWriteResult {
                 revision: 0,
                 error: err,
-            }
+            };
         }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisWriteResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let relation_str = c_str_to_str(relation)?;
-        let resource_str = c_str_to_str(resource)?;
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisWriteResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let relation_str = c_str_to_str(relation)?;
+            let resource_str = c_str_to_str(resource)?;
 
-        let subject_id =
-            SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let relation_id =
-            Relation::new(&relation_str).map_err(|e| error_string(&e.to_string()))?;
-        let resource_id =
-            ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let relation_id =
+                Relation::new(&relation_str).map_err(|e| error_string(&e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
 
-        let tuple = RelationshipTuple::new(subject_id, relation_id, resource_id);
+            let tuple = RelationshipTuple::new(subject_id, relation_id, resource_id);
 
-        let revision_token = eng
-            .write(&tuple)
-            .map_err(|e| error_string(&e.to_string()))?;
+            let revision_token = eng
+                .write(&tuple)
+                .map_err(|e| error_string(&e.to_string()))?;
 
-        Ok(AegisWriteResult {
-            revision: revision_token.revision.as_u64(),
-            error: std::ptr::null_mut(),
-        })
-    })) {
+            Ok(AegisWriteResult {
+                revision: revision_token.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
         Ok(Err(err)) => AegisWriteResult {
             revision: 0,
@@ -280,37 +296,37 @@ pub extern "C" fn aegis_engine_delete(
             return AegisWriteResult {
                 revision: 0,
                 error: err,
-            }
+            };
         }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisWriteResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let relation_str = c_str_to_str(relation)?;
-        let resource_str = c_str_to_str(resource)?;
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisWriteResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let relation_str = c_str_to_str(relation)?;
+            let resource_str = c_str_to_str(resource)?;
 
-        let subject_id =
-            SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let relation_id =
-            Relation::new(&relation_str).map_err(|e| error_string(&e.to_string()))?;
-        let resource_id =
-            ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let relation_id =
+                Relation::new(&relation_str).map_err(|e| error_string(&e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
 
-        let key = TupleKey {
-            subject: subject_id,
-            relation: relation_id,
-            object: resource_id,
-        };
+            let key = TupleKey {
+                subject: subject_id,
+                relation: relation_id,
+                object: resource_id,
+            };
 
-        let revision_token = eng
-            .delete(&key)
-            .map_err(|e| error_string(&e.to_string()))?;
+            let revision_token = eng.delete(&key).map_err(|e| error_string(&e.to_string()))?;
 
-        Ok(AegisWriteResult {
-            revision: revision_token.revision.as_u64(),
-            error: std::ptr::null_mut(),
-        })
-    })) {
+            Ok(AegisWriteResult {
+                revision: revision_token.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
         Ok(Err(err)) => AegisWriteResult {
             revision: 0,
@@ -331,9 +347,7 @@ pub extern "C" fn aegis_engine_delete(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn aegis_engine_health(
-    engine: *mut AegisEngine,
-) -> AegisHealthResult {
+pub extern "C" fn aegis_engine_health(engine: *mut AegisEngine) -> AegisHealthResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
         Err(err) => {
@@ -342,7 +356,7 @@ pub extern "C" fn aegis_engine_health(
                 revision: 0,
                 schema_version: 0,
                 error: err,
-            }
+            };
         }
     };
 
@@ -428,29 +442,34 @@ pub extern "C" fn aegis_engine_explain(
                 resolved_via: std::ptr::null_mut(),
                 duration_ms: 0,
                 error: err,
-            }
+            };
         }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisExplainResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let permission_str = c_str_to_str(permission)?;
-        let resource_str = c_str_to_str(resource)?;
-        let subject_id = SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let resource_id = ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
-        let result = eng.explain(&subject_id, &permission_str, &resource_id, None)
-            .map_err(|e| error_string(&e.to_string()))?;
-        let trace_json = serde_json::to_string(&result.trace)
-            .map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisExplainResult {
-            allowed: result.allowed,
-            revision: result.revision.as_u64(),
-            trace_json: error_string(&trace_json),
-            resolved_via: error_string(&result.resolved_via),
-            duration_ms: result.duration_ms as u64,
-            error: std::ptr::null_mut(),
-        })
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisExplainResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let permission_str = c_str_to_str(permission)?;
+            let resource_str = c_str_to_str(resource)?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
+            let result = eng
+                .explain(&subject_id, &permission_str, &resource_id, None)
+                .map_err(|e| error_string(&e.to_string()))?;
+            let trace_json =
+                serde_json::to_string(&result.trace).map_err(|e| error_string(&e.to_string()))?;
+            Ok(AegisExplainResult {
+                allowed: result.allowed,
+                revision: result.revision.as_u64(),
+                trace_json: error_string(&trace_json),
+                resolved_via: error_string(&result.resolved_via),
+                duration_ms: result.duration_ms as u64,
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
         Ok(Err(err)) => AegisExplainResult {
             allowed: false,
@@ -461,7 +480,9 @@ pub extern "C" fn aegis_engine_explain(
             error: err,
         },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
             AegisExplainResult {
@@ -486,35 +507,52 @@ pub extern "C" fn aegis_engine_list_by_object(
 ) -> AegisListResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisListResult { tuples_json: std::ptr::null_mut(), error: err },
+        Err(err) => {
+            return AegisListResult {
+                tuples_json: std::ptr::null_mut(),
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisListResult, *mut libc::c_char> {
-        let object_str = c_str_to_str(object)?;
-        let object_id = ResourceId::new(&object_str).map_err(|e| error_string(&e.to_string()))?;
-        let rel = if relation.is_null() {
-            None
-        } else {
-            let rel_str = c_str_to_str(relation)?;
-            Some(Relation::new(&rel_str).map_err(|e| error_string(&e.to_string()))?)
-        };
-        let tuples = eng.list_by_object(&object_id, rel.as_ref(), None)
-            .map_err(|e| error_string(&e.to_string()))?;
-        let json = serde_json::to_string(&tuples.iter().map(|t| {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisListResult, *mut libc::c_char> {
+            let object_str = c_str_to_str(object)?;
+            let object_id =
+                ResourceId::new(&object_str).map_err(|e| error_string(&e.to_string()))?;
+            let rel = if relation.is_null() {
+                None
+            } else {
+                let rel_str = c_str_to_str(relation)?;
+                Some(Relation::new(&rel_str).map_err(|e| error_string(&e.to_string()))?)
+            };
+            let tuples = eng
+                .list_by_object(&object_id, rel.as_ref(), None)
+                .map_err(|e| error_string(&e.to_string()))?;
+            let json = serde_json::to_string(&tuples.iter().map(|t| {
             serde_json::json!({"subject": t.subject.as_str(), "relation": t.relation.as_str(), "object": t.object.as_str()})
         }).collect::<Vec<_>>()).map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisListResult {
-            tuples_json: error_string(&json),
-            error: std::ptr::null_mut(),
-        })
-    })) {
+            Ok(AegisListResult {
+                tuples_json: error_string(&json),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisListResult { tuples_json: std::ptr::null_mut(), error: err },
+        Ok(Err(err)) => AegisListResult {
+            tuples_json: std::ptr::null_mut(),
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisListResult { tuples_json: std::ptr::null_mut(), error: error_string(&msg) }
+            AegisListResult {
+                tuples_json: std::ptr::null_mut(),
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -529,35 +567,52 @@ pub extern "C" fn aegis_engine_list_by_subject(
 ) -> AegisListResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisListResult { tuples_json: std::ptr::null_mut(), error: err },
+        Err(err) => {
+            return AegisListResult {
+                tuples_json: std::ptr::null_mut(),
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisListResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let subject_id = SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let rel = if relation.is_null() {
-            None
-        } else {
-            let rel_str = c_str_to_str(relation)?;
-            Some(Relation::new(&rel_str).map_err(|e| error_string(&e.to_string()))?)
-        };
-        let tuples = eng.list_by_subject(&subject_id, rel.as_ref(), None)
-            .map_err(|e| error_string(&e.to_string()))?;
-        let json = serde_json::to_string(&tuples.iter().map(|t| {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisListResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let rel = if relation.is_null() {
+                None
+            } else {
+                let rel_str = c_str_to_str(relation)?;
+                Some(Relation::new(&rel_str).map_err(|e| error_string(&e.to_string()))?)
+            };
+            let tuples = eng
+                .list_by_subject(&subject_id, rel.as_ref(), None)
+                .map_err(|e| error_string(&e.to_string()))?;
+            let json = serde_json::to_string(&tuples.iter().map(|t| {
             serde_json::json!({"subject": t.subject.as_str(), "relation": t.relation.as_str(), "object": t.object.as_str()})
         }).collect::<Vec<_>>()).map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisListResult {
-            tuples_json: error_string(&json),
-            error: std::ptr::null_mut(),
-        })
-    })) {
+            Ok(AegisListResult {
+                tuples_json: error_string(&json),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisListResult { tuples_json: std::ptr::null_mut(), error: err },
+        Ok(Err(err)) => AegisListResult {
+            tuples_json: std::ptr::null_mut(),
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisListResult { tuples_json: std::ptr::null_mut(), error: error_string(&msg) }
+            AegisListResult {
+                tuples_json: std::ptr::null_mut(),
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -571,34 +626,60 @@ pub extern "C" fn aegis_engine_write_batch(
 ) -> AegisWriteResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisWriteResult { revision: 0, error: err },
+        Err(err) => {
+            return AegisWriteResult {
+                revision: 0,
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisWriteResult, *mut libc::c_char> {
-        let json_str = c_str_to_str(tuples_json)?;
-        let raw: Vec<serde_json::Value> = serde_json::from_str(&json_str)
-            .map_err(|e| error_string(&e.to_string()))?;
-        let mut tuples = Vec::new();
-        for item in raw {
-            let subject = item["subject"].as_str().ok_or_else(|| error_string("missing subject"))?;
-            let relation = item["relation"].as_str().ok_or_else(|| error_string("missing relation"))?;
-            let object = item["object"].as_str().ok_or_else(|| error_string("missing object"))?;
-            tuples.push(RelationshipTuple::new(
-                SubjectId::new(subject).map_err(|e| error_string(&e.to_string()))?,
-                Relation::new(relation).map_err(|e| error_string(&e.to_string()))?,
-                ResourceId::new(object).map_err(|e| error_string(&e.to_string()))?,
-            ));
-        }
-        let rev = eng.write_batch(&tuples).map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisWriteResult { revision: rev.revision.as_u64(), error: std::ptr::null_mut() })
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisWriteResult, *mut libc::c_char> {
+            let json_str = c_str_to_str(tuples_json)?;
+            let raw: Vec<serde_json::Value> =
+                serde_json::from_str(&json_str).map_err(|e| error_string(&e.to_string()))?;
+            let mut tuples = Vec::new();
+            for item in raw {
+                let subject = item["subject"]
+                    .as_str()
+                    .ok_or_else(|| error_string("missing subject"))?;
+                let relation = item["relation"]
+                    .as_str()
+                    .ok_or_else(|| error_string("missing relation"))?;
+                let object = item["object"]
+                    .as_str()
+                    .ok_or_else(|| error_string("missing object"))?;
+                tuples.push(RelationshipTuple::new(
+                    SubjectId::new(subject).map_err(|e| error_string(&e.to_string()))?,
+                    Relation::new(relation).map_err(|e| error_string(&e.to_string()))?,
+                    ResourceId::new(object).map_err(|e| error_string(&e.to_string()))?,
+                ));
+            }
+            let rev = eng
+                .write_batch(&tuples)
+                .map_err(|e| error_string(&e.to_string()))?;
+            Ok(AegisWriteResult {
+                revision: rev.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisWriteResult { revision: 0, error: err },
+        Ok(Err(err)) => AegisWriteResult {
+            revision: 0,
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisWriteResult { revision: 0, error: error_string(&msg) }
+            AegisWriteResult {
+                revision: 0,
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -615,10 +696,13 @@ pub extern "C" fn aegis_engine_migrate(
         Err(err) => return err,
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<*mut libc::c_char, *mut libc::c_char> {
-        eng.migrate(target_version as u32).map_err(|e| error_string(&e.to_string()))?;
-        Ok(std::ptr::null_mut())
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<*mut libc::c_char, *mut libc::c_char> {
+            eng.migrate(target_version as u32)
+                .map_err(|e| error_string(&e.to_string()))?;
+            Ok(std::ptr::null_mut())
+        },
+    )) {
         Ok(Ok(ptr)) => ptr,
         Ok(Err(err)) => err,
         Err(_) => error_string("panic during migration"),
@@ -634,22 +718,43 @@ pub extern "C" fn aegis_engine_delete_object(
 ) -> AegisWriteResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisWriteResult { revision: 0, error: err },
+        Err(err) => {
+            return AegisWriteResult {
+                revision: 0,
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisWriteResult, *mut libc::c_char> {
-        let object_str = c_str_to_str(object)?;
-        let object_id = ResourceId::new(&object_str).map_err(|e| error_string(&e.to_string()))?;
-        let rev = eng.delete_object(&object_id).map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisWriteResult { revision: rev.revision.as_u64(), error: std::ptr::null_mut() })
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisWriteResult, *mut libc::c_char> {
+            let object_str = c_str_to_str(object)?;
+            let object_id =
+                ResourceId::new(&object_str).map_err(|e| error_string(&e.to_string()))?;
+            let rev = eng
+                .delete_object(&object_id)
+                .map_err(|e| error_string(&e.to_string()))?;
+            Ok(AegisWriteResult {
+                revision: rev.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisWriteResult { revision: 0, error: err },
+        Ok(Err(err)) => AegisWriteResult {
+            revision: 0,
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisWriteResult { revision: 0, error: error_string(&msg) }
+            AegisWriteResult {
+                revision: 0,
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -666,17 +771,20 @@ pub extern "C" fn aegis_engine_check_schema(
         Err(err) => return err,
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<*mut libc::c_char, *mut libc::c_char> {
-        let yaml_str = c_str_to_str(schema_yaml)?;
-        let new_schema = parse_schema(&yaml_str).map_err(|e| error_string(&e.to_string()))?;
-        let report = eng.check_schema(&new_schema);
-        let json = serde_json::to_string(&serde_json::json!({
-            "compatible": report.compatible,
-            "warnings": report.warnings,
-            "breaking": report.breaking,
-        })).map_err(|e| error_string(&e.to_string()))?;
-        Ok(error_string(&json))
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<*mut libc::c_char, *mut libc::c_char> {
+            let yaml_str = c_str_to_str(schema_yaml)?;
+            let new_schema = parse_schema(&yaml_str).map_err(|e| error_string(&e.to_string()))?;
+            let report = eng.check_schema(&new_schema);
+            let json = serde_json::to_string(&serde_json::json!({
+                "compatible": report.compatible,
+                "warnings": report.warnings,
+                "breaking": report.breaking,
+            }))
+            .map_err(|e| error_string(&e.to_string()))?;
+            Ok(error_string(&json))
+        },
+    )) {
         Ok(Ok(ptr)) => ptr,
         Ok(Err(err)) => err,
         Err(_) => error_string("panic during check_schema"),
@@ -703,26 +811,51 @@ pub extern "C" fn aegis_engine_check_dry_run(
 ) -> AegisCheckResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisCheckResult { allowed: false, revision: 0, error: err },
+        Err(err) => {
+            return AegisCheckResult {
+                allowed: false,
+                revision: 0,
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisCheckResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let permission_str = c_str_to_str(permission)?;
-        let resource_str = c_str_to_str(resource)?;
-        let subject_id = SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let resource_id = ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
-        let result = eng.check_dry_run(&subject_id, &permission_str, &resource_id, None)
-            .map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisCheckResult { allowed: result.allowed, revision: result.revision.as_u64(), error: std::ptr::null_mut() })
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisCheckResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let permission_str = c_str_to_str(permission)?;
+            let resource_str = c_str_to_str(resource)?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
+            let result = eng
+                .check_dry_run(&subject_id, &permission_str, &resource_id, None)
+                .map_err(|e| error_string(&e.to_string()))?;
+            Ok(AegisCheckResult {
+                allowed: result.allowed,
+                revision: result.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisCheckResult { allowed: false, revision: 0, error: err },
+        Ok(Err(err)) => AegisCheckResult {
+            allowed: false,
+            revision: 0,
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisCheckResult { allowed: false, revision: 0, error: error_string(&msg) }
+            AegisCheckResult {
+                allowed: false,
+                revision: 0,
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -739,27 +872,52 @@ pub extern "C" fn aegis_engine_check_ex(
 ) -> AegisCheckResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisCheckResult { allowed: false, revision: 0, error: err },
+        Err(err) => {
+            return AegisCheckResult {
+                allowed: false,
+                revision: 0,
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisCheckResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let permission_str = c_str_to_str(permission)?;
-        let resource_str = c_str_to_str(resource)?;
-        let subject_id = SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let resource_id = ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
-        let cm = c_consistency(consistency);
-        let result = eng.check(&subject_id, &permission_str, &resource_id, cm)
-            .map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisCheckResult { allowed: result.allowed, revision: result.revision.as_u64(), error: std::ptr::null_mut() })
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisCheckResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let permission_str = c_str_to_str(permission)?;
+            let resource_str = c_str_to_str(resource)?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
+            let cm = c_consistency(consistency);
+            let result = eng
+                .check(&subject_id, &permission_str, &resource_id, cm)
+                .map_err(|e| error_string(&e.to_string()))?;
+            Ok(AegisCheckResult {
+                allowed: result.allowed,
+                revision: result.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisCheckResult { allowed: false, revision: 0, error: err },
+        Ok(Err(err)) => AegisCheckResult {
+            allowed: false,
+            revision: 0,
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisCheckResult { allowed: false, revision: 0, error: error_string(&msg) }
+            AegisCheckResult {
+                allowed: false,
+                revision: 0,
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -777,50 +935,75 @@ pub extern "C" fn aegis_engine_check_with_context(
 ) -> AegisCheckResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisCheckResult { allowed: false, revision: 0, error: err },
+        Err(err) => {
+            return AegisCheckResult {
+                allowed: false,
+                revision: 0,
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisCheckResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let permission_str = c_str_to_str(permission)?;
-        let resource_str = c_str_to_str(resource)?;
-        let subject_id = SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let resource_id = ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
-        let cm = c_consistency(consistency);
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisCheckResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let permission_str = c_str_to_str(permission)?;
+            let resource_str = c_str_to_str(resource)?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
+            let cm = c_consistency(consistency);
 
-        let ctx = if context_json.is_null() {
-            Default::default()
-        } else {
-            let json_str = c_str_to_str(context_json)?;
-            #[derive(serde::Deserialize)]
-            struct CtxJson {
-                #[serde(default)]
-                subject_meta: std::collections::HashMap<String, String>,
-                #[serde(default)]
-                resource_meta: std::collections::HashMap<String, String>,
-                #[serde(default)]
-                env: std::collections::HashMap<String, String>,
-            }
-            let parsed: CtxJson = serde_json::from_str(&json_str)
+            let ctx = if context_json.is_null() {
+                Default::default()
+            } else {
+                let json_str = c_str_to_str(context_json)?;
+                #[derive(serde::Deserialize)]
+                struct CtxJson {
+                    #[serde(default)]
+                    subject_meta: std::collections::HashMap<String, String>,
+                    #[serde(default)]
+                    resource_meta: std::collections::HashMap<String, String>,
+                    #[serde(default)]
+                    env: std::collections::HashMap<String, String>,
+                }
+                let parsed: CtxJson =
+                    serde_json::from_str(&json_str).map_err(|e| error_string(&e.to_string()))?;
+                aegis_core::engine::condition::ConditionEvalContext {
+                    subject_meta: parsed.subject_meta,
+                    resource_meta: parsed.resource_meta,
+                    env: parsed.env,
+                }
+            };
+
+            let result = eng
+                .check_with_context(&subject_id, &permission_str, &resource_id, cm, ctx)
                 .map_err(|e| error_string(&e.to_string()))?;
-            aegis_core::engine::condition::ConditionEvalContext {
-                subject_meta: parsed.subject_meta,
-                resource_meta: parsed.resource_meta,
-                env: parsed.env,
-            }
-        };
-
-        let result = eng.check_with_context(&subject_id, &permission_str, &resource_id, cm, ctx)
-            .map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisCheckResult { allowed: result.allowed, revision: result.revision.as_u64(), error: std::ptr::null_mut() })
-    })) {
+            Ok(AegisCheckResult {
+                allowed: result.allowed,
+                revision: result.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisCheckResult { allowed: false, revision: 0, error: err },
+        Ok(Err(err)) => AegisCheckResult {
+            allowed: false,
+            revision: 0,
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisCheckResult { allowed: false, revision: 0, error: error_string(&msg) }
+            AegisCheckResult {
+                allowed: false,
+                revision: 0,
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -839,53 +1022,84 @@ pub extern "C" fn aegis_engine_write_ex(
 ) -> AegisWriteResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisWriteResult { revision: 0, error: err },
+        Err(err) => {
+            return AegisWriteResult {
+                revision: 0,
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisWriteResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let relation_str = c_str_to_str(relation)?;
-        let resource_str = c_str_to_str(resource)?;
-        let subject_id = SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let relation_id = Relation::new(&relation_str).map_err(|e| error_string(&e.to_string()))?;
-        let resource_id = ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisWriteResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let relation_str = c_str_to_str(relation)?;
+            let resource_str = c_str_to_str(resource)?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let relation_id =
+                Relation::new(&relation_str).map_err(|e| error_string(&e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
 
-        let condition_str = if condition.is_null() { None } else { Some(c_str_to_str(condition)?) };
-        let metadata = if metadata_json.is_null() {
-            None
-        } else {
-            let json_str = c_str_to_str(metadata_json)?;
-            Some(serde_json::from_str::<std::collections::HashMap<String, String>>(&json_str)
-                .map_err(|e| error_string(&e.to_string()))?)
-        };
-        let valid_until_dt = if valid_until.is_null() {
-            None
-        } else {
-            let s = c_str_to_str(valid_until)?;
-            Some(chrono::DateTime::parse_from_rfc3339(&s)
-                .map_err(|e| error_string(&e.to_string()))?
-                .with_timezone(&chrono::Utc))
-        };
+            let condition_str = if condition.is_null() {
+                None
+            } else {
+                Some(c_str_to_str(condition)?)
+            };
+            let metadata = if metadata_json.is_null() {
+                None
+            } else {
+                let json_str = c_str_to_str(metadata_json)?;
+                Some(
+                    serde_json::from_str::<std::collections::HashMap<String, String>>(&json_str)
+                        .map_err(|e| error_string(&e.to_string()))?,
+                )
+            };
+            let valid_until_dt = if valid_until.is_null() {
+                None
+            } else {
+                let s = c_str_to_str(valid_until)?;
+                Some(
+                    chrono::DateTime::parse_from_rfc3339(&s)
+                        .map_err(|e| error_string(&e.to_string()))?
+                        .with_timezone(&chrono::Utc),
+                )
+            };
 
-        let tuple = RelationshipTuple {
-            subject: subject_id,
-            relation: relation_id,
-            object: resource_id,
-            created_at: chrono::Utc::now(),
-            metadata,
-            valid_until: valid_until_dt,
-            condition: condition_str,
-        };
-        let rev = eng.write(&tuple).map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisWriteResult { revision: rev.revision.as_u64(), error: std::ptr::null_mut() })
-    })) {
+            let tuple = RelationshipTuple {
+                subject: subject_id,
+                relation: relation_id,
+                object: resource_id,
+                created_at: chrono::Utc::now(),
+                metadata,
+                valid_until: valid_until_dt,
+                condition: condition_str,
+            };
+            let rev = eng
+                .write(&tuple)
+                .map_err(|e| error_string(&e.to_string()))?;
+            Ok(AegisWriteResult {
+                revision: rev.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisWriteResult { revision: 0, error: err },
+        Ok(Err(err)) => AegisWriteResult {
+            revision: 0,
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisWriteResult { revision: 0, error: error_string(&msg) }
+            AegisWriteResult {
+                revision: 0,
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -901,27 +1115,54 @@ pub extern "C" fn aegis_engine_write_dry_run(
 ) -> AegisCheckResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisCheckResult { allowed: false, revision: 0, error: err },
+        Err(err) => {
+            return AegisCheckResult {
+                allowed: false,
+                revision: 0,
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisCheckResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let relation_str = c_str_to_str(relation)?;
-        let resource_str = c_str_to_str(resource)?;
-        let subject_id = SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let relation_id = Relation::new(&relation_str).map_err(|e| error_string(&e.to_string()))?;
-        let resource_id = ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
-        let tuple = RelationshipTuple::new(subject_id, relation_id, resource_id);
-        let rev = eng.write_dry_run(&tuple).map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisCheckResult { allowed: false, revision: rev.revision.as_u64(), error: std::ptr::null_mut() })
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisCheckResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let relation_str = c_str_to_str(relation)?;
+            let resource_str = c_str_to_str(resource)?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let relation_id =
+                Relation::new(&relation_str).map_err(|e| error_string(&e.to_string()))?;
+            let resource_id =
+                ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?;
+            let tuple = RelationshipTuple::new(subject_id, relation_id, resource_id);
+            let rev = eng
+                .write_dry_run(&tuple)
+                .map_err(|e| error_string(&e.to_string()))?;
+            Ok(AegisCheckResult {
+                allowed: false,
+                revision: rev.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisCheckResult { allowed: false, revision: 0, error: err },
+        Ok(Err(err)) => AegisCheckResult {
+            allowed: false,
+            revision: 0,
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisCheckResult { allowed: false, revision: 0, error: error_string(&msg) }
+            AegisCheckResult {
+                allowed: false,
+                revision: 0,
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -935,26 +1176,54 @@ pub extern "C" fn aegis_engine_export_subject(
 ) -> AegisExportResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisExportResult { tuples_json: std::ptr::null_mut(), export_revision: 0, error: err },
+        Err(err) => {
+            return AegisExportResult {
+                tuples_json: std::ptr::null_mut(),
+                export_revision: 0,
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisExportResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let subject_id = SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let tuples = eng.export_subject(&subject_id).map_err(|e| error_string(&e.to_string()))?;
-        let rev = eng.storage().current_revision(&PartitionId::default()).map_err(|e| error_string(&e.to_string()))?;
-        let json = serde_json::to_string(&tuples.iter().map(|t| {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisExportResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let tuples = eng
+                .export_subject(&subject_id)
+                .map_err(|e| error_string(&e.to_string()))?;
+            let rev = eng
+                .storage()
+                .current_revision(&PartitionId::default())
+                .map_err(|e| error_string(&e.to_string()))?;
+            let json = serde_json::to_string(&tuples.iter().map(|t| {
             serde_json::json!({"subject": t.subject.as_str(), "relation": t.relation.as_str(), "object": t.object.as_str()})
         }).collect::<Vec<_>>()).map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisExportResult { tuples_json: error_string(&json), export_revision: rev.as_u64(), error: std::ptr::null_mut() })
-    })) {
+            Ok(AegisExportResult {
+                tuples_json: error_string(&json),
+                export_revision: rev.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisExportResult { tuples_json: std::ptr::null_mut(), export_revision: 0, error: err },
+        Ok(Err(err)) => AegisExportResult {
+            tuples_json: std::ptr::null_mut(),
+            export_revision: 0,
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisExportResult { tuples_json: std::ptr::null_mut(), export_revision: 0, error: error_string(&msg) }
+            AegisExportResult {
+                tuples_json: std::ptr::null_mut(),
+                export_revision: 0,
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -970,30 +1239,50 @@ pub extern "C" fn aegis_engine_delete_subject_with_policy(
 ) -> AegisWriteResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisWriteResult { revision: 0, error: err },
+        Err(err) => {
+            return AegisWriteResult {
+                revision: 0,
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisWriteResult, *mut libc::c_char> {
-        let subject_str = c_str_to_str(subject)?;
-        let policy_str = c_str_to_str(policy)?;
-        let subject_id = SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
-        let transfer = if transfer_to_subject.is_null() {
-            None
-        } else {
-            let t_str = c_str_to_str(transfer_to_subject)?;
-            Some(SubjectId::new(&t_str).map_err(|e| error_string(&e.to_string()))?)
-        };
-        let rev = eng.delete_subject_with_policy(&subject_id, &policy_str, transfer.as_ref())
-            .map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisWriteResult { revision: rev.revision.as_u64(), error: std::ptr::null_mut() })
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisWriteResult, *mut libc::c_char> {
+            let subject_str = c_str_to_str(subject)?;
+            let policy_str = c_str_to_str(policy)?;
+            let subject_id =
+                SubjectId::new(&subject_str).map_err(|e| error_string(&e.to_string()))?;
+            let transfer = if transfer_to_subject.is_null() {
+                None
+            } else {
+                let t_str = c_str_to_str(transfer_to_subject)?;
+                Some(SubjectId::new(&t_str).map_err(|e| error_string(&e.to_string()))?)
+            };
+            let rev = eng
+                .delete_subject_with_policy(&subject_id, &policy_str, transfer.as_ref())
+                .map_err(|e| error_string(&e.to_string()))?;
+            Ok(AegisWriteResult {
+                revision: rev.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisWriteResult { revision: 0, error: err },
+        Ok(Err(err)) => AegisWriteResult {
+            revision: 0,
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisWriteResult { revision: 0, error: error_string(&msg) }
+            AegisWriteResult {
+                revision: 0,
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -1010,37 +1299,74 @@ pub extern "C" fn aegis_engine_query_audit(
 ) -> AegisAuditResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisAuditResult { entries_json: std::ptr::null_mut(), error: err },
+        Err(err) => {
+            return AegisAuditResult {
+                entries_json: std::ptr::null_mut(),
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisAuditResult, *mut libc::c_char> {
-        let object_str = c_str_to_str(object)?;
-        let object_id = ResourceId::new(&object_str).map_err(|e| error_string(&e.to_string()))?;
-        let from = if from_revision < 0 { None } else { Some(Revision::from(from_revision as u64)) };
-        let to = if to_revision < 0 { None } else { Some(Revision::from(to_revision as u64)) };
-        let pp = PaginationParams { limit, cursor: None };
-        let entries = eng.query_audit(&object_id, from, to, &pp)
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisAuditResult, *mut libc::c_char> {
+            let object_str = c_str_to_str(object)?;
+            let object_id =
+                ResourceId::new(&object_str).map_err(|e| error_string(&e.to_string()))?;
+            let from = if from_revision < 0 {
+                None
+            } else {
+                Some(Revision::from(from_revision as u64))
+            };
+            let to = if to_revision < 0 {
+                None
+            } else {
+                Some(Revision::from(to_revision as u64))
+            };
+            let pp = PaginationParams {
+                limit,
+                cursor: None,
+            };
+            let entries = eng
+                .query_audit(&object_id, from, to, &pp)
+                .map_err(|e| error_string(&e.to_string()))?;
+            let json = serde_json::to_string(
+                &entries
+                    .iter()
+                    .map(|e| {
+                        serde_json::json!({
+                            "revision": e.revision.as_u64(),
+                            "action": format!("{:?}", e.action).to_lowercase(),
+                            "subject": e.subject,
+                            "relation": e.relation,
+                            "object": e.object,
+                            "timestamp": e.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+                            "identity": e.identity,
+                        })
+                    })
+                    .collect::<Vec<_>>(),
+            )
             .map_err(|e| error_string(&e.to_string()))?;
-        let json = serde_json::to_string(&entries.iter().map(|e| {
-            serde_json::json!({
-                "revision": e.revision.as_u64(),
-                "action": format!("{:?}", e.action).to_lowercase(),
-                "subject": e.subject,
-                "relation": e.relation,
-                "object": e.object,
-                "timestamp": e.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-                "identity": e.identity,
+            Ok(AegisAuditResult {
+                entries_json: error_string(&json),
+                error: std::ptr::null_mut(),
             })
-        }).collect::<Vec<_>>()).map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisAuditResult { entries_json: error_string(&json), error: std::ptr::null_mut() })
-    })) {
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisAuditResult { entries_json: std::ptr::null_mut(), error: err },
+        Ok(Err(err)) => AegisAuditResult {
+            entries_json: std::ptr::null_mut(),
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisAuditResult { entries_json: std::ptr::null_mut(), error: error_string(&msg) }
+            AegisAuditResult {
+                entries_json: std::ptr::null_mut(),
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -1055,28 +1381,49 @@ pub extern "C" fn aegis_engine_list_by_relation(
 ) -> AegisListResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisListResult { tuples_json: std::ptr::null_mut(), error: err },
+        Err(err) => {
+            return AegisListResult {
+                tuples_json: std::ptr::null_mut(),
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisListResult, *mut libc::c_char> {
-        let object_str = c_str_to_str(object)?;
-        let relation_str = c_str_to_str(relation)?;
-        let object_id = ResourceId::new(&object_str).map_err(|e| error_string(&e.to_string()))?;
-        let relation_id = Relation::new(&relation_str).map_err(|e| error_string(&e.to_string()))?;
-        let tuples = eng.list_by_relation(&object_id, &relation_id)
-            .map_err(|e| error_string(&e.to_string()))?;
-        let json = serde_json::to_string(&tuples.iter().map(|t| {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisListResult, *mut libc::c_char> {
+            let object_str = c_str_to_str(object)?;
+            let relation_str = c_str_to_str(relation)?;
+            let object_id =
+                ResourceId::new(&object_str).map_err(|e| error_string(&e.to_string()))?;
+            let relation_id =
+                Relation::new(&relation_str).map_err(|e| error_string(&e.to_string()))?;
+            let tuples = eng
+                .list_by_relation(&object_id, &relation_id)
+                .map_err(|e| error_string(&e.to_string()))?;
+            let json = serde_json::to_string(&tuples.iter().map(|t| {
             serde_json::json!({"subject": t.subject.as_str(), "relation": t.relation.as_str(), "object": t.object.as_str()})
         }).collect::<Vec<_>>()).map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisListResult { tuples_json: error_string(&json), error: std::ptr::null_mut() })
-    })) {
+            Ok(AegisListResult {
+                tuples_json: error_string(&json),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisListResult { tuples_json: std::ptr::null_mut(), error: err },
+        Ok(Err(err)) => AegisListResult {
+            tuples_json: std::ptr::null_mut(),
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisListResult { tuples_json: std::ptr::null_mut(), error: error_string(&msg) }
+            AegisListResult {
+                tuples_json: std::ptr::null_mut(),
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -1092,60 +1439,89 @@ pub extern "C" fn aegis_engine_query(
 ) -> AegisQueryResult {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
-        Err(err) => return AegisQueryResult { tuples_json: std::ptr::null_mut(), next_cursor: 0, revision: 0, error: err },
+        Err(err) => {
+            return AegisQueryResult {
+                tuples_json: std::ptr::null_mut(),
+                next_cursor: 0,
+                revision: 0,
+                error: err,
+            };
+        }
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisQueryResult, *mut libc::c_char> {
-        let json_str = c_str_to_str(filter_json)?;
-        #[derive(serde::Deserialize)]
-        struct FilterJson {
-            subject_type: Option<String>,
-            relation: Option<String>,
-            object_type: Option<String>,
-            metadata_key: Option<String>,
-            metadata_value: Option<String>,
-        }
-        let f: FilterJson = serde_json::from_str(&json_str)
-            .map_err(|e| error_string(&e.to_string()))?;
-        let relation = match f.relation {
-            Some(r) => Some(Relation::new(&r).map_err(|e| error_string(&e.to_string()))?),
-            None => None,
-        };
-        let tf = aegis_core::storage::TupleFilter {
-            subject_type: f.subject_type,
-            relation,
-            object_type: f.object_type,
-            metadata_key: f.metadata_key,
-            metadata_value: f.metadata_value,
-            ..Default::default()
-        };
-        let current_rev = eng.storage().current_revision(&PartitionId::default())
-            .map_err(|e| error_string(&e.to_string()))?;
-        let pp = PaginationParams {
-            limit,
-            cursor: if cursor_offset > 0 {
-                Some(aegis_core::types::PaginationCursor { offset: cursor_offset, revision: current_rev })
-            } else { None },
-        };
-        let result = eng.query(&tf, &pp, None)
-            .map_err(|e| error_string(&e.to_string()))?;
-        let json = serde_json::to_string(&result.tuples.iter().map(|t| {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisQueryResult, *mut libc::c_char> {
+            let json_str = c_str_to_str(filter_json)?;
+            #[derive(serde::Deserialize)]
+            struct FilterJson {
+                subject_type: Option<String>,
+                relation: Option<String>,
+                object_type: Option<String>,
+                metadata_key: Option<String>,
+                metadata_value: Option<String>,
+            }
+            let f: FilterJson =
+                serde_json::from_str(&json_str).map_err(|e| error_string(&e.to_string()))?;
+            let relation = match f.relation {
+                Some(r) => Some(Relation::new(&r).map_err(|e| error_string(&e.to_string()))?),
+                None => None,
+            };
+            let tf = aegis_core::storage::TupleFilter {
+                subject_type: f.subject_type,
+                relation,
+                object_type: f.object_type,
+                metadata_key: f.metadata_key,
+                metadata_value: f.metadata_value,
+                ..Default::default()
+            };
+            let current_rev = eng
+                .storage()
+                .current_revision(&PartitionId::default())
+                .map_err(|e| error_string(&e.to_string()))?;
+            let pp = PaginationParams {
+                limit,
+                cursor: if cursor_offset > 0 {
+                    Some(aegis_core::types::PaginationCursor {
+                        offset: cursor_offset,
+                        revision: current_rev,
+                    })
+                } else {
+                    None
+                },
+            };
+            let result = eng
+                .query(&tf, &pp, None)
+                .map_err(|e| error_string(&e.to_string()))?;
+            let json = serde_json::to_string(&result.tuples.iter().map(|t| {
             serde_json::json!({"subject": t.subject.as_str(), "relation": t.relation.as_str(), "object": t.object.as_str()})
         }).collect::<Vec<_>>()).map_err(|e| error_string(&e.to_string()))?;
-        Ok(AegisQueryResult {
-            tuples_json: error_string(&json),
-            next_cursor: result.next_cursor.map(|c| c.offset).unwrap_or(0),
-            revision: result.revision.as_u64(),
-            error: std::ptr::null_mut(),
-        })
-    })) {
+            Ok(AegisQueryResult {
+                tuples_json: error_string(&json),
+                next_cursor: result.next_cursor.map(|c| c.offset).unwrap_or(0),
+                revision: result.revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    )) {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisQueryResult { tuples_json: std::ptr::null_mut(), next_cursor: 0, revision: 0, error: err },
+        Ok(Err(err)) => AegisQueryResult {
+            tuples_json: std::ptr::null_mut(),
+            next_cursor: 0,
+            revision: 0,
+            error: err,
+        },
         Err(panic) => {
-            let msg = panic.downcast_ref::<&str>().map(|s| s.to_string())
+            let msg = panic
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
                 .or_else(|| panic.downcast_ref::<String>().cloned())
                 .unwrap_or_else(|| "unknown panic".to_string());
-            AegisQueryResult { tuples_json: std::ptr::null_mut(), next_cursor: 0, revision: 0, error: error_string(&msg) }
+            AegisQueryResult {
+                tuples_json: std::ptr::null_mut(),
+                next_cursor: 0,
+                revision: 0,
+                error: error_string(&msg),
+            }
         }
     }
 }
@@ -1162,12 +1538,15 @@ pub extern "C" fn aegis_engine_reload_schema(
         Err(err) => return err,
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<*mut libc::c_char, *mut libc::c_char> {
-        let yaml_str = c_str_to_str(schema_yaml)?;
-        let new_schema = parse_schema(&yaml_str).map_err(|e| error_string(&e.to_string()))?;
-        eng.reload_schema(new_schema).map_err(|e| error_string(&e.to_string()))?;
-        Ok(std::ptr::null_mut())
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<*mut libc::c_char, *mut libc::c_char> {
+            let yaml_str = c_str_to_str(schema_yaml)?;
+            let new_schema = parse_schema(&yaml_str).map_err(|e| error_string(&e.to_string()))?;
+            eng.reload_schema(new_schema)
+                .map_err(|e| error_string(&e.to_string()))?;
+            Ok(std::ptr::null_mut())
+        },
+    )) {
         Ok(Ok(ptr)) => ptr,
         Ok(Err(err)) => err,
         Err(_) => error_string("panic during reload_schema"),
@@ -1177,18 +1556,18 @@ pub extern "C" fn aegis_engine_reload_schema(
 // ── Close ──
 
 #[unsafe(no_mangle)]
-pub extern "C" fn aegis_engine_close(
-    engine: *mut AegisEngine,
-) -> *mut libc::c_char {
+pub extern "C" fn aegis_engine_close(engine: *mut AegisEngine) -> *mut libc::c_char {
     let eng = match engine_from_ptr(engine) {
         Ok(e) => e,
         Err(err) => return err,
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<*mut libc::c_char, *mut libc::c_char> {
-        eng.close().map_err(|e| error_string(&e.to_string()))?;
-        Ok(std::ptr::null_mut())
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<*mut libc::c_char, *mut libc::c_char> {
+            eng.close().map_err(|e| error_string(&e.to_string()))?;
+            Ok(std::ptr::null_mut())
+        },
+    )) {
         Ok(Ok(ptr)) => ptr,
         Ok(Err(err)) => err,
         Err(_) => error_string("panic during close"),
@@ -1198,9 +1577,7 @@ pub extern "C" fn aegis_engine_close(
 // ── Is closed ──
 
 #[unsafe(no_mangle)]
-pub extern "C" fn aegis_engine_is_closed(
-    engine: *const AegisEngine,
-) -> bool {
+pub extern "C" fn aegis_engine_is_closed(engine: *const AegisEngine) -> bool {
     if engine.is_null() {
         return true;
     }
@@ -1220,33 +1597,49 @@ pub extern "C" fn aegis_engine_set_rate_limiter(
         Err(err) => return err,
     };
 
-    let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<*mut libc::c_char, *mut libc::c_char> {
-        let json_str = c_str_to_str(config_json)?;
-        #[derive(serde::Deserialize)]
-        struct RlConfigJson {
-            checks_per_second: Option<u32>,
-            check_burst: Option<u32>,
-            writes_per_second: Option<u32>,
-            write_burst: Option<u32>,
-            max_traversal_depth: Option<usize>,
-            max_traversal_visits: Option<usize>,
-            max_keys: Option<usize>,
-        }
-        let parsed: RlConfigJson = serde_json::from_str(&json_str)
-            .map_err(|e| error_string(&e.to_string()))?;
+    let result = panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<*mut libc::c_char, *mut libc::c_char> {
+            let json_str = c_str_to_str(config_json)?;
+            #[derive(serde::Deserialize)]
+            struct RlConfigJson {
+                checks_per_second: Option<u32>,
+                check_burst: Option<u32>,
+                writes_per_second: Option<u32>,
+                write_burst: Option<u32>,
+                max_traversal_depth: Option<usize>,
+                max_traversal_visits: Option<usize>,
+                max_keys: Option<usize>,
+            }
+            let parsed: RlConfigJson =
+                serde_json::from_str(&json_str).map_err(|e| error_string(&e.to_string()))?;
 
-        let mut cfg = RateLimitConfig::default();
-        if let Some(v) = parsed.checks_per_second { cfg.checks_per_second = v; }
-        if let Some(v) = parsed.check_burst { cfg.check_burst = v; }
-        if let Some(v) = parsed.writes_per_second { cfg.writes_per_second = v; }
-        if let Some(v) = parsed.write_burst { cfg.write_burst = v; }
-        if let Some(v) = parsed.max_traversal_depth { cfg.max_traversal_depth = v; }
-        if let Some(v) = parsed.max_traversal_visits { cfg.max_traversal_visits = v; }
-        if let Some(v) = parsed.max_keys { cfg.max_keys = v; }
+            let mut cfg = RateLimitConfig::default();
+            if let Some(v) = parsed.checks_per_second {
+                cfg.checks_per_second = v;
+            }
+            if let Some(v) = parsed.check_burst {
+                cfg.check_burst = v;
+            }
+            if let Some(v) = parsed.writes_per_second {
+                cfg.writes_per_second = v;
+            }
+            if let Some(v) = parsed.write_burst {
+                cfg.write_burst = v;
+            }
+            if let Some(v) = parsed.max_traversal_depth {
+                cfg.max_traversal_depth = v;
+            }
+            if let Some(v) = parsed.max_traversal_visits {
+                cfg.max_traversal_visits = v;
+            }
+            if let Some(v) = parsed.max_keys {
+                cfg.max_keys = v;
+            }
 
-        eng.set_rate_limiter(TokenBucketRateLimiter::new(cfg));
-        Ok(std::ptr::null_mut())
-    }));
+            eng.set_rate_limiter(TokenBucketRateLimiter::new(cfg));
+            Ok(std::ptr::null_mut())
+        },
+    ));
 
     match result {
         Ok(Ok(ptr)) => ptr,
@@ -1267,15 +1660,17 @@ pub extern "C" fn aegis_engine_set_actor(
         Err(err) => return err,
     };
 
-    match panic::catch_unwind(AssertUnwindSafe(|| -> Result<*mut libc::c_char, *mut libc::c_char> {
-        if actor.is_null() {
-            eng.set_actor(None);
-        } else {
-            let s = c_str_to_str(actor)?;
-            eng.set_actor(Some(&s));
-        }
-        Ok(std::ptr::null_mut())
-    })) {
+    match panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<*mut libc::c_char, *mut libc::c_char> {
+            if actor.is_null() {
+                eng.set_actor(None);
+            } else {
+                let s = c_str_to_str(actor)?;
+                eng.set_actor(Some(&s));
+            }
+            Ok(std::ptr::null_mut())
+        },
+    )) {
         Ok(Ok(ptr)) => ptr,
         Ok(Err(err)) => err,
         Err(_) => error_string("panic during set_actor"),
@@ -1283,9 +1678,7 @@ pub extern "C" fn aegis_engine_set_actor(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn aegis_engine_active_actor(
-    engine: *const AegisEngine,
-) -> *mut libc::c_char {
+pub extern "C" fn aegis_engine_active_actor(engine: *const AegisEngine) -> *mut libc::c_char {
     let eng = match engine_from_const_ptr(engine) {
         Ok(e) => e,
         Err(err) => return err,
@@ -1299,7 +1692,12 @@ pub extern "C" fn aegis_engine_active_actor(
 
 // ── Logger ──
 
-pub type AegisLogFn = unsafe extern "C" fn(level: i32, target: *const libc::c_char, msg: *const libc::c_char, user_data: *mut libc::c_void);
+pub type AegisLogFn = unsafe extern "C" fn(
+    level: i32,
+    target: *const libc::c_char,
+    msg: *const libc::c_char,
+    user_data: *mut libc::c_void,
+);
 
 #[unsafe(no_mangle)]
 pub extern "C" fn aegis_engine_set_logger(
@@ -1315,20 +1713,26 @@ pub extern "C" fn aegis_engine_set_logger(
     match callback {
         Some(cb) => {
             let ud = user_data as usize;
-            let wrapped: hooks::LoggerFn = Box::new(move |level: hooks::LogLevel, target: &str, msg: &str| {
-                let level_i32 = match level {
-                    hooks::LogLevel::Error => 0,
-                    hooks::LogLevel::Warn => 1,
-                    hooks::LogLevel::Info => 2,
-                    hooks::LogLevel::Debug => 3,
-                    hooks::LogLevel::Trace => 4,
-                };
-                let c_target = CString::new(target).unwrap_or_default();
-                let c_msg = CString::new(msg).unwrap_or_default();
-                unsafe {
-                    cb(level_i32, c_target.as_ptr(), c_msg.as_ptr(), ud as *mut libc::c_void);
-                }
-            });
+            let wrapped: hooks::LoggerFn =
+                Box::new(move |level: hooks::LogLevel, target: &str, msg: &str| {
+                    let level_i32 = match level {
+                        hooks::LogLevel::Error => 0,
+                        hooks::LogLevel::Warn => 1,
+                        hooks::LogLevel::Info => 2,
+                        hooks::LogLevel::Debug => 3,
+                        hooks::LogLevel::Trace => 4,
+                    };
+                    let c_target = CString::new(target).unwrap_or_default();
+                    let c_msg = CString::new(msg).unwrap_or_default();
+                    unsafe {
+                        cb(
+                            level_i32,
+                            c_target.as_ptr(),
+                            c_msg.as_ptr(),
+                            ud as *mut libc::c_void,
+                        );
+                    }
+                });
             eng.set_logger(wrapped);
         }
         None => {
@@ -1369,9 +1773,36 @@ pub extern "C" fn aegis_engine_watch(
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> *mut AegisWatchSubscription {
         let filter = WatchFilter {
-            subjects: if subject_type.is_null() { None } else { Some(vec![unsafe { CStr::from_ptr(subject_type) }.to_str().unwrap_or_default().to_string()]) },
-            relations: if relation.is_null() { None } else { Some(vec![unsafe { CStr::from_ptr(relation) }.to_str().unwrap_or_default().to_string()]) },
-            objects: if object_type.is_null() { None } else { Some(vec![unsafe { CStr::from_ptr(object_type) }.to_str().unwrap_or_default().to_string()]) },
+            subjects: if subject_type.is_null() {
+                None
+            } else {
+                Some(vec![
+                    unsafe { CStr::from_ptr(subject_type) }
+                        .to_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                ])
+            },
+            relations: if relation.is_null() {
+                None
+            } else {
+                Some(vec![
+                    unsafe { CStr::from_ptr(relation) }
+                        .to_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                ])
+            },
+            objects: if object_type.is_null() {
+                None
+            } else {
+                Some(vec![
+                    unsafe { CStr::from_ptr(object_type) }
+                        .to_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                ])
+            },
             event_types: None,
         };
         let sub = eng.watch(filter);
@@ -1385,10 +1816,10 @@ pub extern "C" fn aegis_engine_watch(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn aegis_watch_poll(
-    sub: *mut AegisWatchSubscription,
-) -> *mut AegisWatchEvent {
-    if sub.is_null() { return std::ptr::null_mut(); }
+pub extern "C" fn aegis_watch_poll(sub: *mut AegisWatchSubscription) -> *mut AegisWatchEvent {
+    if sub.is_null() {
+        return std::ptr::null_mut();
+    }
     let sub = unsafe { &*sub };
 
     let event = match &sub.inner {
@@ -1439,12 +1870,36 @@ pub extern "C" fn aegis_watch_free(sub: *mut AegisWatchSubscription) {
 pub extern "C" fn aegis_watch_event_free(evt: *mut AegisWatchEvent) {
     if !evt.is_null() {
         let evt = unsafe { Box::from_raw(evt) };
-        if !evt.subject.is_null() { unsafe { let _ = CString::from_raw(evt.subject); } }
-        if !evt.relation.is_null() { unsafe { let _ = CString::from_raw(evt.relation); } }
-        if !evt.object.is_null() { unsafe { let _ = CString::from_raw(evt.object); } }
-        if !evt.timestamp.is_null() { unsafe { let _ = CString::from_raw(evt.timestamp); } }
-        if !evt.payload.is_null() { unsafe { let _ = CString::from_raw(evt.payload); } }
-        if !evt.error.is_null() { unsafe { let _ = CString::from_raw(evt.error); } }
+        if !evt.subject.is_null() {
+            unsafe {
+                let _ = CString::from_raw(evt.subject);
+            }
+        }
+        if !evt.relation.is_null() {
+            unsafe {
+                let _ = CString::from_raw(evt.relation);
+            }
+        }
+        if !evt.object.is_null() {
+            unsafe {
+                let _ = CString::from_raw(evt.object);
+            }
+        }
+        if !evt.timestamp.is_null() {
+            unsafe {
+                let _ = CString::from_raw(evt.timestamp);
+            }
+        }
+        if !evt.payload.is_null() {
+            unsafe {
+                let _ = CString::from_raw(evt.payload);
+            }
+        }
+        if !evt.error.is_null() {
+            unsafe {
+                let _ = CString::from_raw(evt.error);
+            }
+        }
     }
 }
 
@@ -1464,13 +1919,17 @@ pub extern "C" fn aegis_engine_transaction_begin(
         Err(_) => return std::ptr::null_mut(),
     };
 
-    let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<*mut AegisTransaction, *mut libc::c_char> {
-        let txn = eng.transaction().map_err(|e| error_string(&e.to_string()))?;
-        Ok(Box::into_raw(Box::new(AegisTransaction {
-            inner: Mutex::new(Some(txn)),
-            consumed: AtomicBool::new(false),
-        })))
-    }));
+    let result = panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<*mut AegisTransaction, *mut libc::c_char> {
+            let txn = eng
+                .transaction()
+                .map_err(|e| error_string(&e.to_string()))?;
+            Ok(Box::into_raw(Box::new(AegisTransaction {
+                inner: Mutex::new(Some(txn)),
+                consumed: AtomicBool::new(false),
+            })))
+        },
+    ));
 
     match result {
         Ok(Ok(ptr)) => ptr,
@@ -1501,9 +1960,13 @@ pub extern "C" fn aegis_transaction_write(
     relation: *const libc::c_char,
     resource: *const libc::c_char,
 ) -> *mut libc::c_char {
-    if txn.is_null() { return error_string("transaction is null"); }
+    if txn.is_null() {
+        return error_string("transaction is null");
+    }
     let txn = unsafe { &*txn };
-    if let Err(err) = txn_check_open(txn) { return err; }
+    if let Err(err) = txn_check_open(txn) {
+        return err;
+    }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), *mut libc::c_char> {
         let subject_str = c_str_to_str(subject)?;
@@ -1515,8 +1978,12 @@ pub extern "C" fn aegis_transaction_write(
             ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?,
         );
         let mut guard = txn.inner.lock().map_err(|e| error_string(&e.to_string()))?;
-        let inner = guard.as_mut().ok_or_else(|| error_string("transaction not initialized"))?;
-        inner.write(&PartitionId::default(), &tuple).map_err(|e| error_string(&e.to_string()))?;
+        let inner = guard
+            .as_mut()
+            .ok_or_else(|| error_string("transaction not initialized"))?;
+        inner
+            .write(&PartitionId::default(), &tuple)
+            .map_err(|e| error_string(&e.to_string()))?;
         Ok(())
     }));
 
@@ -1534,9 +2001,13 @@ pub extern "C" fn aegis_transaction_delete(
     relation: *const libc::c_char,
     resource: *const libc::c_char,
 ) -> *mut libc::c_char {
-    if txn.is_null() { return error_string("transaction is null"); }
+    if txn.is_null() {
+        return error_string("transaction is null");
+    }
     let txn = unsafe { &*txn };
-    if let Err(err) = txn_check_open(txn) { return err; }
+    if let Err(err) = txn_check_open(txn) {
+        return err;
+    }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), *mut libc::c_char> {
         let subject_str = c_str_to_str(subject)?;
@@ -1548,8 +2019,12 @@ pub extern "C" fn aegis_transaction_delete(
             object: ResourceId::new(&resource_str).map_err(|e| error_string(&e.to_string()))?,
         };
         let mut guard = txn.inner.lock().map_err(|e| error_string(&e.to_string()))?;
-        let inner = guard.as_mut().ok_or_else(|| error_string("transaction not initialized"))?;
-        inner.delete(&PartitionId::default(), &key).map_err(|e| error_string(&e.to_string()))?;
+        let inner = guard
+            .as_mut()
+            .ok_or_else(|| error_string("transaction not initialized"))?;
+        inner
+            .delete(&PartitionId::default(), &key)
+            .map_err(|e| error_string(&e.to_string()))?;
         Ok(())
     }));
 
@@ -1565,15 +2040,23 @@ pub extern "C" fn aegis_transaction_savepoint(
     txn: *mut AegisTransaction,
     name: *const libc::c_char,
 ) -> *mut libc::c_char {
-    if txn.is_null() { return error_string("transaction is null"); }
+    if txn.is_null() {
+        return error_string("transaction is null");
+    }
     let txn = unsafe { &*txn };
-    if let Err(err) = txn_check_open(txn) { return err; }
+    if let Err(err) = txn_check_open(txn) {
+        return err;
+    }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), *mut libc::c_char> {
         let name_str = c_str_to_str(name)?;
         let guard = txn.inner.lock().map_err(|e| error_string(&e.to_string()))?;
-        let inner = guard.as_ref().ok_or_else(|| error_string("transaction not initialized"))?;
-        inner.savepoint(&name_str).map_err(|e| error_string(&e.to_string()))?;
+        let inner = guard
+            .as_ref()
+            .ok_or_else(|| error_string("transaction not initialized"))?;
+        inner
+            .savepoint(&name_str)
+            .map_err(|e| error_string(&e.to_string()))?;
         Ok(())
     }));
 
@@ -1589,15 +2072,23 @@ pub extern "C" fn aegis_transaction_rollback_to_savepoint(
     txn: *mut AegisTransaction,
     name: *const libc::c_char,
 ) -> *mut libc::c_char {
-    if txn.is_null() { return error_string("transaction is null"); }
+    if txn.is_null() {
+        return error_string("transaction is null");
+    }
     let txn = unsafe { &*txn };
-    if let Err(err) = txn_check_open(txn) { return err; }
+    if let Err(err) = txn_check_open(txn) {
+        return err;
+    }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), *mut libc::c_char> {
         let name_str = c_str_to_str(name)?;
         let guard = txn.inner.lock().map_err(|e| error_string(&e.to_string()))?;
-        let inner = guard.as_ref().ok_or_else(|| error_string("transaction not initialized"))?;
-        inner.rollback_to_savepoint(&name_str).map_err(|e| error_string(&e.to_string()))?;
+        let inner = guard
+            .as_ref()
+            .ok_or_else(|| error_string("transaction not initialized"))?;
+        inner
+            .rollback_to_savepoint(&name_str)
+            .map_err(|e| error_string(&e.to_string()))?;
         Ok(())
     }));
 
@@ -1613,15 +2104,23 @@ pub extern "C" fn aegis_transaction_release_savepoint(
     txn: *mut AegisTransaction,
     name: *const libc::c_char,
 ) -> *mut libc::c_char {
-    if txn.is_null() { return error_string("transaction is null"); }
+    if txn.is_null() {
+        return error_string("transaction is null");
+    }
     let txn = unsafe { &*txn };
-    if let Err(err) = txn_check_open(txn) { return err; }
+    if let Err(err) = txn_check_open(txn) {
+        return err;
+    }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), *mut libc::c_char> {
         let name_str = c_str_to_str(name)?;
         let guard = txn.inner.lock().map_err(|e| error_string(&e.to_string()))?;
-        let inner = guard.as_ref().ok_or_else(|| error_string("transaction not initialized"))?;
-        inner.release_savepoint(&name_str).map_err(|e| error_string(&e.to_string()))?;
+        let inner = guard
+            .as_ref()
+            .ok_or_else(|| error_string("transaction not initialized"))?;
+        inner
+            .release_savepoint(&name_str)
+            .map_err(|e| error_string(&e.to_string()))?;
         Ok(())
     }));
 
@@ -1633,43 +2132,64 @@ pub extern "C" fn aegis_transaction_release_savepoint(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn aegis_transaction_commit(
-    txn: *mut AegisTransaction,
-) -> AegisWriteResult {
+pub extern "C" fn aegis_transaction_commit(txn: *mut AegisTransaction) -> AegisWriteResult {
     if txn.is_null() {
-        return AegisWriteResult { revision: 0, error: error_string("transaction is null") };
+        return AegisWriteResult {
+            revision: 0,
+            error: error_string("transaction is null"),
+        };
     }
     let txn = unsafe { &*txn };
     if let Err(err) = txn_check_open(txn) {
-        return AegisWriteResult { revision: 0, error: err };
+        return AegisWriteResult {
+            revision: 0,
+            error: err,
+        };
     }
 
-    let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<AegisWriteResult, *mut libc::c_char> {
-        let mut guard = txn.inner.lock().map_err(|e| error_string(&e.to_string()))?;
-        let inner = guard.take().ok_or_else(|| error_string("transaction not initialized"))?;
-        let revision = inner.commit().map_err(|e| error_string(&e.to_string()))?;
-        txn.consumed.store(true, Ordering::Relaxed);
-        Ok(AegisWriteResult { revision: revision.as_u64(), error: std::ptr::null_mut() })
-    }));
+    let result = panic::catch_unwind(AssertUnwindSafe(
+        || -> Result<AegisWriteResult, *mut libc::c_char> {
+            let mut guard = txn.inner.lock().map_err(|e| error_string(&e.to_string()))?;
+            let inner = guard
+                .take()
+                .ok_or_else(|| error_string("transaction not initialized"))?;
+            let revision = inner.commit().map_err(|e| error_string(&e.to_string()))?;
+            txn.consumed.store(true, Ordering::Relaxed);
+            Ok(AegisWriteResult {
+                revision: revision.as_u64(),
+                error: std::ptr::null_mut(),
+            })
+        },
+    ));
 
     match result {
         Ok(Ok(res)) => res,
-        Ok(Err(err)) => AegisWriteResult { revision: 0, error: err },
-        Err(_) => AegisWriteResult { revision: 0, error: error_string("panic during transaction_commit") },
+        Ok(Err(err)) => AegisWriteResult {
+            revision: 0,
+            error: err,
+        },
+        Err(_) => AegisWriteResult {
+            revision: 0,
+            error: error_string("panic during transaction_commit"),
+        },
     }
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn aegis_transaction_rollback(
-    txn: *mut AegisTransaction,
-) -> *mut libc::c_char {
-    if txn.is_null() { return error_string("transaction is null"); }
+pub extern "C" fn aegis_transaction_rollback(txn: *mut AegisTransaction) -> *mut libc::c_char {
+    if txn.is_null() {
+        return error_string("transaction is null");
+    }
     let txn = unsafe { &*txn };
-    if let Err(err) = txn_check_open(txn) { return err; }
+    if let Err(err) = txn_check_open(txn) {
+        return err;
+    }
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), *mut libc::c_char> {
         let mut guard = txn.inner.lock().map_err(|e| error_string(&e.to_string()))?;
-        let inner = guard.take().ok_or_else(|| error_string("transaction not initialized"))?;
+        let inner = guard
+            .take()
+            .ok_or_else(|| error_string("transaction not initialized"))?;
         inner.rollback().map_err(|e| error_string(&e.to_string()))?;
         txn.consumed.store(true, Ordering::Relaxed);
         Ok(())
@@ -1789,9 +2309,19 @@ pub extern "C" fn aegis_engine_who_can_access(
     };
     let pagination = PaginationParams {
         limit: page_limit,
-        cursor: Some(PaginationCursor { offset: page_offset, revision: Revision::from(0) }),
+        cursor: Some(PaginationCursor {
+            offset: page_offset,
+            revision: Revision::from(0),
+        }),
     };
-    match eng.who_can_access(&permission_str, &resource_id, &pagination, include_paths, 10, 5000) {
+    match eng.who_can_access(
+        &permission_str,
+        &resource_id,
+        &pagination,
+        include_paths,
+        10,
+        5000,
+    ) {
         Ok(result) => {
             let json = serde_json::to_string(&result).unwrap_or_default();
             CString::new(json).unwrap_or_default().into_raw()
@@ -1827,7 +2357,11 @@ pub extern "C" fn aegis_engine_access_diff(
         Ok(s) => s,
         Err(e) => return error_string(&e.to_string()),
     };
-    let mc = if max_checks > 0 { Some(max_checks as u64) } else { None };
+    let mc = if max_checks > 0 {
+        Some(max_checks as u64)
+    } else {
+        None
+    };
     match eng.access_diff(&schema_before, &schema_after, None, mc) {
         Ok(result) => {
             let json = serde_json::to_string(&result).unwrap_or_default();
@@ -2151,10 +2685,11 @@ pub extern "C" fn aegis_engine_create_analysis_schedule(
         Ok(s) => s,
         Err(e) => return e,
     };
-    let queries: Vec<aegis_core::types::analysis::CheckQuery> = match serde_json::from_str(&queries_json) {
-        Ok(q) => q,
-        Err(e) => return error_string(&format!("invalid queries: {}", e)),
-    };
+    let queries: Vec<aegis_core::types::analysis::CheckQuery> =
+        match serde_json::from_str(&queries_json) {
+            Ok(q) => q,
+            Err(e) => return error_string(&format!("invalid queries: {}", e)),
+        };
     let compare_schema = if compare_schema_json.is_null() {
         None
     } else {
@@ -2336,7 +2871,9 @@ fn engine_from_ptr(ptr: *mut AegisEngine) -> Result<&'static GraphEngine, *mut l
     }
 }
 
-fn engine_from_const_ptr(ptr: *const AegisEngine) -> Result<&'static GraphEngine, *mut libc::c_char> {
+fn engine_from_const_ptr(
+    ptr: *const AegisEngine,
+) -> Result<&'static GraphEngine, *mut libc::c_char> {
     if ptr.is_null() {
         Err(error_string("engine is null"))
     } else {

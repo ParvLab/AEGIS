@@ -1,9 +1,11 @@
-use chrono::Utc;
 use crate::engine::cache::TraversalCache;
 use crate::engine::condition::{self, ConditionEvalContext};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::StorageBackend;
-use crate::types::{ConsistencyMode, PartitionId, Relation, ResourceId, Revision, SubjectId, SubjectSet};
+use crate::types::{
+    ConsistencyMode, PartitionId, Relation, ResourceId, Revision, SubjectId, SubjectSet,
+};
+use chrono::Utc;
 use std::collections::{HashSet, VecDeque};
 
 /// A single step in a traversal trace.
@@ -50,7 +52,20 @@ pub fn bfs_traversal(
     revision: Option<Revision>,
     consistency: Option<ConsistencyMode>,
 ) -> AegisResult<TraversalResult> {
-    bfs_traversal_with_limits_and_context(partition_id, storage, subject, relation, target, revision, consistency, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None, None, None)
+    bfs_traversal_with_limits_and_context(
+        partition_id,
+        storage,
+        subject,
+        relation,
+        target,
+        revision,
+        consistency,
+        DEFAULT_MAX_DEPTH,
+        DEFAULT_MAX_VISITS,
+        None,
+        None,
+        None,
+    )
 }
 
 /// BFS traversal with context for tuple condition evaluation.
@@ -64,7 +79,20 @@ pub fn bfs_traversal_with_context(
     consistency: Option<ConsistencyMode>,
     context: Option<&ConditionEvalContext>,
 ) -> AegisResult<TraversalResult> {
-    bfs_traversal_with_limits_and_context(partition_id, storage, subject, relation, target, revision, consistency, DEFAULT_MAX_DEPTH, DEFAULT_MAX_VISITS, None, context, None)
+    bfs_traversal_with_limits_and_context(
+        partition_id,
+        storage,
+        subject,
+        relation,
+        target,
+        revision,
+        consistency,
+        DEFAULT_MAX_DEPTH,
+        DEFAULT_MAX_VISITS,
+        None,
+        context,
+        None,
+    )
 }
 
 /// BFS traversal with configurable depth and visit limits.
@@ -81,8 +109,18 @@ pub fn bfs_traversal_with_limits(
     cache: Option<&mut TraversalCache>,
 ) -> AegisResult<TraversalResult> {
     bfs_traversal_with_limits_and_context(
-        partition_id, storage, subject, relation, target, revision, consistency,
-        max_depth, max_visits, cache, None, None,
+        partition_id,
+        storage,
+        subject,
+        relation,
+        target,
+        revision,
+        consistency,
+        max_depth,
+        max_visits,
+        cache,
+        None,
+        None,
     )
 }
 
@@ -104,15 +142,26 @@ pub fn bfs_traversal_with_limits_and_context(
     context: Option<&ConditionEvalContext>,
     per_branch_max_visits: Option<usize>,
 ) -> AegisResult<TraversalResult> {
-    let consistency_ref = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
+    let consistency_ref = consistency
+        .as_ref()
+        .unwrap_or(&ConsistencyMode::MinimizeLatency);
 
     let mut visited: HashSet<(String, String)> = HashSet::new();
     let mut queue: VecDeque<(SubjectId, Vec<TraceStep>)> = VecDeque::new();
     let mut visit_count = 0usize;
-    let mut per_branch_counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut per_branch_counts: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let per_branch_limit = per_branch_max_visits.unwrap_or(usize::MAX);
 
-    let found_direct = check_direct(partition_id, storage, subject, relation, target, consistency_ref, context)?;
+    let found_direct = check_direct(
+        partition_id,
+        storage,
+        subject,
+        relation,
+        target,
+        consistency_ref,
+        context,
+    )?;
     if found_direct {
         return Ok(TraversalResult {
             found: true,
@@ -133,7 +182,9 @@ pub fn bfs_traversal_with_limits_and_context(
         let tuples = {
             let current_rev = revision.unwrap_or(Revision::ZERO);
             if let Some(ref mut c) = cache {
-                if let Some(cached_objects) = c.get(current_subject.as_str(), relation.as_str(), current_rev) {
+                if let Some(cached_objects) =
+                    c.get(current_subject.as_str(), relation.as_str(), current_rev)
+                {
                     let mut result = Vec::new();
                     for obj_str in &cached_objects {
                         if let Ok(obj) = ResourceId::new(obj_str) {
@@ -146,15 +197,35 @@ pub fn bfs_traversal_with_limits_and_context(
                     }
                     result
                 } else {
-                    let tuples = load_tuples(partition_id, storage, &current_subject, relation, consistency_ref)?;
-                    let objects: Vec<String> = tuples.iter().map(|t| t.object.as_str().to_string()).collect();
+                    let tuples = load_tuples(
+                        partition_id,
+                        storage,
+                        &current_subject,
+                        relation,
+                        consistency_ref,
+                    )?;
+                    let objects: Vec<String> = tuples
+                        .iter()
+                        .map(|t| t.object.as_str().to_string())
+                        .collect();
                     if !objects.is_empty() {
-                        c.insert(current_subject.as_str(), relation.as_str(), objects, current_rev);
+                        c.insert(
+                            current_subject.as_str(),
+                            relation.as_str(),
+                            objects,
+                            current_rev,
+                        );
                     }
                     tuples
                 }
             } else {
-                load_tuples(partition_id, storage, &current_subject, relation, consistency_ref)?
+                load_tuples(
+                    partition_id,
+                    storage,
+                    &current_subject,
+                    relation,
+                    consistency_ref,
+                )?
             }
         };
 
@@ -191,7 +262,14 @@ pub fn bfs_traversal_with_limits_and_context(
             // (e.g. "team:eng#member"), we need to verify that our original
             // traversal subject satisfies the subject-set condition.
             if let Some(ref subject_set) = tuple.subject.as_subject_set() {
-                if !is_subject_set_member(partition_id, storage, subject, subject_set, consistency_ref, context)? {
+                if !is_subject_set_member(
+                    partition_id,
+                    storage,
+                    subject,
+                    subject_set,
+                    consistency_ref,
+                    context,
+                )? {
                     continue;
                 }
                 // For subject-set tuples, the edge still goes from current_subject
@@ -260,16 +338,17 @@ fn load_tuples(
     consistency: &ConsistencyMode,
 ) -> AegisResult<Vec<crate::types::RelationshipTuple>> {
     // 1. Direct subject match (existing behavior)
-    let mut tuples = match storage.list_by_subject(partition_id, current_subject, Some(relation), consistency) {
-        Ok(t) => t,
-        Err(e) => {
-            if matches!(e, AegisError::StorageNotInitialized) {
-                Vec::new()
-            } else {
-                return Err(e);
+    let mut tuples =
+        match storage.list_by_subject(partition_id, current_subject, Some(relation), consistency) {
+            Ok(t) => t,
+            Err(e) => {
+                if matches!(e, AegisError::StorageNotInitialized) {
+                    Vec::new()
+                } else {
+                    return Err(e);
+                }
             }
-        }
-    };
+        };
 
     // 2. Subject-set match: find tuples where subject is `{current_subject}#{relation}`
     //    e.g. if current_subject = team:eng, find tuples with subject = team:eng#member
@@ -281,7 +360,8 @@ fn load_tuples(
     } else {
         return Ok(tuples);
     };
-    let set_tuples = storage.list_by_subject_set_of(partition_id, &set_object, Some(relation), consistency);
+    let set_tuples =
+        storage.list_by_subject_set_of(partition_id, &set_object, Some(relation), consistency);
     if let Ok(mut st) = set_tuples {
         tuples.append(&mut st);
     }
@@ -317,7 +397,14 @@ fn check_direct(
         }
         // Subject-set match: subject is like `team:eng#member`
         if let Some(ref subject_set) = t.subject.as_subject_set() {
-            if is_subject_set_member(partition_id, storage, subject, subject_set, consistency, context)? {
+            if is_subject_set_member(
+                partition_id,
+                storage,
+                subject,
+                subject_set,
+                consistency,
+                context,
+            )? {
                 return Ok(true);
             }
         }
@@ -335,7 +422,12 @@ fn is_subject_set_member(
     consistency: &ConsistencyMode,
     context: Option<&ConditionEvalContext>,
 ) -> AegisResult<bool> {
-    let tuples = storage.list_by_object(partition_id, &subject_set.object, Some(&subject_set.relation), consistency)?;
+    let tuples = storage.list_by_object(
+        partition_id,
+        &subject_set.object,
+        Some(&subject_set.relation),
+        consistency,
+    )?;
     let now = Utc::now();
     Ok(tuples.iter().any(|t| {
         t.subject == *subject

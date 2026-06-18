@@ -9,11 +9,11 @@ use rustyline::hint::Hinter;
 use rustyline::validate::{ValidationContext, ValidationResult, Validator};
 use rustyline::{Config, Context as RlContext, Editor, Helper};
 
+use aegis_core::engine::GraphEngine;
 use aegis_core::engine::enforcement_history::EnforcementHistoryConfig;
 use aegis_core::engine::policy_lifecycle::DraftStatus;
-use aegis_core::engine::scheduler::{AnalysisScheduleConfig, AnalysisRunStatus};
+use aegis_core::engine::scheduler::{AnalysisRunStatus, AnalysisScheduleConfig};
 use aegis_core::engine::watch::{WatchEventType, WatchFilter, WatchSubscription};
-use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::{StorageBackend, TupleFilter};
@@ -24,11 +24,31 @@ use sha2::{Digest, Sha256};
 use aegis_core::storage::RocksDbStorage;
 
 const COMMANDS: &[&str] = &[
-    "check", "write", "delete", "list", "explain", "health", "dry-run",
-    "audit", "export", "export-subject", "schema", "query", "watch", "unwatch",
-    "backup", "restore", "import", "recover", "delete-subject",
-    "policy-draft", "schedule", "enforcement", "subscribe",
-    "help", "exit",
+    "check",
+    "write",
+    "delete",
+    "list",
+    "explain",
+    "health",
+    "dry-run",
+    "audit",
+    "export",
+    "export-subject",
+    "schema",
+    "query",
+    "watch",
+    "unwatch",
+    "backup",
+    "restore",
+    "import",
+    "recover",
+    "delete-subject",
+    "policy-draft",
+    "schedule",
+    "enforcement",
+    "subscribe",
+    "help",
+    "exit",
 ];
 
 struct ReplState {
@@ -79,7 +99,10 @@ impl Hinter for CmdHelper {
 impl Highlighter for CmdHelper {}
 
 impl Validator for CmdHelper {
-    fn validate(&self, _ctx: &mut ValidationContext<'_>) -> Result<ValidationResult, ReadlineError> {
+    fn validate(
+        &self,
+        _ctx: &mut ValidationContext<'_>,
+    ) -> Result<ValidationResult, ReadlineError> {
         Ok(ValidationResult::Valid(None))
     }
 }
@@ -120,28 +143,40 @@ fn print_help() {
     println!("  watch <object>                                   - Watch events for an object");
     println!("  watch --all                                      - Watch all events");
     println!("  unwatch                                          - Stop watching");
-    println!("  backup <path>                                    - Backup all tuples/events to file");
-    println!("  restore <path>                                   - Restore tuples/events from backup");
+    println!(
+        "  backup <path>                                    - Backup all tuples/events to file"
+    );
+    println!(
+        "  restore <path>                                   - Restore tuples/events from backup"
+    );
     println!("  import <path>                                    - Import tuples from JSON file");
     println!("  recover [--to-revision N] [--dry-run]             - Recover from event log");
     println!("  delete-subject <subject> --policy <cascade|fail|transfer> [--transfer-to X]");
     println!("                                                   - Delete subject with policy");
-    println!("  export-subject <subject>                          - Export all tuples for a subject");
+    println!(
+        "  export-subject <subject>                          - Export all tuples for a subject"
+    );
     println!("  policy-draft create <name> <desc>                 - Create a policy draft");
     println!("  policy-draft validate <id>                        - Validate a policy draft");
-    println!("  policy-draft diff <id>                            - Diff draft against current schema");
+    println!(
+        "  policy-draft diff <id>                            - Diff draft against current schema"
+    );
     println!("  policy-draft submit <id>                          - Submit draft for review");
     println!("  policy-draft approve <id>                         - Approve a draft");
     println!("  policy-draft reject <id> <reason>                 - Reject a draft");
     println!("  policy-draft publish <id>                         - Publish an approved draft");
     println!("  policy-draft archive <id>                         - Archive a draft");
     println!("  policy-draft list [status]                        - List drafts");
-    println!("  schedule create <config>                          - Create analysis schedule from JSON");
+    println!(
+        "  schedule create <config>                          - Create analysis schedule from JSON"
+    );
     println!("  schedule list                                     - List schedules");
     println!("  schedule delete <id>                              - Delete a schedule");
     println!("  schedule run [id]                                 - Run analysis now");
     println!("  schedule runs [limit]                             - Show analysis run history");
-    println!("  enforcement set <config>                          - Set enforcement config from JSON");
+    println!(
+        "  enforcement set <config>                          - Set enforcement config from JSON"
+    );
     println!("  enforcement get                                   - Show enforcement config");
     println!("  enforcement trends [limit]                        - Show enforcement trends");
     println!("  subscribe <event_types>                           - Subscribe to engine events");
@@ -149,7 +184,12 @@ fn print_help() {
     println!("  exit                                             - Exit the REPL");
 }
 
-pub fn run_repl(db_path: &str, schema_path: Option<&str>, storage_type: &str, json_mode: bool) -> Result<()> {
+pub fn run_repl(
+    db_path: &str,
+    schema_path: Option<&str>,
+    storage_type: &str,
+    json_mode: bool,
+) -> Result<()> {
     let engine = load_engine(db_path, schema_path, storage_type)?;
 
     let entity_names = extract_entity_names(&engine);
@@ -213,10 +253,7 @@ fn dirs_or_default(filename: &str) -> String {
     }
 }
 
-fn load_storage(
-    db_path: &str,
-    storage_type: &str,
-) -> Result<Box<dyn StorageBackend>> {
+fn load_storage(db_path: &str, storage_type: &str) -> Result<Box<dyn StorageBackend>> {
     match storage_type {
         "sqlite" => {
             let config = SqliteConfig {
@@ -243,13 +280,15 @@ fn load_storage(
         "rocksdb" => {
             anyhow::bail!("rocksdb backend is not enabled. Rebuild with --features rocksdb");
         }
-        _ => anyhow::bail!(
-            "unknown storage backend: {storage_type}. Supported: sqlite, rocksdb"
-        ),
+        _ => anyhow::bail!("unknown storage backend: {storage_type}. Supported: sqlite, rocksdb"),
     }
 }
 
-fn load_engine(db_path: &str, schema_path: Option<&str>, storage_type: &str) -> Result<GraphEngine> {
+fn load_engine(
+    db_path: &str,
+    schema_path: Option<&str>,
+    storage_type: &str,
+) -> Result<GraphEngine> {
     let storage = load_storage(db_path, storage_type)?;
 
     let schema = if let Some(sp) = schema_path {
@@ -298,9 +337,19 @@ fn poll_watch(state: &ReplState) {
                         WatchEventType::RateLimitWarning => "W",
                     };
                     if state.json_mode {
-                        println!(r#"{{"event_type":"{:?}","subject":"{}","relation":"{}","object":"{}","revision":{},"payload":{}}}"#,
-                            event.event_type, event.subject, event.relation, event.object, event.revision.as_u64(),
-                            event.payload.as_ref().map(|v| v.to_string()).unwrap_or_default());
+                        println!(
+                            r#"{{"event_type":"{:?}","subject":"{}","relation":"{}","object":"{}","revision":{},"payload":{}}}"#,
+                            event.event_type,
+                            event.subject,
+                            event.relation,
+                            event.object,
+                            event.revision.as_u64(),
+                            event
+                                .payload
+                                .as_ref()
+                                .map(|v| v.to_string())
+                                .unwrap_or_default()
+                        );
                     } else {
                         println!(
                             "  {} {} {} {} (rev={})",
@@ -383,9 +432,17 @@ fn cmd_check(state: &ReplState, args: &[&str]) -> Result<()> {
         );
     } else {
         if result.allowed {
-            println!("  {} ALLOWED (revision={})", green("✓"), result.revision.as_u64());
+            println!(
+                "  {} ALLOWED (revision={})",
+                green("✓"),
+                result.revision.as_u64()
+            );
         } else {
-            println!("  {} DENIED (revision={})", red("✗"), result.revision.as_u64());
+            println!(
+                "  {} DENIED (revision={})",
+                red("✗"),
+                result.revision.as_u64()
+            );
         }
     }
     Ok(())
@@ -409,7 +466,11 @@ fn cmd_write(state: &ReplState, args: &[&str]) -> Result<()> {
             }))?
         );
     } else {
-        println!("  {} Written (revision={})", green("✓"), token.revision.as_u64());
+        println!(
+            "  {} Written (revision={})",
+            green("✓"),
+            token.revision.as_u64()
+        );
     }
     Ok(())
 }
@@ -436,7 +497,11 @@ fn cmd_delete(state: &ReplState, args: &[&str]) -> Result<()> {
             }))?
         );
     } else {
-        println!("  {} Deleted (revision={})", green("✓"), token.revision.as_u64());
+        println!(
+            "  {} Deleted (revision={})",
+            green("✓"),
+            token.revision.as_u64()
+        );
     }
     Ok(())
 }
@@ -448,7 +513,12 @@ fn cmd_list(state: &ReplState, args: &[&str]) -> Result<()> {
     }
     let object = ResourceId::new(args[0])?;
     let relation = args.get(1).map(|r| Relation::new(*r)).transpose()?;
-    let tuples = state.engine.storage().list_by_object(&PartitionId::default(), &object, relation.as_ref(), &ConsistencyMode::MinimizeLatency)?;
+    let tuples = state.engine.storage().list_by_object(
+        &PartitionId::default(),
+        &object,
+        relation.as_ref(),
+        &ConsistencyMode::MinimizeLatency,
+    )?;
     if state.json_mode {
         println!("{}", serde_json::to_string(&tuples)?);
     } else {
@@ -456,9 +526,19 @@ fn cmd_list(state: &ReplState, args: &[&str]) -> Result<()> {
             println!("  {} No tuples found", yellow("!"));
         } else {
             for t in &tuples {
-                println!("  {} {} {} {}", green("•"), t.subject.as_str(), t.relation.as_str(), t.object.as_str());
+                println!(
+                    "  {} {} {} {}",
+                    green("•"),
+                    t.subject.as_str(),
+                    t.relation.as_str(),
+                    t.object.as_str()
+                );
             }
-            println!("  {} {} tuple(s)", bold(&tuples.len().to_string()), "results");
+            println!(
+                "  {} {} tuple(s)",
+                bold(&tuples.len().to_string()),
+                "results"
+            );
         }
     }
     Ok(())
@@ -472,7 +552,9 @@ fn cmd_explain(state: &ReplState, args: &[&str]) -> Result<()> {
     let subject = SubjectId::new(args[0])?;
     let permission = args[1];
     let resource = ResourceId::new(args[2])?;
-    let result = state.engine.explain(&subject, permission, &resource, None)?;
+    let result = state
+        .engine
+        .explain(&subject, permission, &resource, None)?;
     if state.json_mode {
         println!(
             "{}",
@@ -485,9 +567,17 @@ fn cmd_explain(state: &ReplState, args: &[&str]) -> Result<()> {
         );
     } else {
         if result.allowed {
-            println!("  {} ALLOWED (revision={})", green("✓"), result.revision.as_u64());
+            println!(
+                "  {} ALLOWED (revision={})",
+                green("✓"),
+                result.revision.as_u64()
+            );
         } else {
-            println!("  {} DENIED (revision={})", red("✗"), result.revision.as_u64());
+            println!(
+                "  {} DENIED (revision={})",
+                red("✗"),
+                result.revision.as_u64()
+            );
         }
         println!("  Resolved via: {}", result.resolved_via);
         for t in &result.trace {
@@ -502,11 +592,23 @@ fn cmd_health(state: &ReplState) -> Result<()> {
     if state.json_mode {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        println!("  {}: {}", bold("Engine"), if report.healthy { green("Healthy") } else { red("Unhealthy") });
+        println!(
+            "  {}: {}",
+            bold("Engine"),
+            if report.healthy {
+                green("Healthy")
+            } else {
+                red("Unhealthy")
+            }
+        );
         println!("  {}:        {}", bold("Backend"), report.backend);
         println!("  {}: {}", bold("Revision"), report.revision.as_u64());
         println!("  {}:  {}", bold("Schema ver"), report.schema_version);
-        println!("  {}:    {}", bold("Cache hit"), format!("{:.1}%", report.cache_hit_rate * 100.0));
+        println!(
+            "  {}:    {}",
+            bold("Cache hit"),
+            format!("{:.1}%", report.cache_hit_rate * 100.0)
+        );
         println!("  {}:   {}", bold("Cache size"), report.cache_entries);
     }
     Ok(())
@@ -527,7 +629,9 @@ fn cmd_dry_run(state: &ReplState, args: &[&str]) -> Result<()> {
             let subject = SubjectId::new(args[1])?;
             let permission = args[2];
             let resource = ResourceId::new(args[3])?;
-            let result = state.engine.check_dry_run(&subject, permission, &resource, None)?;
+            let result = state
+                .engine
+                .check_dry_run(&subject, permission, &resource, None)?;
             if state.json_mode {
                 println!(
                     "{}",
@@ -538,8 +642,17 @@ fn cmd_dry_run(state: &ReplState, args: &[&str]) -> Result<()> {
                     }))?
                 );
             } else {
-                let status = if result.allowed { green("ALLOWED") } else { red("DENIED") };
-                println!("  {} {} (dry-run, revision={})", status, if result.allowed { "✓" } else { "✗" }, result.revision.as_u64());
+                let status = if result.allowed {
+                    green("ALLOWED")
+                } else {
+                    red("DENIED")
+                };
+                println!(
+                    "  {} {} (dry-run, revision={})",
+                    status,
+                    if result.allowed { "✓" } else { "✗" },
+                    result.revision.as_u64()
+                );
             }
         }
         "write" => {
@@ -562,7 +675,11 @@ fn cmd_dry_run(state: &ReplState, args: &[&str]) -> Result<()> {
                     }))?
                 );
             } else {
-                println!("  {} Valid (dry-run, revision={})", green("✓"), token.revision.as_u64());
+                println!(
+                    "  {} Valid (dry-run, revision={})",
+                    green("✓"),
+                    token.revision.as_u64()
+                );
             }
         }
         other => {
@@ -584,7 +701,9 @@ fn cmd_audit(state: &ReplState, args: &[&str]) -> Result<()> {
         limit: 50,
         cursor: None,
     };
-    let entries = state.engine.query_audit(&object, from_rev, to_rev, &pagination)?;
+    let entries = state
+        .engine
+        .query_audit(&object, from_rev, to_rev, &pagination)?;
     if state.json_mode {
         println!("{}", serde_json::to_string_pretty(&entries)?);
     } else {
@@ -596,7 +715,14 @@ fn cmd_audit(state: &ReplState, args: &[&str]) -> Result<()> {
                     TupleMutation::Add => green("ADD"),
                     TupleMutation::Remove => red("DEL"),
                 };
-                println!("  [{}] {} {} {} (rev={})", action, e.subject, e.relation, e.object, e.revision.as_u64());
+                println!(
+                    "  [{}] {} {} {} (rev={})",
+                    action,
+                    e.subject,
+                    e.relation,
+                    e.object,
+                    e.revision.as_u64()
+                );
             }
         }
     }
@@ -617,7 +743,13 @@ fn cmd_export(state: &ReplState, args: &[&str]) -> Result<()> {
             println!("  {} No tuples found for subject", yellow("!"));
         } else {
             for t in &tuples {
-                println!("  {} {} {} {}", green("•"), t.subject.as_str(), t.relation.as_str(), t.object.as_str());
+                println!(
+                    "  {} {} {} {}",
+                    green("•"),
+                    t.subject.as_str(),
+                    t.relation.as_str(),
+                    t.object.as_str()
+                );
             }
             println!("  {} tuple(s)", tuples.len());
         }
@@ -748,9 +880,18 @@ fn cmd_query(state: &ReplState, args: &[&str]) -> Result<()> {
             println!("  {} No matching tuples", yellow("!"));
         } else {
             let has_more = result.next_cursor.is_some();
-            println!("  {} {} tuple(s) found", bold(&result.tuples.len().to_string()), if has_more { "(more available)" } else { "" });
+            println!(
+                "  {} {} tuple(s) found",
+                bold(&result.tuples.len().to_string()),
+                if has_more { "(more available)" } else { "" }
+            );
             for t in &result.tuples {
-                println!("  {:20} {:15} {}", t.subject.as_str(), t.relation.as_str(), t.object.as_str());
+                println!(
+                    "  {:20} {:15} {}",
+                    t.subject.as_str(),
+                    t.relation.as_str(),
+                    t.object.as_str()
+                );
             }
             if let Some(cursor) = &result.next_cursor {
                 println!("  {} Cursor at offset {}", yellow("!"), cursor.offset);
@@ -797,7 +938,10 @@ fn cmd_backup(state: &ReplState, args: &[&str]) -> Result<()> {
         },
     )?;
 
-    let revision = state.engine.storage().current_revision(&PartitionId::default())?;
+    let revision = state
+        .engine
+        .storage()
+        .current_revision(&PartitionId::default())?;
     let backend_type = state.engine.storage().backend_type().to_string();
     let exported_at = chrono::Utc::now().to_rfc3339();
 
@@ -817,22 +961,34 @@ fn cmd_backup(state: &ReplState, args: &[&str]) -> Result<()> {
     let mut hasher = Sha256::new();
     hasher.update(canonical.as_bytes());
     let hash = hasher.finalize();
-    let checksum = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+    let checksum = hash
+        .iter()
+        .map(|b| format!("{:02x}", b))
+        .collect::<String>();
     backup.as_object_mut().unwrap().insert(
         "checksum".to_string(),
         serde_json::Value::String(format!("sha256:{}", checksum)),
     );
 
     let output = serde_json::to_string_pretty(&backup)?;
-    std::fs::write(path, output)
-        .with_context(|| format!("failed to write backup to {path}"))?;
+    std::fs::write(path, output).with_context(|| format!("failed to write backup to {path}"))?;
 
     if state.json_mode {
-        println!(r#"{{"status":"ok","tuples":{},"events":{},"revision":{}}}"#,
-            all_tuples.len(), events.len(), revision.as_u64());
+        println!(
+            r#"{{"status":"ok","tuples":{},"events":{},"revision":{}}}"#,
+            all_tuples.len(),
+            events.len(),
+            revision.as_u64()
+        );
     } else {
-        println!("  {} Backup written to {} ({} tuples, {} events, rev={})",
-            green("✓"), path, all_tuples.len(), events.len(), revision.as_u64());
+        println!(
+            "  {} Backup written to {} ({} tuples, {} events, rev={})",
+            green("✓"),
+            path,
+            all_tuples.len(),
+            events.len(),
+            revision.as_u64()
+        );
     }
     Ok(())
 }
@@ -846,7 +1002,8 @@ fn cmd_restore(state: &ReplState, args: &[&str]) -> Result<()> {
     let content = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read backup from {path}"))?;
     let mut backup: serde_json::Value = serde_json::from_str(&content)?;
-    let stored_checksum = backup.get("checksum")
+    let stored_checksum = backup
+        .get("checksum")
         .and_then(|v| v.as_str())
         .map(|s| s.strip_prefix("sha256:").unwrap_or(s))
         .unwrap_or("")
@@ -859,7 +1016,10 @@ fn cmd_restore(state: &ReplState, args: &[&str]) -> Result<()> {
         let mut hasher = Sha256::new();
         hasher.update(canonical.as_bytes());
         let hash = hasher.finalize();
-        let computed = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+        let computed = hash
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect::<String>();
         if stored_checksum != computed {
             anyhow::bail!("checksum mismatch: backup may be corrupted");
         }
@@ -869,19 +1029,24 @@ fn cmd_restore(state: &ReplState, args: &[&str]) -> Result<()> {
     if version >= 2 {
         if let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str()) {
             if !sy.is_empty() {
-                let schema = parse_schema(sy)
-                    .context("failed to parse schema from backup")?;
+                let schema = parse_schema(sy).context("failed to parse schema from backup")?;
                 state.engine.reload_schema(schema)?;
             }
         }
     }
 
     let tuples: Vec<RelationshipTuple> = serde_json::from_value(
-        backup.get("tuples").cloned().unwrap_or(serde_json::Value::Null),
+        backup
+            .get("tuples")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null),
     )
     .context("invalid backup format: missing or invalid 'tuples' field")?;
     let events: Vec<AuditEntry> = serde_json::from_value(
-        backup.get("events").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+        backup
+            .get("events")
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(vec![])),
     )
     .context("invalid backup format: missing or invalid 'events' field")?;
     let revision = backup
@@ -891,7 +1056,10 @@ fn cmd_restore(state: &ReplState, args: &[&str]) -> Result<()> {
         .map(Revision::new)
         .unwrap_or(Revision::ZERO);
     let count = tuples.len();
-    state.engine.storage().restore_backup(&PartitionId::default(), &tuples, &events, revision)?;
+    state
+        .engine
+        .storage()
+        .restore_backup(&PartitionId::default(), &tuples, &events, revision)?;
 
     if state.json_mode {
         println!(r#"{{"status":"ok","restored":{count}}}"#);
@@ -964,7 +1132,10 @@ fn cmd_recover_repl(state: &ReplState, args: &[&str]) -> Result<()> {
 
     let to_rev = to_revision.map(|r| Revision::new(r));
     if dry_run {
-        let current_rev = state.engine.storage().current_revision(&PartitionId::default())?;
+        let current_rev = state
+            .engine
+            .storage()
+            .current_revision(&PartitionId::default())?;
         let target_rev = to_rev.unwrap_or(current_rev);
         if state.json_mode {
             println!(
@@ -976,8 +1147,12 @@ fn cmd_recover_repl(state: &ReplState, args: &[&str]) -> Result<()> {
                 })
             );
         } else {
-            println!("  {} Dry-run: would recover events up to revision {} (current: {})",
-                yellow("!"), target_rev.as_u64(), current_rev.as_u64());
+            println!(
+                "  {} Dry-run: would recover events up to revision {} (current: {})",
+                yellow("!"),
+                target_rev.as_u64(),
+                current_rev.as_u64()
+            );
         }
     } else {
         let revision = state.engine.recover_from_events(to_rev)?;
@@ -990,7 +1165,11 @@ fn cmd_recover_repl(state: &ReplState, args: &[&str]) -> Result<()> {
                 })
             );
         } else {
-            println!("  {} Recovered to revision {}", green("✓"), revision.as_u64());
+            println!(
+                "  {} Recovered to revision {}",
+                green("✓"),
+                revision.as_u64()
+            );
         }
     }
     Ok(())
@@ -998,7 +1177,9 @@ fn cmd_recover_repl(state: &ReplState, args: &[&str]) -> Result<()> {
 
 fn cmd_delete_subject_repl(state: &ReplState, args: &[&str]) -> Result<()> {
     if args.len() < 2 {
-        eprintln!("Usage: delete-subject <subject> --policy <cascade|fail|transfer> [--transfer-to X]");
+        eprintln!(
+            "Usage: delete-subject <subject> --policy <cascade|fail|transfer> [--transfer-to X]"
+        );
         return Ok(());
     }
     let subject = SubjectId::new(args[0])?;
@@ -1009,12 +1190,14 @@ fn cmd_delete_subject_repl(state: &ReplState, args: &[&str]) -> Result<()> {
         match args[i] {
             "--policy" => {
                 i += 1;
-                policy = args.get(i)
+                policy = args
+                    .get(i)
                     .ok_or_else(|| anyhow::anyhow!("missing policy value"))?;
             }
             "--transfer-to" => {
                 i += 1;
-                let subj = args.get(i)
+                let subj = args
+                    .get(i)
                     .ok_or_else(|| anyhow::anyhow!("missing transfer target subject"))?;
                 transfer_to = Some(SubjectId::new(*subj)?);
             }
@@ -1025,7 +1208,9 @@ fn cmd_delete_subject_repl(state: &ReplState, args: &[&str]) -> Result<()> {
         }
         i += 1;
     }
-    let token = state.engine.delete_subject_with_policy(&subject, policy, transfer_to.as_ref())?;
+    let token = state
+        .engine
+        .delete_subject_with_policy(&subject, policy, transfer_to.as_ref())?;
     if state.json_mode {
         println!(
             "{}",
@@ -1035,7 +1220,11 @@ fn cmd_delete_subject_repl(state: &ReplState, args: &[&str]) -> Result<()> {
             })
         );
     } else {
-        println!("  {} Subject deleted (revision={})", green("✓"), token.revision.as_u64());
+        println!(
+            "  {} Subject deleted (revision={})",
+            green("✓"),
+            token.revision.as_u64()
+        );
     }
     Ok(())
 }
@@ -1054,7 +1243,13 @@ fn cmd_export_subject_repl(state: &ReplState, args: &[&str]) -> Result<()> {
             println!("  {} No tuples found for subject", yellow("!"));
         } else {
             for t in &tuples {
-                println!("  {} {} {} {}", green("•"), t.subject.as_str(), t.relation.as_str(), t.object.as_str());
+                println!(
+                    "  {} {} {} {}",
+                    green("•"),
+                    t.subject.as_str(),
+                    t.relation.as_str(),
+                    t.object.as_str()
+                );
             }
             println!("  {} tuple(s)", tuples.len());
         }
@@ -1077,7 +1272,12 @@ fn cmd_policy_draft(state: &mut ReplState, args: &[&str]) -> Result<()> {
             if state.json_mode {
                 println!("{}", serde_json::to_string_pretty(&draft)?);
             } else {
-                println!("  {} Created draft {} ({})", green("✓"), draft.name, draft.id);
+                println!(
+                    "  {} Created draft {} ({})",
+                    green("✓"),
+                    draft.name,
+                    draft.id
+                );
             }
         }
         "validate" => {
@@ -1091,8 +1291,15 @@ fn cmd_policy_draft(state: &mut ReplState, args: &[&str]) -> Result<()> {
             if state.json_mode {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
-                println!("  {} Validation: {}", green("✓"),
-                    if report.schema_valid { "valid" } else { "invalid" });
+                println!(
+                    "  {} Validation: {}",
+                    green("✓"),
+                    if report.schema_valid {
+                        "valid"
+                    } else {
+                        "invalid"
+                    }
+                );
             }
         }
         "diff" => {
@@ -1103,10 +1310,14 @@ fn cmd_policy_draft(state: &mut ReplState, args: &[&str]) -> Result<()> {
             let uid = uuid::Uuid::parse_str(args[1])
                 .with_context(|| format!("invalid id: {}", args[1]))?;
             let drafts = state.engine.list_policy_drafts(None)?;
-            let draft = drafts.into_iter()
+            let draft = drafts
+                .into_iter()
                 .find(|d| d.id == uid)
                 .ok_or_else(|| anyhow::anyhow!("draft {} not found", args[1]))?;
-            let report = state.engine.access_diff(&*state.engine.schema(), &draft.schema, None, None)?;
+            let report =
+                state
+                    .engine
+                    .access_diff(&*state.engine.schema(), &draft.schema, None, None)?;
             if state.json_mode {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
@@ -1167,7 +1378,11 @@ fn cmd_policy_draft(state: &mut ReplState, args: &[&str]) -> Result<()> {
             if state.json_mode {
                 println!("{}", serde_json::to_string_pretty(&result)?);
             } else {
-                println!("  {} Draft published as policy version {}", green("✓"), result.policy_version);
+                println!(
+                    "  {} Draft published as policy version {}",
+                    green("✓"),
+                    result.policy_version
+                );
             }
         }
         "archive" => {
@@ -1185,19 +1400,17 @@ fn cmd_policy_draft(state: &mut ReplState, args: &[&str]) -> Result<()> {
             }
         }
         "list" => {
-            let filter = args.get(1).and_then(|s| {
-                match s.to_lowercase().as_str() {
-                    "drafting" => Some(DraftStatus::Drafting),
-                    "under_review" | "underreview" => Some(DraftStatus::UnderReview),
-                    "approved" => Some(DraftStatus::Approved),
-                    "published" => Some(DraftStatus::Published),
-                    "rejected" => Some(DraftStatus::Rejected),
-                    "superseded" => Some(DraftStatus::Superseded),
-                    "archived" => Some(DraftStatus::Archived),
-                    _ => {
-                        eprintln!("  {} Invalid status: {s}", yellow("!"));
-                        None
-                    }
+            let filter = args.get(1).and_then(|s| match s.to_lowercase().as_str() {
+                "drafting" => Some(DraftStatus::Drafting),
+                "under_review" | "underreview" => Some(DraftStatus::UnderReview),
+                "approved" => Some(DraftStatus::Approved),
+                "published" => Some(DraftStatus::Published),
+                "rejected" => Some(DraftStatus::Rejected),
+                "superseded" => Some(DraftStatus::Superseded),
+                "archived" => Some(DraftStatus::Archived),
+                _ => {
+                    eprintln!("  {} Invalid status: {s}", yellow("!"));
+                    None
                 }
             });
             let drafts = state.engine.list_policy_drafts(filter)?;
@@ -1234,11 +1447,21 @@ fn cmd_schedule(state: &mut ReplState, args: &[&str]) -> Result<()> {
             let json_str = std::fs::read_to_string(args[1])
                 .with_context(|| format!("failed to read config: {}", args[1]))?;
             let cfg: AnalysisScheduleConfig = serde_json::from_str(&json_str)?;
-            let schedule = state.engine.create_analysis_schedule(&cfg.name, cfg.interval_seconds, cfg.queries, cfg.compare_schema)?;
+            let schedule = state.engine.create_analysis_schedule(
+                &cfg.name,
+                cfg.interval_seconds,
+                cfg.queries,
+                cfg.compare_schema,
+            )?;
             if state.json_mode {
                 println!("{}", serde_json::to_string_pretty(&schedule)?);
             } else {
-                println!("  {} Created schedule {} ({})", green("✓"), schedule.name, schedule.id);
+                println!(
+                    "  {} Created schedule {} ({})",
+                    green("✓"),
+                    schedule.name,
+                    schedule.id
+                );
             }
         }
         "list" => {
@@ -1250,7 +1473,12 @@ fn cmd_schedule(state: &mut ReplState, args: &[&str]) -> Result<()> {
                     println!("  {} No schedules found", yellow("!"));
                 } else {
                     for s in &schedules {
-                        println!("  {} {}  ({}s interval)", green("•"), s.name, s.interval_seconds);
+                        println!(
+                            "  {} {}  ({}s interval)",
+                            green("•"),
+                            s.name,
+                            s.interval_seconds
+                        );
                     }
                 }
             }
@@ -1265,9 +1493,15 @@ fn cmd_schedule(state: &mut ReplState, args: &[&str]) -> Result<()> {
             if state.json_mode {
                 println!(r#"{{"deleted":{deleted}}}"#);
             } else {
-                println!("  {} {}",
+                println!(
+                    "  {} {}",
                     if deleted { green("✓") } else { yellow("!") },
-                    if deleted { "Schedule deleted" } else { "Schedule not found" });
+                    if deleted {
+                        "Schedule deleted"
+                    } else {
+                        "Schedule not found"
+                    }
+                );
             }
         }
         "run" => {
@@ -1289,8 +1523,16 @@ fn cmd_schedule(state: &mut ReplState, args: &[&str]) -> Result<()> {
                     println!("  {} No runs found", yellow("!"));
                 } else {
                     for r in &runs {
-                        println!("  {} {}  [{}]", green("•"), r.id,
-                            if r.status == AnalysisRunStatus::Completed { "completed" } else { "failed" });
+                        println!(
+                            "  {} {}  [{}]",
+                            green("•"),
+                            r.id,
+                            if r.status == AnalysisRunStatus::Completed {
+                                "completed"
+                            } else {
+                                "failed"
+                            }
+                        );
                     }
                 }
             }
@@ -1330,7 +1572,11 @@ fn cmd_enforcement(state: &mut ReplState, args: &[&str]) -> Result<()> {
             } else {
                 println!("  {} Enabled: {}", bold("Enforcement"), config.enabled);
                 println!("  {}: {:?}", bold("Sampling"), config.sampling);
-                println!("  {}: {}", bold("Max events/min"), config.max_events_per_minute);
+                println!(
+                    "  {}: {}",
+                    bold("Max events/min"),
+                    config.max_events_per_minute
+                );
                 println!("  {}: {}", bold("Max rows"), config.max_rows);
                 println!("  {}: {} days", bold("Max age"), config.max_days);
             }
@@ -1381,11 +1627,10 @@ fn cmd_subscribe(state: &mut ReplState, args: &[&str]) -> Result<()> {
     if state.json_mode {
         println!(r#"{{"status":"subscribed"}}"#);
     } else {
-        println!("  {} Subscribed to events. Type 'unwatch' to stop.", green("✓"));
+        println!(
+            "  {} Subscribed to events. Type 'unwatch' to stop.",
+            green("✓")
+        );
     }
     Ok(())
 }
-
-
-
-

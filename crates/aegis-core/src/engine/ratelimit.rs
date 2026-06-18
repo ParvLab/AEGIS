@@ -68,9 +68,10 @@ impl TokenBucketRateLimiter {
     /// Check if an operation is allowed for the given key.
     /// Returns `RateLimitExceeded` error if the rate limit is exceeded.
     pub fn check(&self, key: &str, op: RateLimitOp) -> AegisResult<()> {
-        let mut buckets = self.buckets.lock().map_err(|e| {
-            AegisError::Internal(format!("rate limiter lock poisoned: {e}"))
-        })?;
+        let mut buckets = self
+            .buckets
+            .lock()
+            .map_err(|e| AegisError::Internal(format!("rate limiter lock poisoned: {e}")))?;
 
         // Evict the least-recently-accessed entry if we need to insert a new key
         // and the map is at capacity.
@@ -97,8 +98,14 @@ impl TokenBucketRateLimiter {
         });
 
         let (rate, burst) = match op {
-            RateLimitOp::Check => (self.config.checks_per_second as f64, self.config.check_burst as f64),
-            RateLimitOp::Write => (self.config.writes_per_second as f64, self.config.write_burst as f64),
+            RateLimitOp::Check => (
+                self.config.checks_per_second as f64,
+                self.config.check_burst as f64,
+            ),
+            RateLimitOp::Write => (
+                self.config.writes_per_second as f64,
+                self.config.write_burst as f64,
+            ),
         };
 
         let now = Instant::now();
@@ -108,22 +115,36 @@ impl TokenBucketRateLimiter {
         state.last_accessed = now;
 
         if state.tokens < 1.0 {
-            let sanitized: String = key.chars().filter(|&c| c.is_alphanumeric() || c == ':' || c == '_' || c == '-').take(128).collect();
+            let sanitized: String = key
+                .chars()
+                .filter(|&c| c.is_alphanumeric() || c == ':' || c == '_' || c == '-')
+                .take(128)
+                .collect();
             tracing::warn!(
                 "rate_limit.throttled key={} op={}",
                 sanitized,
-                match op { RateLimitOp::Check => "check", RateLimitOp::Write => "write" },
+                match op {
+                    RateLimitOp::Check => "check",
+                    RateLimitOp::Write => "write",
+                },
             );
             return Err(AegisError::RateLimitExceeded(key.to_string()));
         }
 
         state.tokens -= 1.0;
 
-        let sanitized: String = key.chars().filter(|&c| c.is_alphanumeric() || c == ':' || c == '_' || c == '-').take(128).collect();
+        let sanitized: String = key
+            .chars()
+            .filter(|&c| c.is_alphanumeric() || c == ':' || c == '_' || c == '-')
+            .take(128)
+            .collect();
         tracing::debug!(
             "rate_limit.allowed key={} op={} tokens_remaining={}",
             sanitized,
-            match op { RateLimitOp::Check => "check", RateLimitOp::Write => "write" },
+            match op {
+                RateLimitOp::Check => "check",
+                RateLimitOp::Write => "write",
+            },
             state.tokens,
         );
 

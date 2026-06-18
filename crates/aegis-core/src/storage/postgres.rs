@@ -1,11 +1,11 @@
+use crate::engine::enforcement_history::EnforcementEvent;
+use crate::engine::policy_lifecycle::PolicyDraft;
+use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
     BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
     TupleFilter,
 };
-use crate::engine::enforcement_history::EnforcementEvent;
-use crate::engine::policy_lifecycle::PolicyDraft;
-use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId,
     Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
@@ -157,7 +157,10 @@ impl PostgresStorage {
         Ok(())
     }
 
-    async fn current_revision_async(client: &tokio_postgres::Client, partition_id: &PartitionId) -> AegisResult<Revision> {
+    async fn current_revision_async(
+        client: &tokio_postgres::Client,
+        partition_id: &PartitionId,
+    ) -> AegisResult<Revision> {
         let key = format!("revision:{}", partition_id.as_str());
         let row = client
             .query_one(
@@ -170,7 +173,10 @@ impl PostgresStorage {
         Ok(Revision::new(rev as u64))
     }
 
-    async fn bump_revision_async(client: &tokio_postgres::Client, partition_id: &PartitionId) -> AegisResult<Revision> {
+    async fn bump_revision_async(
+        client: &tokio_postgres::Client,
+        partition_id: &PartitionId,
+    ) -> AegisResult<Revision> {
         let key = format!("revision:{}", partition_id.as_str());
         client
             .execute(
@@ -237,10 +243,16 @@ impl PostgresStorage {
     /// Add ALTER TABLE for existing databases that lack the hash columns.
     async fn add_hash_columns_async(client: &tokio_postgres::Client) -> AegisResult<()> {
         let _ = client
-            .execute("ALTER TABLE _aegis_events ADD COLUMN previous_hash TEXT NOT NULL DEFAULT ''", &[])
+            .execute(
+                "ALTER TABLE _aegis_events ADD COLUMN previous_hash TEXT NOT NULL DEFAULT ''",
+                &[],
+            )
             .await;
         let _ = client
-            .execute("ALTER TABLE _aegis_events ADD COLUMN event_hash TEXT NOT NULL DEFAULT ''", &[])
+            .execute(
+                "ALTER TABLE _aegis_events ADD COLUMN event_hash TEXT NOT NULL DEFAULT ''",
+                &[],
+            )
             .await;
         Ok(())
     }
@@ -273,7 +285,11 @@ impl StorageBackend for PostgresStorage {
         prev
     }
 
-    fn write_tuple(&self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<Revision> {
+    fn write_tuple(
+        &self,
+        partition_id: &PartitionId,
+        tuple: &RelationshipTuple,
+    ) -> AegisResult<Revision> {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
             let revision = Self::bump_revision_async(&client, partition_id).await?;
@@ -313,7 +329,11 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
-    fn write_tuples_batch(&self, partition_id: &PartitionId, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
+    fn write_tuples_batch(
+        &self,
+        partition_id: &PartitionId,
+        tuples: &[RelationshipTuple],
+    ) -> AegisResult<Revision> {
         if tuples.is_empty() {
             return self.current_revision(partition_id);
         }
@@ -396,7 +416,11 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
-    fn delete_subject(&self, partition_id: &PartitionId, subject: &SubjectId) -> AegisResult<Revision> {
+    fn delete_subject(
+        &self,
+        partition_id: &PartitionId,
+        subject: &SubjectId,
+    ) -> AegisResult<Revision> {
         let subj = subject.as_str().to_string();
         self.runtime.block_on(async {
             let client = self.get_client().await?;
@@ -430,7 +454,15 @@ impl StorageBackend for PostgresStorage {
             let identity = self.actor_identity.lock().unwrap().clone();
             for (relation, object) in &tuples {
                 Self::append_event_async(
-                    &client, partition_id, revision, "remove", subject.as_str(), relation, object, None, identity.as_deref(),
+                    &client,
+                    partition_id,
+                    revision,
+                    "remove",
+                    subject.as_str(),
+                    relation,
+                    object,
+                    None,
+                    identity.as_deref(),
                 )
                 .await?;
             }
@@ -439,7 +471,11 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
-    fn delete_object(&self, partition_id: &PartitionId, object: &ResourceId) -> AegisResult<Revision> {
+    fn delete_object(
+        &self,
+        partition_id: &PartitionId,
+        object: &ResourceId,
+    ) -> AegisResult<Revision> {
         let obj = object.as_str().to_string();
         self.runtime.block_on(async {
             let client = self.get_client().await?;
@@ -473,7 +509,15 @@ impl StorageBackend for PostgresStorage {
             let identity = self.actor_identity.lock().unwrap().clone();
             for (subject, relation) in &tuples {
                 Self::append_event_async(
-                    &client, partition_id, revision, "remove", subject, relation, object.as_str(), None, identity.as_deref(),
+                    &client,
+                    partition_id,
+                    revision,
+                    "remove",
+                    subject,
+                    relation,
+                    object.as_str(),
+                    None,
+                    identity.as_deref(),
                 )
                 .await?;
             }
@@ -498,7 +542,11 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
-    fn read_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>> {
+    fn read_tuple(
+        &self,
+        partition_id: &PartitionId,
+        key: &TupleKey,
+    ) -> AegisResult<Option<RelationshipTuple>> {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
             let rows = client
@@ -542,7 +590,11 @@ impl StorageBackend for PostgresStorage {
     }
 
     fn list_by_object(
-        &self, partition_id: &PartitionId, object: &ResourceId, relation: Option<&Relation>, consistency: &ConsistencyMode,
+        &self,
+        partition_id: &PartitionId,
+        object: &ResourceId,
+        relation: Option<&Relation>,
+        consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let obj = object.as_str().to_string();
         let rel = relation.map(|r| r.as_str().to_string());
@@ -550,7 +602,9 @@ impl StorageBackend for PostgresStorage {
         let rev_filter = match consistency {
             ConsistencyMode::AtRevision(rev) => {
                 let r = rev.as_u64() as i64;
-                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+                format!(
+                    "revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})"
+                )
             }
             _ => "revision_removed IS NULL".to_string(),
         };
@@ -640,7 +694,11 @@ impl StorageBackend for PostgresStorage {
     }
 
     fn list_by_subject(
-        &self, partition_id: &PartitionId, subject: &SubjectId, relation: Option<&Relation>, consistency: &ConsistencyMode,
+        &self,
+        partition_id: &PartitionId,
+        subject: &SubjectId,
+        relation: Option<&Relation>,
+        consistency: &ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let subj = subject.as_str().to_string();
         let rel = relation.map(|r| r.as_str().to_string());
@@ -648,7 +706,9 @@ impl StorageBackend for PostgresStorage {
         let rev_filter = match consistency {
             ConsistencyMode::AtRevision(rev) => {
                 let r = rev.as_u64() as i64;
-                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+                format!(
+                    "revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})"
+                )
             }
             _ => "revision_removed IS NULL".to_string(),
         };
@@ -738,7 +798,10 @@ impl StorageBackend for PostgresStorage {
     }
 
     fn list_by_relation(
-        &self, partition_id: &PartitionId, object: &ResourceId, relation: &Relation,
+        &self,
+        partition_id: &PartitionId,
+        object: &ResourceId,
+        relation: &Relation,
     ) -> AegisResult<Vec<RelationshipTuple>> {
         let obj = object.as_str().to_string();
         let rel = relation.as_str().to_string();
@@ -782,7 +845,11 @@ impl StorageBackend for PostgresStorage {
     }
 
     fn query_tuples(
-        &self, partition_id: &PartitionId, filter: &TupleFilter, pagination: &PaginationParams, consistency: &ConsistencyMode,
+        &self,
+        partition_id: &PartitionId,
+        filter: &TupleFilter,
+        pagination: &PaginationParams,
+        consistency: &ConsistencyMode,
     ) -> AegisResult<PaginatedTuples> {
         let subj_type = filter.subject_type.clone();
         let rel = filter.relation.as_ref().map(|r| r.as_str().to_string());
@@ -791,7 +858,9 @@ impl StorageBackend for PostgresStorage {
         let rev_filter = match consistency {
             ConsistencyMode::AtRevision(rev) => {
                 let r = rev.as_u64() as i64;
-                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+                format!(
+                    "revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})"
+                )
             }
             _ => "revision_removed IS NULL".to_string(),
         };
@@ -858,7 +927,9 @@ impl StorageBackend for PostgresStorage {
                     .query(&sql, &param_refs)
                     .await
                     .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
-                tx.commit().await.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+                tx.commit()
+                    .await
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
                 result
             } else {
                 client
@@ -874,7 +945,8 @@ impl StorageBackend for PostgresStorage {
                 let object_str: String = row.get("object");
                 let created: DateTime<Utc> = row.get("created_at");
                 let meta_val: Option<serde_json::Value> = row.get("metadata");
-                let metadata = meta_val.and_then(|v| serde_json::from_value::<HashMap<String, String>>(v).ok());
+                let metadata = meta_val
+                    .and_then(|v| serde_json::from_value::<HashMap<String, String>>(v).ok());
 
                 let subject = SubjectId::new(&subject_str)
                     .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -903,7 +975,11 @@ impl StorageBackend for PostgresStorage {
                 None
             };
 
-            Ok(PaginatedTuples { tuples, next_cursor, revision })
+            Ok(PaginatedTuples {
+                tuples,
+                next_cursor,
+                revision,
+            })
         })
     }
 
@@ -919,7 +995,10 @@ impl StorageBackend for PostgresStorage {
         Ok(RevisionToken::new(revision, self.node_id))
     }
 
-    fn begin_transaction(&self, _partition_id: &PartitionId) -> AegisResult<Box<dyn StorageTransaction>> {
+    fn begin_transaction(
+        &self,
+        _partition_id: &PartitionId,
+    ) -> AegisResult<Box<dyn StorageTransaction>> {
         let node_id = self.node_id;
         let handle = self.runtime.handle().clone();
         let identity = self.actor_identity.lock().unwrap().clone();
@@ -929,13 +1008,20 @@ impl StorageBackend for PostgresStorage {
                 .execute("BEGIN", &[])
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
-            Ok(Box::new(PostgresTransaction::new(client, handle, node_id, identity)) as Box<dyn StorageTransaction>)
+            Ok(
+                Box::new(PostgresTransaction::new(client, handle, node_id, identity))
+                    as Box<dyn StorageTransaction>,
+            )
         })
     }
 
     fn query_audit(
-        &self, partition_id: &PartitionId, object: Option<&ResourceId>, from_revision: Option<Revision>,
-        to_revision: Option<Revision>, pagination: &PaginationParams,
+        &self,
+        partition_id: &PartitionId,
+        object: Option<&ResourceId>,
+        from_revision: Option<Revision>,
+        to_revision: Option<Revision>,
+        pagination: &PaginationParams,
     ) -> AegisResult<Vec<AuditEntry>> {
         let from = from_revision.map(|r| r.as_u64() as i64);
         let to = to_revision.map(|r| r.as_u64() as i64);
@@ -1001,8 +1087,8 @@ impl StorageBackend for PostgresStorage {
                     let obj: String = row.get("object");
                     let ts: DateTime<Utc> = row.get("timestamp");
                     let meta_val: Option<serde_json::Value> = row.get("metadata");
-                    let metadata =
-                        meta_val.and_then(|v| serde_json::from_value::<HashMap<String, String>>(v).ok());
+                    let metadata = meta_val
+                        .and_then(|v| serde_json::from_value::<HashMap<String, String>>(v).ok());
                     let identity: Option<String> = row.get("identity");
                     let action = if action_str == "add" {
                         TupleMutation::Add
@@ -1030,7 +1116,10 @@ impl StorageBackend for PostgresStorage {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
             match client
-                .query_opt("SELECT version FROM _aegis_schema ORDER BY version DESC LIMIT 1", &[])
+                .query_opt(
+                    "SELECT version FROM _aegis_schema ORDER BY version DESC LIMIT 1",
+                    &[],
+                )
                 .await
             {
                 Ok(Some(row)) => {
@@ -1038,7 +1127,9 @@ impl StorageBackend for PostgresStorage {
                     Ok(v as u32)
                 }
                 Ok(None) => Ok(0),
-                Err(ref e) if e.code() == Some(&tokio_postgres::error::SqlState::UNDEFINED_TABLE) => {
+                Err(ref e)
+                    if e.code() == Some(&tokio_postgres::error::SqlState::UNDEFINED_TABLE) =>
+                {
                     Ok(0)
                 }
                 Err(e) => Err(AegisError::StorageQuery(e.to_string())),
@@ -1063,7 +1154,10 @@ impl StorageBackend for PostgresStorage {
     fn integrity_check(&self) -> AegisResult<IntegrityReport> {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
-            match client.query_one("SELECT 1 FROM _aegis_meta LIMIT 1", &[]).await {
+            match client
+                .query_one("SELECT 1 FROM _aegis_meta LIMIT 1", &[])
+                .await
+            {
                 Ok(_) => Ok(IntegrityReport {
                     passed: true,
                     details: vec!["ok".to_string()],
@@ -1084,18 +1178,29 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
-    fn delete_events_before(&self, partition_id: &PartitionId, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+    fn delete_events_before(
+        &self,
+        partition_id: &PartitionId,
+        cutoff: DateTime<Utc>,
+    ) -> AegisResult<usize> {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
             let rows = client
-                .execute("DELETE FROM _aegis_events WHERE partition_id = $1 AND timestamp < $2", &[&partition_id.as_str(), &cutoff])
+                .execute(
+                    "DELETE FROM _aegis_events WHERE partition_id = $1 AND timestamp < $2",
+                    &[&partition_id.as_str(), &cutoff],
+                )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             Ok(rows as usize)
         })
     }
 
-    fn delete_soft_deleted_tuples_before(&self, partition_id: &PartitionId, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+    fn delete_soft_deleted_tuples_before(
+        &self,
+        partition_id: &PartitionId,
+        cutoff: DateTime<Utc>,
+    ) -> AegisResult<usize> {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
             let rows = client
@@ -1115,7 +1220,11 @@ impl StorageBackend for PostgresStorage {
         })
     }
 
-    fn recover_from_events(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision> {
+    fn recover_from_events(
+        &self,
+        partition_id: &PartitionId,
+        to_revision: Option<Revision>,
+    ) -> AegisResult<Revision> {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
 
@@ -1458,7 +1567,13 @@ impl StorageBackend for PostgresStorage {
                     "INSERT INTO _aegis_policy_drafts (id, status, created_at, updated_at, data)
                      VALUES ($1, $2, $3, $4, $5)
                      ON CONFLICT (id) DO UPDATE SET status=$2, updated_at=$4, data=$5",
-                    &[&draft.id.to_string(), &draft.status.to_string(), &Utc::now(), &Utc::now(), &data],
+                    &[
+                        &draft.id.to_string(),
+                        &draft.status.to_string(),
+                        &Utc::now(),
+                        &Utc::now(),
+                        &data,
+                    ],
                 )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1492,7 +1607,10 @@ impl StorageBackend for PostgresStorage {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
             let row = client
-                .query_opt("DELETE FROM _aegis_policy_drafts WHERE id = $1 RETURNING id", &[&id])
+                .query_opt(
+                    "DELETE FROM _aegis_policy_drafts WHERE id = $1 RETURNING id",
+                    &[&id],
+                )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             Ok(row.is_some())
@@ -1520,7 +1638,10 @@ impl StorageBackend for PostgresStorage {
         self.runtime.block_on(async {
             let client = self.get_client().await?;
             let rows = client
-                .execute("DELETE FROM _aegis_analysis_schedules WHERE id = $1", &[&id])
+                .execute(
+                    "DELETE FROM _aegis_analysis_schedules WHERE id = $1",
+                    &[&id],
+                )
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             Ok(rows > 0)
@@ -1593,11 +1714,17 @@ impl PostgresTransaction {
             .ok_or_else(|| AegisError::Internal("transaction already consumed".into()))
     }
 
-    fn block_on<T>(&self, fut: impl std::future::Future<Output = AegisResult<T>>) -> AegisResult<T> {
+    fn block_on<T>(
+        &self,
+        fut: impl std::future::Future<Output = AegisResult<T>>,
+    ) -> AegisResult<T> {
         self.runtime.block_on(fut)
     }
 
-    async fn bump_revision_async(client: &tokio_postgres::Client, partition_id: &PartitionId) -> AegisResult<Revision> {
+    async fn bump_revision_async(
+        client: &tokio_postgres::Client,
+        partition_id: &PartitionId,
+    ) -> AegisResult<Revision> {
         let key = format!("revision:{}", partition_id.as_str());
         client
             .execute(
@@ -1768,8 +1895,7 @@ impl StorageTransaction for PostgresTransaction {
         let name_owned = name.to_string();
         self.block_on(async {
             let conn = self.conn.as_ref().unwrap();
-            conn
-                .execute(&format!("SAVEPOINT \"{}\"", name_owned), &[])
+            conn.execute(&format!("SAVEPOINT \"{}\"", name_owned), &[])
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             Ok(())
@@ -1781,8 +1907,7 @@ impl StorageTransaction for PostgresTransaction {
         let name_owned = name.to_string();
         self.block_on(async {
             let conn = self.conn.as_ref().unwrap();
-            conn
-                .execute(&format!("ROLLBACK TO SAVEPOINT \"{}\"", name_owned), &[])
+            conn.execute(&format!("ROLLBACK TO SAVEPOINT \"{}\"", name_owned), &[])
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             Ok(())
@@ -1794,8 +1919,7 @@ impl StorageTransaction for PostgresTransaction {
         let name_owned = name.to_string();
         self.block_on(async {
             let conn = self.conn.as_ref().unwrap();
-            conn
-                .execute(&format!("RELEASE SAVEPOINT \"{}\"", name_owned), &[])
+            conn.execute(&format!("RELEASE SAVEPOINT \"{}\"", name_owned), &[])
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             Ok(())
@@ -1804,7 +1928,8 @@ impl StorageTransaction for PostgresTransaction {
 
     fn commit(self: Box<Self>) -> AegisResult<Revision> {
         let s = *self;
-        let conn = s.conn
+        let conn = s
+            .conn
             .ok_or_else(|| AegisError::Internal("transaction already consumed".into()))?;
         let handle = s.runtime;
         handle.block_on(async {
@@ -1826,12 +1951,12 @@ impl StorageTransaction for PostgresTransaction {
 
     fn rollback(self: Box<Self>) -> AegisResult<()> {
         let s = *self;
-        let conn = s.conn
+        let conn = s
+            .conn
             .ok_or_else(|| AegisError::Internal("transaction already consumed".into()))?;
         let handle = s.runtime;
         handle.block_on(async {
-            conn
-                .execute("ROLLBACK", &[])
+            conn.execute("ROLLBACK", &[])
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             Ok(())

@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Instant;
 use crate::engine::GraphEngine;
 use crate::error::AegisResult;
 use crate::storage::{StorageBackend, TupleFilter};
 use crate::types::analysis::*;
 use crate::types::*;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Instant;
 
 impl GraphEngine {
     /// Find all subjects reachable from a resource through the authorization graph.
@@ -112,7 +112,10 @@ impl GraphEngine {
             .query_tuples(
                 &pid,
                 &TupleFilter::default(),
-                &PaginationParams { cursor: None, limit: 1_000_000 },
+                &PaginationParams {
+                    cursor: None,
+                    limit: 1_000_000,
+                },
                 &ConsistencyMode::MinimizeLatency,
             )
             .map_err(|e| crate::error::AegisError::Internal(e.to_string()))?;
@@ -125,7 +128,11 @@ impl GraphEngine {
             let relation_valid = type_def.map_or(false, |td| {
                 td.relations.contains_key(t.relation.as_str())
                     || td.permissions.contains_key(t.relation.as_str())
-                    || td.deny.iter().any(|d| d.relations.iter().any(|r| r.as_str() == t.relation.as_str()))
+                    || td.deny.iter().any(|d| {
+                        d.relations
+                            .iter()
+                            .any(|r| r.as_str() == t.relation.as_str())
+                    })
             });
 
             if !relation_valid {
@@ -150,7 +157,10 @@ impl GraphEngine {
             .query_tuples(
                 &pid,
                 &TupleFilter::default(),
-                &PaginationParams { cursor: None, limit: 1_000_000 },
+                &PaginationParams {
+                    cursor: None,
+                    limit: 1_000_000,
+                },
                 &ConsistencyMode::MinimizeLatency,
             )
             .map_err(|e| crate::error::AegisError::Internal(e.to_string()))?;
@@ -217,7 +227,10 @@ pub fn detect_tenant_leakage(
         .query_tuples(
             &default_pid,
             &TupleFilter::default(),
-            &PaginationParams { cursor: None, limit: 1_000_000 },
+            &PaginationParams {
+                cursor: None,
+                limit: 1_000_000,
+            },
             &ConsistencyMode::MinimizeLatency,
         )
         .map_err(|e| crate::error::AegisError::Internal(e.to_string()))?;

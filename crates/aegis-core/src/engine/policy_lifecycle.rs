@@ -3,8 +3,8 @@ use uuid::Uuid;
 
 use crate::engine::GraphEngine;
 use crate::error::{AegisError, AegisResult};
-use crate::types::analysis::{AccessDiffReport, SimulationReport};
 use crate::types::Schema;
+use crate::types::analysis::{AccessDiffReport, SimulationReport};
 
 /// Status of a policy draft in its lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,14 +67,13 @@ pub struct PublishResult {
 
 impl GraphEngine {
     /// Create a new policy draft in Drafting status.
-    pub fn create_policy_draft(
-        &self,
-        name: &str,
-        description: &str,
-    ) -> AegisResult<PolicyDraft> {
+    pub fn create_policy_draft(&self, name: &str, description: &str) -> AegisResult<PolicyDraft> {
         let now = chrono::Utc::now().to_rfc3339();
         let schema = {
-            let s = self.schema.read().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let s = self
+                .schema
+                .read()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             s.clone()
         };
         let current_ver = self.storage.read_schema_version().unwrap_or(0);
@@ -95,7 +94,10 @@ impl GraphEngine {
         };
 
         {
-            let mut drafts = self.drafts.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let mut drafts = self
+                .drafts
+                .lock()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             drafts.insert(draft.id, draft.clone());
         }
 
@@ -106,14 +108,18 @@ impl GraphEngine {
 
     /// Update a draft's schema (only allowed in Drafting status).
     pub fn update_policy_draft(&self, id: Uuid, schema: Schema) -> AegisResult<PolicyDraft> {
-        let mut drafts = self.drafts.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let draft = drafts.get_mut(&id).ok_or_else(|| {
-            AegisError::Internal(format!("draft {} not found", id))
-        })?;
+        let mut drafts = self
+            .drafts
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let draft = drafts
+            .get_mut(&id)
+            .ok_or_else(|| AegisError::Internal(format!("draft {} not found", id)))?;
 
         if draft.status != DraftStatus::Drafting {
             return Err(AegisError::Internal(format!(
-                "cannot update draft in status {:?}", draft.status
+                "cannot update draft in status {:?}",
+                draft.status
             )));
         }
 
@@ -126,17 +132,24 @@ impl GraphEngine {
     /// Validate a draft: check schema validity, compute diff, and run simulation.
     pub fn validate_policy_draft(&self, id: Uuid) -> AegisResult<ValidationReport> {
         let draft = {
-            let drafts = self.drafts.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-            drafts.get(&id).cloned().ok_or_else(|| {
-                AegisError::Internal(format!("draft {} not found", id))
-            })?
+            let drafts = self
+                .drafts
+                .lock()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
+            drafts
+                .get(&id)
+                .cloned()
+                .ok_or_else(|| AegisError::Internal(format!("draft {} not found", id)))?
         };
 
         let mut warnings = Vec::new();
         let schema_valid = true;
 
         let current_schema = {
-            let s = self.schema.read().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let s = self
+                .schema
+                .read()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             s.clone()
         };
 
@@ -158,14 +171,18 @@ impl GraphEngine {
 
     /// Submit a draft for review. Must be in Drafting status.
     pub fn submit_policy_draft_for_review(&self, id: Uuid) -> AegisResult<PolicyDraft> {
-        let mut drafts = self.drafts.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let draft = drafts.get_mut(&id).ok_or_else(|| {
-            AegisError::Internal(format!("draft {} not found", id))
-        })?;
+        let mut drafts = self
+            .drafts
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let draft = drafts
+            .get_mut(&id)
+            .ok_or_else(|| AegisError::Internal(format!("draft {} not found", id)))?;
 
         if draft.status != DraftStatus::Drafting {
             return Err(AegisError::Internal(format!(
-                "cannot submit draft in status {:?}", draft.status
+                "cannot submit draft in status {:?}",
+                draft.status
             )));
         }
 
@@ -177,14 +194,18 @@ impl GraphEngine {
 
     /// Approve a draft. Must be UnderReview.
     pub fn approve_policy_draft(&self, id: Uuid) -> AegisResult<PolicyDraft> {
-        let mut drafts = self.drafts.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let draft = drafts.get_mut(&id).ok_or_else(|| {
-            AegisError::Internal(format!("draft {} not found", id))
-        })?;
+        let mut drafts = self
+            .drafts
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let draft = drafts
+            .get_mut(&id)
+            .ok_or_else(|| AegisError::Internal(format!("draft {} not found", id)))?;
 
         if draft.status != DraftStatus::UnderReview {
             return Err(AegisError::Internal(format!(
-                "cannot approve draft in status {:?}", draft.status
+                "cannot approve draft in status {:?}",
+                draft.status
             )));
         }
 
@@ -197,14 +218,18 @@ impl GraphEngine {
 
     /// Reject a draft. Must be UnderReview.
     pub fn reject_policy_draft(&self, id: Uuid, reason: &str) -> AegisResult<PolicyDraft> {
-        let mut drafts = self.drafts.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let draft = drafts.get_mut(&id).ok_or_else(|| {
-            AegisError::Internal(format!("draft {} not found", id))
-        })?;
+        let mut drafts = self
+            .drafts
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let draft = drafts
+            .get_mut(&id)
+            .ok_or_else(|| AegisError::Internal(format!("draft {} not found", id)))?;
 
         if draft.status != DraftStatus::UnderReview {
             return Err(AegisError::Internal(format!(
-                "cannot reject draft in status {:?}", draft.status
+                "cannot reject draft in status {:?}",
+                draft.status
             )));
         }
 
@@ -218,14 +243,18 @@ impl GraphEngine {
     /// Publish a draft: rolls the policy to the draft's schema. Draft must be Approved.
     pub fn publish_policy_draft(&self, id: Uuid) -> AegisResult<PublishResult> {
         let draft = {
-            let mut drafts = self.drafts.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-            let draft = drafts.get_mut(&id).ok_or_else(|| {
-                AegisError::Internal(format!("draft {} not found", id))
-            })?;
+            let mut drafts = self
+                .drafts
+                .lock()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
+            let draft = drafts
+                .get_mut(&id)
+                .ok_or_else(|| AegisError::Internal(format!("draft {} not found", id)))?;
 
             if draft.status != DraftStatus::Approved {
                 return Err(AegisError::Internal(format!(
-                    "cannot publish draft in status {:?}", draft.status
+                    "cannot publish draft in status {:?}",
+                    draft.status
                 )));
             }
             draft.clone()
@@ -233,11 +262,16 @@ impl GraphEngine {
 
         // Compute reports before publishing (capture current vs new state)
         let current_schema = {
-            let s = self.schema.read().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let s = self
+                .schema
+                .read()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             s.clone()
         };
 
-        let access_diff = self.access_diff(&current_schema, &draft.schema, None, Some(1000)).ok();
+        let access_diff = self
+            .access_diff(&current_schema, &draft.schema, None, Some(1000))
+            .ok();
 
         // Save the draft's schema as a new policy version via rollback mechanism
         let schema_json = serde_json::to_string(&draft.schema)
@@ -254,14 +288,20 @@ impl GraphEngine {
 
         // Apply the draft schema
         {
-            let mut schema = self.schema.write().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let mut schema = self
+                .schema
+                .write()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             *schema = draft.schema;
         }
         self.storage.write_schema_version(current_ver + 1)?;
 
         // Update draft status
         {
-            let mut drafts = self.drafts.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let mut drafts = self
+                .drafts
+                .lock()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             if let Some(d) = drafts.get_mut(&id) {
                 d.status = DraftStatus::Published;
                 d.updated_at = chrono::Utc::now().to_rfc3339();
@@ -278,10 +318,13 @@ impl GraphEngine {
 
     /// Archive a draft (soft delete).
     pub fn archive_policy_draft(&self, id: Uuid) -> AegisResult<PolicyDraft> {
-        let mut drafts = self.drafts.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let draft = drafts.get_mut(&id).ok_or_else(|| {
-            AegisError::Internal(format!("draft {} not found", id))
-        })?;
+        let mut drafts = self
+            .drafts
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let draft = drafts
+            .get_mut(&id)
+            .ok_or_else(|| AegisError::Internal(format!("draft {} not found", id)))?;
 
         draft.status = DraftStatus::Archived;
         draft.updated_at = chrono::Utc::now().to_rfc3339();
@@ -290,8 +333,14 @@ impl GraphEngine {
     }
 
     /// List policy drafts, optionally filtered by status.
-    pub fn list_policy_drafts(&self, filter_status: Option<DraftStatus>) -> AegisResult<Vec<PolicyDraft>> {
-        let drafts = self.drafts.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+    pub fn list_policy_drafts(
+        &self,
+        filter_status: Option<DraftStatus>,
+    ) -> AegisResult<Vec<PolicyDraft>> {
+        let drafts = self
+            .drafts
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let mut result: Vec<PolicyDraft> = drafts.values().cloned().collect();
         if let Some(status) = filter_status {
             result.retain(|d| d.status == status);

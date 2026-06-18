@@ -2,15 +2,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use aegis_core::engine::GraphEngine;
 use aegis_core::engine::condition::ConditionEvalContext;
 use aegis_core::engine::hooks::LogLevel;
 use aegis_core::engine::ratelimit::{RateLimitConfig, TokenBucketRateLimiter};
-use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
-use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
-use aegis_core::types::*;
+use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::types::PartitionId;
+use aegis_core::types::*;
 
 use chrono::{DateTime, Utc};
 use pyo3::exceptions::PyRuntimeError;
@@ -24,11 +24,16 @@ fn py_err(msg: impl ToString) -> PyErr {
 fn parse_consistency(s: Option<String>) -> PyResult<Option<ConsistencyMode>> {
     match s {
         None => Ok(None),
-        Some(ref val) if val.eq_ignore_ascii_case("minimize_latency") => Ok(Some(ConsistencyMode::MinimizeLatency)),
-        Some(ref val) if val.eq_ignore_ascii_case("fully_consistent") => Ok(Some(ConsistencyMode::FullyConsistent)),
+        Some(ref val) if val.eq_ignore_ascii_case("minimize_latency") => {
+            Ok(Some(ConsistencyMode::MinimizeLatency))
+        }
+        Some(ref val) if val.eq_ignore_ascii_case("fully_consistent") => {
+            Ok(Some(ConsistencyMode::FullyConsistent))
+        }
         Some(ref val) => {
             if let Some(rev_str) = val.strip_prefix("at_revision:") {
-                let rev_num: u64 = rev_str.parse()
+                let rev_num: u64 = rev_str
+                    .parse()
                     .map_err(|_| py_err(format!("invalid consistency: {}", val)))?;
                 Ok(Some(ConsistencyMode::AtRevision(Revision::from(rev_num))))
             } else {
@@ -52,7 +57,10 @@ struct PyCheckResult {
 #[pymethods]
 impl PyCheckResult {
     fn __repr__(&self) -> String {
-        format!("CheckResult(allowed={}, revision={})", self.allowed, self.revision)
+        format!(
+            "CheckResult(allowed={}, revision={})",
+            self.allowed, self.revision
+        )
     }
 }
 
@@ -110,8 +118,10 @@ struct PyHealthReport {
 #[pymethods]
 impl PyHealthReport {
     fn __repr__(&self) -> String {
-        format!("HealthReport(healthy={}, revision={}, schema_version={})",
-            self.healthy, self.revision, self.schema_version)
+        format!(
+            "HealthReport(healthy={}, revision={}, schema_version={})",
+            self.healthy, self.revision, self.schema_version
+        )
     }
 }
 
@@ -129,7 +139,10 @@ struct PyExplainTrace {
 #[pymethods]
 impl PyExplainTrace {
     fn __repr__(&self) -> String {
-        format!("ExplainTrace({} {} {})", self.subject, self.relation, self.object)
+        format!(
+            "ExplainTrace({} {} {})",
+            self.subject, self.relation, self.object
+        )
     }
 }
 
@@ -151,8 +164,10 @@ struct PyExplainResult {
 #[pymethods]
 impl PyExplainResult {
     fn __repr__(&self) -> String {
-        format!("ExplainResult(allowed={}, revision={}, resolved_via={})",
-            self.allowed, self.revision, self.resolved_via)
+        format!(
+            "ExplainResult(allowed={}, revision={}, resolved_via={})",
+            self.allowed, self.revision, self.resolved_via
+        )
     }
 }
 
@@ -170,7 +185,10 @@ struct PyTuple {
 #[pymethods]
 impl PyTuple {
     fn __repr__(&self) -> String {
-        format!("Tuple({} --{}--> {})", self.subject, self.relation, self.object)
+        format!(
+            "Tuple({} --{}--> {})",
+            self.subject, self.relation, self.object
+        )
     }
 }
 
@@ -188,8 +206,12 @@ struct PySchemaCheckReport {
 #[pymethods]
 impl PySchemaCheckReport {
     fn __repr__(&self) -> String {
-        format!("SchemaCheckReport(compatible={}, {} warnings, {} breaking)",
-            self.compatible, self.warnings.len(), self.breaking.len())
+        format!(
+            "SchemaCheckReport(compatible={}, {} warnings, {} breaking)",
+            self.compatible,
+            self.warnings.len(),
+            self.breaking.len()
+        )
     }
 }
 
@@ -209,7 +231,11 @@ struct PyExportResult {
 #[pymethods]
 impl PyExportResult {
     fn __repr__(&self) -> String {
-        format!("ExportResult(subject={}, {} tuples)", self.subject, self.active_tuples.len())
+        format!(
+            "ExportResult(subject={}, {} tuples)",
+            self.subject,
+            self.active_tuples.len()
+        )
     }
 }
 
@@ -235,7 +261,10 @@ struct PyAuditEntry {
 #[pymethods]
 impl PyAuditEntry {
     fn __repr__(&self) -> String {
-        format!("AuditEntry(revision={}, action={})", self.revision, self.action)
+        format!(
+            "AuditEntry(revision={}, action={})",
+            self.revision, self.action
+        )
     }
 }
 
@@ -253,7 +282,11 @@ struct PyPaginatedTuples {
 #[pymethods]
 impl PyPaginatedTuples {
     fn __repr__(&self) -> String {
-        format!("PaginatedTuples({} tuples, revision={})", self.tuples.len(), self.revision)
+        format!(
+            "PaginatedTuples({} tuples, revision={})",
+            self.tuples.len(),
+            self.revision
+        )
     }
 }
 
@@ -279,7 +312,14 @@ struct PyAegis {
 impl PyAegis {
     #[new]
     #[pyo3(signature = (path, schema_yaml, max_readers=None, busy_timeout_ms=None, wal_mode=None, mmap_size=None))]
-    fn new(path: String, schema_yaml: String, max_readers: Option<u32>, busy_timeout_ms: Option<u32>, wal_mode: Option<bool>, mmap_size: Option<u64>) -> PyResult<Self> {
+    fn new(
+        path: String,
+        schema_yaml: String,
+        max_readers: Option<u32>,
+        busy_timeout_ms: Option<u32>,
+        wal_mode: Option<bool>,
+        mmap_size: Option<u64>,
+    ) -> PyResult<Self> {
         let config = SqliteConfig {
             path,
             max_readers: max_readers.unwrap_or(4),
@@ -322,14 +362,22 @@ impl PyAegis {
     }
 
     #[pyo3(signature = (subject, permission, resource, consistency=None))]
-    fn check(&self, subject: &str, permission: &str, resource: &str, consistency: Option<String>) -> PyResult<PyCheckResult> {
+    fn check(
+        &self,
+        subject: &str,
+        permission: &str,
+        resource: &str,
+        consistency: Option<String>,
+    ) -> PyResult<PyCheckResult> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let subject_id = SubjectId::new(subject).map_err(py_err)?;
         let resource_id = ResourceId::new(resource).map_err(py_err)?;
         let cm = parse_consistency(consistency)?;
-        let result = self.engine.check(&subject_id, permission, &resource_id, cm)
+        let result = self
+            .engine
+            .check(&subject_id, permission, &resource_id, cm)
             .map_err(py_err)?;
         Ok(PyCheckResult {
             allowed: result.allowed,
@@ -338,7 +386,14 @@ impl PyAegis {
     }
 
     #[pyo3(signature = (subject, permission, resource, context, consistency=None))]
-    fn check_with_context(&self, subject: &str, permission: &str, resource: &str, context: HashMap<String, HashMap<String, String>>, consistency: Option<String>) -> PyResult<PyCheckResult> {
+    fn check_with_context(
+        &self,
+        subject: &str,
+        permission: &str,
+        resource: &str,
+        context: HashMap<String, HashMap<String, String>>,
+        consistency: Option<String>,
+    ) -> PyResult<PyCheckResult> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
@@ -350,7 +405,9 @@ impl PyAegis {
             resource_meta: context.get("resource_meta").cloned().unwrap_or_default(),
             env: context.get("env").cloned().unwrap_or_default(),
         };
-        let result = self.engine.check_with_context(&subject_id, permission, &resource_id, cm, ctx)
+        let result = self
+            .engine
+            .check_with_context(&subject_id, permission, &resource_id, cm, ctx)
             .map_err(py_err)?;
         Ok(PyCheckResult {
             allowed: result.allowed,
@@ -359,14 +416,22 @@ impl PyAegis {
     }
 
     #[pyo3(signature = (subject, permission, resource, consistency=None))]
-    fn check_dry_run(&self, subject: &str, permission: &str, resource: &str, consistency: Option<String>) -> PyResult<PyCheckResult> {
+    fn check_dry_run(
+        &self,
+        subject: &str,
+        permission: &str,
+        resource: &str,
+        consistency: Option<String>,
+    ) -> PyResult<PyCheckResult> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let subject_id = SubjectId::new(subject).map_err(py_err)?;
         let resource_id = ResourceId::new(resource).map_err(py_err)?;
         let cm = parse_consistency(consistency)?;
-        let result = self.engine.check_dry_run(&subject_id, permission, &resource_id, cm)
+        let result = self
+            .engine
+            .check_dry_run(&subject_id, permission, &resource_id, cm)
             .map_err(py_err)?;
         Ok(PyCheckResult {
             allowed: result.allowed,
@@ -375,7 +440,15 @@ impl PyAegis {
     }
 
     #[pyo3(signature = (subject, relation, resource, condition=None, metadata=None, valid_until=None))]
-    fn write(&self, subject: &str, relation: &str, resource: &str, condition: Option<String>, metadata: Option<HashMap<String, String>>, valid_until: Option<String>) -> PyResult<PyWriteResult> {
+    fn write(
+        &self,
+        subject: &str,
+        relation: &str,
+        resource: &str,
+        condition: Option<String>,
+        metadata: Option<HashMap<String, String>>,
+        valid_until: Option<String>,
+    ) -> PyResult<PyWriteResult> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
@@ -403,12 +476,23 @@ impl PyAegis {
         Ok(PyWriteResult {
             revision: result.revision.as_u64() as i64,
             node_id: result.node_id.to_string(),
-            timestamp: result.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            timestamp: result
+                .timestamp
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
         })
     }
 
     #[pyo3(signature = (subject, relation, resource, condition=None, metadata=None, valid_until=None))]
-    fn write_dry_run(&self, subject: &str, relation: &str, resource: &str, condition: Option<String>, metadata: Option<HashMap<String, String>>, valid_until: Option<String>) -> PyResult<PyCheckResult> {
+    fn write_dry_run(
+        &self,
+        subject: &str,
+        relation: &str,
+        resource: &str,
+        condition: Option<String>,
+        metadata: Option<HashMap<String, String>>,
+        valid_until: Option<String>,
+    ) -> PyResult<PyCheckResult> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
@@ -455,7 +539,10 @@ impl PyAegis {
         Ok(PyWriteResult {
             revision: result.revision.as_u64() as i64,
             node_id: result.node_id.to_string(),
-            timestamp: result.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            timestamp: result
+                .timestamp
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
         })
     }
 
@@ -480,50 +567,84 @@ impl PyAegis {
     }
 
     #[pyo3(signature = (subject, permission, resource, consistency=None))]
-    fn explain(&self, subject: &str, permission: &str, resource: &str, consistency: Option<String>) -> PyResult<PyExplainResult> {
+    fn explain(
+        &self,
+        subject: &str,
+        permission: &str,
+        resource: &str,
+        consistency: Option<String>,
+    ) -> PyResult<PyExplainResult> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let subject_id = SubjectId::new(subject).map_err(py_err)?;
         let resource_id = ResourceId::new(resource).map_err(py_err)?;
         let cm = parse_consistency(consistency)?;
-        let result = self.engine.explain(&subject_id, permission, &resource_id, cm)
+        let result = self
+            .engine
+            .explain(&subject_id, permission, &resource_id, cm)
             .map_err(py_err)?;
         Ok(PyExplainResult {
             allowed: result.allowed,
             revision: result.revision.as_u64() as i64,
-            trace: result.trace.iter().map(|t| PyExplainTrace {
-                subject: t.subject.clone(),
-                relation: t.relation.clone(),
-                object: t.object.clone(),
-            }).collect(),
+            trace: result
+                .trace
+                .iter()
+                .map(|t| PyExplainTrace {
+                    subject: t.subject.clone(),
+                    relation: t.relation.clone(),
+                    object: t.object.clone(),
+                })
+                .collect(),
             resolved_via: result.resolved_via,
             duration_ms: result.duration_ms as i64,
         })
     }
 
     #[pyo3(signature = (object, relation=None, consistency=None))]
-    fn list_by_object(&self, object: &str, relation: Option<String>, consistency: Option<String>) -> PyResult<Vec<PyTuple>> {
+    fn list_by_object(
+        &self,
+        object: &str,
+        relation: Option<String>,
+        consistency: Option<String>,
+    ) -> PyResult<Vec<PyTuple>> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let object_id = ResourceId::new(object).map_err(py_err)?;
-        let rel = relation.as_deref().map(Relation::new).transpose().map_err(py_err)?;
+        let rel = relation
+            .as_deref()
+            .map(Relation::new)
+            .transpose()
+            .map_err(py_err)?;
         let cm = parse_consistency(consistency)?;
-        let tuples = self.engine.list_by_object(&object_id, rel.as_ref(), cm)
+        let tuples = self
+            .engine
+            .list_by_object(&object_id, rel.as_ref(), cm)
             .map_err(py_err)?;
         Ok(tuples.iter().map(tuple_to_py).collect())
     }
 
     #[pyo3(signature = (subject, relation=None, consistency=None))]
-    fn list_by_subject(&self, subject: &str, relation: Option<String>, consistency: Option<String>) -> PyResult<Vec<PyTuple>> {
+    fn list_by_subject(
+        &self,
+        subject: &str,
+        relation: Option<String>,
+        consistency: Option<String>,
+    ) -> PyResult<Vec<PyTuple>> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let subject_id = SubjectId::new(subject).map_err(py_err)?;
-        let rel = relation.as_deref().map(Relation::new).transpose().map_err(py_err)?;
+        let rel = relation
+            .as_deref()
+            .map(Relation::new)
+            .transpose()
+            .map_err(py_err)?;
         let cm = parse_consistency(consistency)?;
-        let tuples = self.engine.list_by_subject(&subject_id, rel.as_ref(), cm)
+        let tuples = self
+            .engine
+            .list_by_subject(&subject_id, rel.as_ref(), cm)
             .map_err(py_err)?;
         Ok(tuples.iter().map(tuple_to_py).collect())
     }
@@ -534,21 +655,38 @@ impl PyAegis {
         }
         let object_id = ResourceId::new(object).map_err(py_err)?;
         let relation_id = Relation::new(relation).map_err(py_err)?;
-        let tuples = self.engine.list_by_relation(&object_id, &relation_id)
+        let tuples = self
+            .engine
+            .list_by_relation(&object_id, &relation_id)
             .map_err(py_err)?;
         Ok(tuples.iter().map(tuple_to_py).collect())
     }
 
     #[pyo3(signature = (permission, resource, page_offset=None, page_limit=None, include_paths=None))]
-    fn who_can_access(&self, permission: &str, resource: &str, page_offset: Option<u64>, page_limit: Option<u64>, include_paths: Option<bool>) -> PyResult<String> {
+    fn who_can_access(
+        &self,
+        permission: &str,
+        resource: &str,
+        page_offset: Option<u64>,
+        page_limit: Option<u64>,
+        include_paths: Option<bool>,
+    ) -> PyResult<String> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let resource_id = ResourceId::new(resource).map_err(py_err)?;
-        let cursor = page_offset.map(|offset| PaginationCursor { offset, revision: Revision::from(0) });
-        let pagination = PaginationParams { limit: page_limit.unwrap_or(100), cursor };
+        let cursor = page_offset.map(|offset| PaginationCursor {
+            offset,
+            revision: Revision::from(0),
+        });
+        let pagination = PaginationParams {
+            limit: page_limit.unwrap_or(100),
+            cursor,
+        };
         let include = include_paths.unwrap_or(false);
-        let result = self.engine.who_can_access(permission, &resource_id, &pagination, include, 10, 5000)
+        let result = self
+            .engine
+            .who_can_access(permission, &resource_id, &pagination, include, 10, 5000)
             .map_err(py_err)?;
         serde_json::to_string(&result).map_err(py_err)
     }
@@ -569,7 +707,10 @@ impl PyAegis {
         Ok(PyWriteResult {
             revision: result.revision.as_u64() as i64,
             node_id: result.node_id.to_string(),
-            timestamp: result.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            timestamp: result
+                .timestamp
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
         })
     }
 
@@ -603,7 +744,10 @@ impl PyAegis {
         Ok(PyWriteResult {
             revision: result.revision.as_u64() as i64,
             node_id: result.node_id.to_string(),
-            timestamp: result.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            timestamp: result
+                .timestamp
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
         })
     }
 
@@ -613,7 +757,11 @@ impl PyAegis {
         }
         let subject_id = SubjectId::new(&subject).map_err(py_err)?;
         let tuples = self.engine.export_subject(&subject_id).map_err(py_err)?;
-        let revision = self.engine.storage().current_revision(&PartitionId::default()).map_err(py_err)?;
+        let revision = self
+            .engine
+            .storage()
+            .current_revision(&PartitionId::default())
+            .map_err(py_err)?;
         Ok(PyExportResult {
             subject: subject.clone(),
             active_tuples: tuples.iter().map(tuple_to_py).collect(),
@@ -623,7 +771,12 @@ impl PyAegis {
     }
 
     #[pyo3(signature = (subject, policy, transfer_to_subject=None))]
-    fn delete_subject_with_policy(&self, subject: String, policy: String, transfer_to_subject: Option<String>) -> PyResult<PyWriteResult> {
+    fn delete_subject_with_policy(
+        &self,
+        subject: String,
+        policy: String,
+        transfer_to_subject: Option<String>,
+    ) -> PyResult<PyWriteResult> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
@@ -632,54 +785,85 @@ impl PyAegis {
             Some(s) => Some(SubjectId::new(&s).map_err(py_err)?),
             None => None,
         };
-        let result = self.engine.delete_subject_with_policy(&subject_id, &policy, transfer.as_ref())
+        let result = self
+            .engine
+            .delete_subject_with_policy(&subject_id, &policy, transfer.as_ref())
             .map_err(py_err)?;
         Ok(PyWriteResult {
             revision: result.revision.as_u64() as i64,
             node_id: result.node_id.to_string(),
-            timestamp: result.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            timestamp: result
+                .timestamp
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
         })
     }
 
     #[pyo3(signature = (object, from_revision=None, to_revision=None, limit=100.0))]
-    fn query_audit(&self, object: String, from_revision: Option<i64>, to_revision: Option<i64>, limit: f64) -> PyResult<Vec<PyAuditEntry>> {
+    fn query_audit(
+        &self,
+        object: String,
+        from_revision: Option<i64>,
+        to_revision: Option<i64>,
+        limit: f64,
+    ) -> PyResult<Vec<PyAuditEntry>> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let object_id = ResourceId::new(&object).map_err(py_err)?;
         let from = from_revision.map(|r| Revision::from(r as u64));
         let to = to_revision.map(|r| Revision::from(r as u64));
-        let pp = PaginationParams { limit: limit as u64, cursor: None };
-        let entries = self.engine.query_audit(&object_id, from, to, &pp).map_err(py_err)?;
-        Ok(entries.iter().map(|e| PyAuditEntry {
-            revision: e.revision.as_u64() as i64,
-            action: format!("{:?}", e.action).to_lowercase(),
-            subject: e.subject.clone(),
-            relation: e.relation.clone(),
-            object: e.object.clone(),
-            timestamp: e.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-            identity: e.identity.clone(),
-        }).collect())
+        let pp = PaginationParams {
+            limit: limit as u64,
+            cursor: None,
+        };
+        let entries = self
+            .engine
+            .query_audit(&object_id, from, to, &pp)
+            .map_err(py_err)?;
+        Ok(entries
+            .iter()
+            .map(|e| PyAuditEntry {
+                revision: e.revision.as_u64() as i64,
+                action: format!("{:?}", e.action).to_lowercase(),
+                subject: e.subject.clone(),
+                relation: e.relation.clone(),
+                object: e.object.clone(),
+                timestamp: e.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+                identity: e.identity.clone(),
+            })
+            .collect())
     }
 
     #[pyo3(signature = (from_revision=None, to_revision=None, limit=100.0))]
-    fn query_audit_all(&self, from_revision: Option<i64>, to_revision: Option<i64>, limit: f64) -> PyResult<Vec<PyAuditEntry>> {
+    fn query_audit_all(
+        &self,
+        from_revision: Option<i64>,
+        to_revision: Option<i64>,
+        limit: f64,
+    ) -> PyResult<Vec<PyAuditEntry>> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let from = from_revision.map(|r| Revision::from(r as u64));
         let to = to_revision.map(|r| Revision::from(r as u64));
-        let pp = PaginationParams { limit: limit as u64, cursor: None };
+        let pp = PaginationParams {
+            limit: limit as u64,
+            cursor: None,
+        };
         let entries = self.engine.query_audit_all(from, to, &pp).map_err(py_err)?;
-        Ok(entries.iter().map(|e| PyAuditEntry {
-            revision: e.revision.as_u64() as i64,
-            action: format!("{:?}", e.action).to_lowercase(),
-            subject: e.subject.clone(),
-            relation: e.relation.clone(),
-            object: e.object.clone(),
-            timestamp: e.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
-            identity: e.identity.clone(),
-        }).collect())
+        Ok(entries
+            .iter()
+            .map(|e| PyAuditEntry {
+                revision: e.revision.as_u64() as i64,
+                action: format!("{:?}", e.action).to_lowercase(),
+                subject: e.subject.clone(),
+                relation: e.relation.clone(),
+                object: e.object.clone(),
+                timestamp: e.timestamp.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+                identity: e.identity.clone(),
+            })
+            .collect())
     }
 
     fn reload_schema(&self, schema_yaml: String) -> PyResult<()> {
@@ -700,19 +884,43 @@ impl PyAegis {
     }
 
     #[pyo3(signature = (checks_per_second=None, check_burst=None, writes_per_second=None, write_burst=None, max_traversal_depth=None, max_traversal_visits=None, max_keys=None))]
-    fn set_rate_limiter(&self, checks_per_second: Option<u32>, check_burst: Option<u32>, writes_per_second: Option<u32>, write_burst: Option<u32>, max_traversal_depth: Option<usize>, max_traversal_visits: Option<usize>, max_keys: Option<usize>) -> PyResult<()> {
+    fn set_rate_limiter(
+        &self,
+        checks_per_second: Option<u32>,
+        check_burst: Option<u32>,
+        writes_per_second: Option<u32>,
+        write_burst: Option<u32>,
+        max_traversal_depth: Option<usize>,
+        max_traversal_visits: Option<usize>,
+        max_keys: Option<usize>,
+    ) -> PyResult<()> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let mut cfg = RateLimitConfig::default();
-        if let Some(v) = checks_per_second { cfg.checks_per_second = v; }
-        if let Some(v) = check_burst { cfg.check_burst = v; }
-        if let Some(v) = writes_per_second { cfg.writes_per_second = v; }
-        if let Some(v) = write_burst { cfg.write_burst = v; }
-        if let Some(v) = max_traversal_depth { cfg.max_traversal_depth = v; }
-        if let Some(v) = max_traversal_visits { cfg.max_traversal_visits = v; }
-        if let Some(v) = max_keys { cfg.max_keys = v; }
-        self.engine.set_rate_limiter(TokenBucketRateLimiter::new(cfg));
+        if let Some(v) = checks_per_second {
+            cfg.checks_per_second = v;
+        }
+        if let Some(v) = check_burst {
+            cfg.check_burst = v;
+        }
+        if let Some(v) = writes_per_second {
+            cfg.writes_per_second = v;
+        }
+        if let Some(v) = write_burst {
+            cfg.write_burst = v;
+        }
+        if let Some(v) = max_traversal_depth {
+            cfg.max_traversal_depth = v;
+        }
+        if let Some(v) = max_traversal_visits {
+            cfg.max_traversal_visits = v;
+        }
+        if let Some(v) = max_keys {
+            cfg.max_keys = v;
+        }
+        self.engine
+            .set_rate_limiter(TokenBucketRateLimiter::new(cfg));
         Ok(())
     }
 
@@ -729,30 +937,39 @@ impl PyAegis {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
-        self.engine.set_logger(move |level: LogLevel, target: &str, msg: &str| {
-            let level_i32 = match level {
-                LogLevel::Error => 0,
-                LogLevel::Warn => 1,
-                LogLevel::Info => 2,
-                LogLevel::Debug => 3,
-                LogLevel::Trace => 4,
-            };
-            Python::with_gil(|py| {
-                let _ = callback.call1(py, (level_i32, target, msg));
+        self.engine
+            .set_logger(move |level: LogLevel, target: &str, msg: &str| {
+                let level_i32 = match level {
+                    LogLevel::Error => 0,
+                    LogLevel::Warn => 1,
+                    LogLevel::Info => 2,
+                    LogLevel::Debug => 3,
+                    LogLevel::Trace => 4,
+                };
+                Python::with_gil(|py| {
+                    let _ = callback.call1(py, (level_i32, target, msg));
+                });
             });
-        });
         Ok(())
     }
 
     #[pyo3(signature = (subject, permission, resource, consistency=None))]
-    fn explain_v2(&self, subject: &str, permission: &str, resource: &str, consistency: Option<String>) -> PyResult<String> {
+    fn explain_v2(
+        &self,
+        subject: &str,
+        permission: &str,
+        resource: &str,
+        consistency: Option<String>,
+    ) -> PyResult<String> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let subject_id = SubjectId::new(subject).map_err(py_err)?;
         let resource_id = ResourceId::new(resource).map_err(py_err)?;
         let cm = parse_consistency(consistency)?;
-        let result = self.engine.explain_v2(&subject_id, permission, &resource_id, cm)
+        let result = self
+            .engine
+            .explain_v2(&subject_id, permission, &resource_id, cm)
             .map_err(py_err)?;
         serde_json::to_string(&result).map_err(py_err)
     }
@@ -774,13 +991,20 @@ impl PyAegis {
     }
 
     #[pyo3(signature = (schema_before_json, schema_after_json, max_checks=None))]
-    fn access_diff(&self, schema_before_json: &str, schema_after_json: &str, max_checks: Option<u64>) -> PyResult<String> {
+    fn access_diff(
+        &self,
+        schema_before_json: &str,
+        schema_after_json: &str,
+        max_checks: Option<u64>,
+    ) -> PyResult<String> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
         let schema_before: Schema = serde_json::from_str(schema_before_json).map_err(py_err)?;
         let schema_after: Schema = serde_json::from_str(schema_after_json).map_err(py_err)?;
-        let result = self.engine.access_diff(&schema_before, &schema_after, None, max_checks)
+        let result = self
+            .engine
+            .access_diff(&schema_before, &schema_after, None, max_checks)
             .map_err(py_err)?;
         serde_json::to_string(&result).map_err(py_err)
     }
@@ -791,7 +1015,10 @@ impl PyAegis {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
-        let draft = self.engine.create_policy_draft(name, description).map_err(py_err)?;
+        let draft = self
+            .engine
+            .create_policy_draft(name, description)
+            .map_err(py_err)?;
         serde_json::to_string(&draft).map_err(py_err)
     }
 
@@ -801,7 +1028,10 @@ impl PyAegis {
         }
         let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
         let schema: Schema = serde_json::from_str(schema_json).map_err(py_err)?;
-        let draft = self.engine.update_policy_draft(uid, schema).map_err(py_err)?;
+        let draft = self
+            .engine
+            .update_policy_draft(uid, schema)
+            .map_err(py_err)?;
         serde_json::to_string(&draft).map_err(py_err)
     }
 
@@ -819,7 +1049,10 @@ impl PyAegis {
             return Err(py_err("engine is closed"));
         }
         let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
-        let draft = self.engine.submit_policy_draft_for_review(uid).map_err(py_err)?;
+        let draft = self
+            .engine
+            .submit_policy_draft_for_review(uid)
+            .map_err(py_err)?;
         serde_json::to_string(&draft).map_err(py_err)
     }
 
@@ -837,7 +1070,10 @@ impl PyAegis {
             return Err(py_err("engine is closed"));
         }
         let uid = uuid::Uuid::parse_str(id).map_err(py_err)?;
-        let draft = self.engine.reject_policy_draft(uid, rejection_reason).map_err(py_err)?;
+        let draft = self
+            .engine
+            .reject_policy_draft(uid, rejection_reason)
+            .map_err(py_err)?;
         serde_json::to_string(&draft).map_err(py_err)
     }
 
@@ -882,15 +1118,24 @@ impl PyAegis {
     // ── V7 Scheduler ──
 
     #[pyo3(signature = (name, interval_seconds, queries_json, compare_schema_json=None))]
-    fn create_analysis_schedule(&self, name: &str, interval_seconds: f64, queries_json: &str, compare_schema_json: Option<&str>) -> PyResult<String> {
+    fn create_analysis_schedule(
+        &self,
+        name: &str,
+        interval_seconds: f64,
+        queries_json: &str,
+        compare_schema_json: Option<&str>,
+    ) -> PyResult<String> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
-        let queries: Vec<aegis_core::types::analysis::CheckQuery> = serde_json::from_str(queries_json).map_err(py_err)?;
+        let queries: Vec<aegis_core::types::analysis::CheckQuery> =
+            serde_json::from_str(queries_json).map_err(py_err)?;
         let compare_schema = compare_schema_json
             .map(|s| serde_json::from_str(s).map_err(py_err))
             .transpose()?;
-        let schedule = self.engine.create_analysis_schedule(name, interval_seconds as u64, queries, compare_schema)
+        let schedule = self
+            .engine
+            .create_analysis_schedule(name, interval_seconds as u64, queries, compare_schema)
             .map_err(py_err)?;
         serde_json::to_string(&schedule).map_err(py_err)
     }
@@ -928,7 +1173,10 @@ impl PyAegis {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
-        let runs = self.engine.get_analysis_runs(limit as usize).map_err(py_err)?;
+        let runs = self
+            .engine
+            .get_analysis_runs(limit as usize)
+            .map_err(py_err)?;
         serde_json::to_string(&runs).map_err(py_err)
     }
 
@@ -940,14 +1188,19 @@ impl PyAegis {
         }
         let config: aegis_core::engine::enforcement_history::EnforcementHistoryConfig =
             serde_json::from_str(config_json).map_err(py_err)?;
-        self.engine.set_enforcement_history_config(config).map_err(py_err)
+        self.engine
+            .set_enforcement_history_config(config)
+            .map_err(py_err)
     }
 
     fn get_enforcement_history_config(&self) -> PyResult<String> {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
-        let config = self.engine.get_enforcement_history_config().map_err(py_err)?;
+        let config = self
+            .engine
+            .get_enforcement_history_config()
+            .map_err(py_err)?;
         serde_json::to_string(&config).map_err(py_err)
     }
 
@@ -956,7 +1209,10 @@ impl PyAegis {
         if self.closed.load(Ordering::Relaxed) {
             return Err(py_err("engine is closed"));
         }
-        let trends = self.engine.enforcement_trends(limit as usize).map_err(py_err)?;
+        let trends = self
+            .engine
+            .enforcement_trends(limit as usize)
+            .map_err(py_err)?;
         serde_json::to_string(&trends).map_err(py_err)
     }
 
@@ -997,7 +1253,12 @@ impl PyAegis {
     }
 
     #[pyo3(signature = (_exc_type=None, _exc_val=None, _exc_tb=None))]
-    fn __exit__(&self, _exc_type: Option<PyObject>, _exc_val: Option<PyObject>, _exc_tb: Option<PyObject>) -> PyResult<()> {
+    fn __exit__(
+        &self,
+        _exc_type: Option<PyObject>,
+        _exc_val: Option<PyObject>,
+        _exc_tb: Option<PyObject>,
+    ) -> PyResult<()> {
         let _ = self.close();
         Ok(())
     }

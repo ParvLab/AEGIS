@@ -6,13 +6,13 @@ use clap::{Parser, Subcommand};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
+use aegis_core::engine::GraphEngine;
 use aegis_core::engine::policy_lifecycle::DraftStatus;
 use aegis_core::engine::watch::WatchEventType;
-use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
-use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
 use aegis_core::storage::TupleFilter;
+use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::types::*;
 use std::time::Duration;
 
@@ -359,10 +359,7 @@ enum EnforcementAction {
     },
 }
 
-fn load_storage(
-    db_path: &str,
-    storage_type: &str,
-) -> Result<Box<dyn StorageBackend>> {
+fn load_storage(db_path: &str, storage_type: &str) -> Result<Box<dyn StorageBackend>> {
     match storage_type {
         "sqlite" => {
             let config = SqliteConfig {
@@ -387,11 +384,11 @@ fn load_storage(
         }
         #[cfg(not(feature = "rocksdb"))]
         "rocksdb" => {
-            anyhow::bail!("rocksdb backend is not enabled. Rebuild aegis-cli with --features rocksdb");
+            anyhow::bail!(
+                "rocksdb backend is not enabled. Rebuild aegis-cli with --features rocksdb"
+            );
         }
-        _ => anyhow::bail!(
-            "unknown storage backend: {storage_type}. Supported: sqlite, rocksdb"
-        ),
+        _ => anyhow::bail!("unknown storage backend: {storage_type}. Supported: sqlite, rocksdb"),
     }
 }
 
@@ -494,9 +491,12 @@ fn main() -> Result<()> {
                 .map(|r| Relation::new(r.as_str()))
                 .transpose()
                 .with_context(|| "invalid relation filter")?;
-            let tuples = engine
-                .storage()
-                .list_by_object(&PartitionId::default(), &resource_id, relation_filter.as_ref(), &ConsistencyMode::MinimizeLatency)?;
+            let tuples = engine.storage().list_by_object(
+                &PartitionId::default(),
+                &resource_id,
+                relation_filter.as_ref(),
+                &ConsistencyMode::MinimizeLatency,
+            )?;
             println!("{}", serde_json::to_string(&tuples)?);
         }
         Commands::Explain {
@@ -630,11 +630,7 @@ fn main() -> Result<()> {
             )?;
             println!("{}", serde_json::to_string(&result)?);
         }
-        Commands::BackupCreate {
-            path,
-            db,
-            schema,
-        } => {
+        Commands::BackupCreate { path, db, schema } => {
             let engine = mk_engine(db, None)?;
             let all_tuples = engine
                 .storage()
@@ -680,7 +676,10 @@ fn main() -> Result<()> {
             let mut hasher = Sha256::new();
             hasher.update(canonical.as_bytes());
             let hash = hasher.finalize();
-            let checksum = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+            let checksum = hash
+                .iter()
+                .map(|b| format!("{:02x}", b))
+                .collect::<String>();
             backup.as_object_mut().unwrap().insert(
                 "checksum".to_string(),
                 serde_json::Value::String(format!("sha256:{}", checksum)),
@@ -688,15 +687,20 @@ fn main() -> Result<()> {
             let output = serde_json::to_string_pretty(&backup)?;
             std::fs::write(path, output)
                 .with_context(|| format!("failed to write backup to {path}"))?;
-            println!(r#"{{"status":"ok","tuples":{},"events":{},"revision":{}}}"#,
-                all_tuples.len(), events.len(), revision.as_u64());
+            println!(
+                r#"{{"status":"ok","tuples":{},"events":{},"revision":{}}}"#,
+                all_tuples.len(),
+                events.len(),
+                revision.as_u64()
+            );
         }
         Commands::BackupRestore { path, db } => {
             let engine = mk_engine(db, None)?;
             let content = std::fs::read_to_string(path)
                 .with_context(|| format!("failed to read backup from {path}"))?;
             let mut backup: serde_json::Value = serde_json::from_str(&content)?;
-            let stored_checksum = backup.get("checksum")
+            let stored_checksum = backup
+                .get("checksum")
                 .and_then(|v| v.as_str())
                 .map(|s| s.strip_prefix("sha256:").unwrap_or(s))
                 .unwrap_or("")
@@ -709,7 +713,10 @@ fn main() -> Result<()> {
                 let mut hasher = Sha256::new();
                 hasher.update(canonical.as_bytes());
                 let hash = hasher.finalize();
-                let computed = hash.iter().map(|b| format!("{:02x}", b)).collect::<String>();
+                let computed = hash
+                    .iter()
+                    .map(|b| format!("{:02x}", b))
+                    .collect::<String>();
                 if stored_checksum != computed {
                     anyhow::bail!("checksum mismatch: backup may be corrupted");
                 }
@@ -718,18 +725,24 @@ fn main() -> Result<()> {
             if version >= 2 {
                 if let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str()) {
                     if !sy.is_empty() {
-                        let schema = parse_schema(sy)
-                            .context("failed to parse schema from backup")?;
+                        let schema =
+                            parse_schema(sy).context("failed to parse schema from backup")?;
                         engine.reload_schema(schema)?;
                     }
                 }
             }
             let tuples: Vec<RelationshipTuple> = serde_json::from_value(
-                backup.get("tuples").cloned().unwrap_or(serde_json::Value::Null),
+                backup
+                    .get("tuples")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Null),
             )
             .context("invalid backup format: missing or invalid 'tuples' field")?;
             let events: Vec<AuditEntry> = serde_json::from_value(
-                backup.get("events").cloned().unwrap_or(serde_json::Value::Array(vec![])),
+                backup
+                    .get("events")
+                    .cloned()
+                    .unwrap_or(serde_json::Value::Array(vec![])),
             )
             .context("invalid backup format: missing or invalid 'events' field")?;
             let revision = backup
@@ -739,7 +752,9 @@ fn main() -> Result<()> {
                 .map(Revision::new)
                 .unwrap_or(Revision::ZERO);
             let count = tuples.len();
-            engine.storage().restore_backup(&PartitionId::default(), &tuples, &events, revision)
+            engine
+                .storage()
+                .restore_backup(&PartitionId::default(), &tuples, &events, revision)
                 .context("failed to restore backup")?;
             println!(r#"{{"status":"ok","restored":{count}}}"#);
         }
@@ -750,8 +765,8 @@ fn main() -> Result<()> {
         } => {
             let engine = mk_engine(db, schema.as_deref())?;
             let tuples = if let Some(s) = subject {
-                let subject_id = SubjectId::new(s.as_str())
-                    .with_context(|| format!("invalid subject: {s}"))?;
+                let subject_id =
+                    SubjectId::new(s.as_str()).with_context(|| format!("invalid subject: {s}"))?;
                 engine.export_subject(&subject_id)?
             } else {
                 engine
@@ -769,11 +784,7 @@ fn main() -> Result<()> {
             };
             println!("{}", serde_json::to_string_pretty(&tuples)?);
         }
-        Commands::Import {
-            path,
-            db,
-            schema,
-        } => {
+        Commands::Import { path, db, schema } => {
             let engine = mk_engine(db, schema.as_deref())?;
             let content = std::fs::read_to_string(path)
                 .with_context(|| format!("failed to read import file {path}"))?;
@@ -800,10 +811,17 @@ fn main() -> Result<()> {
                 Ok(schema) => {
                     let report = aegis_core::schema::lint_schema(&schema, *strict);
                     if report.errors.is_empty() && report.warnings.is_empty() {
-                        println!(r#"{{"status":"ok","types":{},"version":{}}}"#,
-                            schema.types.len(), schema.schema_version);
+                        println!(
+                            r#"{{"status":"ok","types":{},"version":{}}}"#,
+                            schema.types.len(),
+                            schema.schema_version
+                        );
                     } else {
-                        let status = if !report.errors.is_empty() { "error" } else { "warning" };
+                        let status = if !report.errors.is_empty() {
+                            "error"
+                        } else {
+                            "warning"
+                        };
                         let output = serde_json::json!({
                             "status": status,
                             "errors": report.errors,
@@ -879,27 +897,51 @@ fn main() -> Result<()> {
             println!("===========");
             println!(
                 "Types Added:    {}",
-                if types_added.is_empty() { "(none)".to_string() } else { types_added.join(", ") }
+                if types_added.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    types_added.join(", ")
+                }
             );
             println!(
                 "Types Removed:  {}",
-                if types_removed.is_empty() { "(none)".to_string() } else { types_removed.join(", ") }
+                if types_removed.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    types_removed.join(", ")
+                }
             );
             println!(
                 "Relations Added:  {}",
-                if relations_added.is_empty() { "(none)".to_string() } else { relations_added.join(", ") }
+                if relations_added.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    relations_added.join(", ")
+                }
             );
             println!(
                 "Relations Removed: {}",
-                if relations_removed.is_empty() { "(none)".to_string() } else { relations_removed.join(", ") }
+                if relations_removed.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    relations_removed.join(", ")
+                }
             );
             println!(
                 "Permissions Added: {}",
-                if permissions_added.is_empty() { "(none)".to_string() } else { permissions_added.join(", ") }
+                if permissions_added.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    permissions_added.join(", ")
+                }
             );
             println!(
                 "Permissions Removed: {}",
-                if permissions_removed.is_empty() { "(none)".to_string() } else { permissions_removed.join(", ") }
+                if permissions_removed.is_empty() {
+                    "(none)".to_string()
+                } else {
+                    permissions_removed.join(", ")
+                }
             );
             println!("Warnings:");
             if report.warnings.is_empty() {
@@ -909,7 +951,14 @@ fn main() -> Result<()> {
                     println!("  - {w}");
                 }
             }
-            println!("Breaking: {}", if report.breaking.is_empty() { "No" } else { "Yes" });
+            println!(
+                "Breaking: {}",
+                if report.breaking.is_empty() {
+                    "No"
+                } else {
+                    "Yes"
+                }
+            );
             for b in &report.breaking {
                 println!("  - {b}");
             }
@@ -961,11 +1010,8 @@ fn main() -> Result<()> {
             } else {
                 None
             };
-            let token = engine.delete_subject_with_policy(
-                &subject_id,
-                policy,
-                transfer.as_ref(),
-            )?;
+            let token =
+                engine.delete_subject_with_policy(&subject_id, policy, transfer.as_ref())?;
             println!(
                 "{}",
                 serde_json::json!({
@@ -988,7 +1034,12 @@ fn main() -> Result<()> {
             };
             let engine = mk_engine(db, schema_path)?;
             match action {
-                PolicyDraftAction::Create { name, description, schema, .. } => {
+                PolicyDraftAction::Create {
+                    name,
+                    description,
+                    schema,
+                    ..
+                } => {
                     let draft = engine.create_policy_draft(name, description)?;
                     if let Some(schema_path) = schema.as_ref() {
                         let yaml = std::fs::read_to_string(schema_path)
@@ -1000,48 +1051,50 @@ fn main() -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&draft)?);
                 }
                 PolicyDraftAction::Validate { id, .. } => {
-                    let uid = uuid::Uuid::parse_str(id)
-                        .with_context(|| format!("invalid id: {id}"))?;
+                    let uid =
+                        uuid::Uuid::parse_str(id).with_context(|| format!("invalid id: {id}"))?;
                     let report = engine.validate_policy_draft(uid)?;
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 }
                 PolicyDraftAction::Diff { id, .. } => {
-                    let uid = uuid::Uuid::parse_str(id)
-                        .with_context(|| format!("invalid id: {id}"))?;
+                    let uid =
+                        uuid::Uuid::parse_str(id).with_context(|| format!("invalid id: {id}"))?;
                     let drafts = engine.list_policy_drafts(None)?;
-                    let draft = drafts.into_iter()
+                    let draft = drafts
+                        .into_iter()
                         .find(|d| d.id == uid)
                         .ok_or_else(|| anyhow::anyhow!("draft {id} not found"))?;
-                    let report = engine.access_diff(&*engine.schema(), &draft.schema, None, None)?;
+                    let report =
+                        engine.access_diff(&*engine.schema(), &draft.schema, None, None)?;
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 }
                 PolicyDraftAction::Submit { id, .. } => {
-                    let uid = uuid::Uuid::parse_str(id)
-                        .with_context(|| format!("invalid id: {id}"))?;
+                    let uid =
+                        uuid::Uuid::parse_str(id).with_context(|| format!("invalid id: {id}"))?;
                     let draft = engine.submit_policy_draft_for_review(uid)?;
                     println!("{}", serde_json::to_string_pretty(&draft)?);
                 }
                 PolicyDraftAction::Approve { id, .. } => {
-                    let uid = uuid::Uuid::parse_str(id)
-                        .with_context(|| format!("invalid id: {id}"))?;
+                    let uid =
+                        uuid::Uuid::parse_str(id).with_context(|| format!("invalid id: {id}"))?;
                     let draft = engine.approve_policy_draft(uid)?;
                     println!("{}", serde_json::to_string_pretty(&draft)?);
                 }
                 PolicyDraftAction::Reject { id, reason, .. } => {
-                    let uid = uuid::Uuid::parse_str(id)
-                        .with_context(|| format!("invalid id: {id}"))?;
+                    let uid =
+                        uuid::Uuid::parse_str(id).with_context(|| format!("invalid id: {id}"))?;
                     let draft = engine.reject_policy_draft(uid, reason)?;
                     println!("{}", serde_json::to_string_pretty(&draft)?);
                 }
                 PolicyDraftAction::Publish { id, .. } => {
-                    let uid = uuid::Uuid::parse_str(id)
-                        .with_context(|| format!("invalid id: {id}"))?;
+                    let uid =
+                        uuid::Uuid::parse_str(id).with_context(|| format!("invalid id: {id}"))?;
                     let result = engine.publish_policy_draft(uid)?;
                     println!("{}", serde_json::to_string_pretty(&result)?);
                 }
                 PolicyDraftAction::Archive { id, .. } => {
-                    let uid = uuid::Uuid::parse_str(id)
-                        .with_context(|| format!("invalid id: {id}"))?;
+                    let uid =
+                        uuid::Uuid::parse_str(id).with_context(|| format!("invalid id: {id}"))?;
                     let draft = engine.archive_policy_draft(uid)?;
                     println!("{}", serde_json::to_string_pretty(&draft)?);
                 }
@@ -1083,7 +1136,12 @@ fn main() -> Result<()> {
                     let cfg: aegis_core::engine::scheduler::AnalysisScheduleConfig =
                         serde_json::from_str(&json_str)
                             .context("failed to parse schedule config")?;
-                    let schedule = engine.create_analysis_schedule(&cfg.name, cfg.interval_seconds, cfg.queries, cfg.compare_schema)?;
+                    let schedule = engine.create_analysis_schedule(
+                        &cfg.name,
+                        cfg.interval_seconds,
+                        cfg.queries,
+                        cfg.compare_schema,
+                    )?;
                     println!("{}", serde_json::to_string_pretty(&schedule)?);
                 }
                 ScheduleAction::List { .. } => {
@@ -1091,8 +1149,8 @@ fn main() -> Result<()> {
                     println!("{}", serde_json::to_string_pretty(&schedules)?);
                 }
                 ScheduleAction::Delete { id, .. } => {
-                    let uid = uuid::Uuid::parse_str(id)
-                        .with_context(|| format!("invalid id: {id}"))?;
+                    let uid =
+                        uuid::Uuid::parse_str(id).with_context(|| format!("invalid id: {id}"))?;
                     let deleted = engine.delete_analysis_schedule(uid)?;
                     println!("{}", if deleted { "deleted" } else { "not found" });
                 }
@@ -1138,7 +1196,11 @@ fn main() -> Result<()> {
                 }
             }
         }
-        Commands::Subscribe { event_types, db, schema } => {
+        Commands::Subscribe {
+            event_types,
+            db,
+            schema,
+        } => {
             let engine = mk_engine(db, schema.as_deref())?;
             let types: Vec<WatchEventType> = event_types
                 .split(',')
@@ -1154,7 +1216,10 @@ fn main() -> Result<()> {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let sub = engine.subscribe(types);
-            println!("Subscribed (id: {}). Polling... Press Ctrl+C to stop.", sub.id());
+            println!(
+                "Subscribed (id: {}). Polling... Press Ctrl+C to stop.",
+                sub.id()
+            );
             loop {
                 if let Some(event) = sub.try_recv().ok() {
                     let json = serde_json::json!({

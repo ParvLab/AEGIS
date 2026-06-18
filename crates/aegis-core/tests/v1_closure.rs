@@ -103,13 +103,11 @@ fn v1_m1_write_batch_validates_schema() {
     let result = engine.write_batch(&tuples);
     assert!(result.is_ok());
 
-    let bad_tuples = vec![
-        RelationshipTuple::new(
-            SubjectId::new("user:alice").unwrap(),
-            Relation::new("nonexistent").unwrap(),
-            ResourceId::new("repo:a").unwrap(),
-        ),
-    ];
+    let bad_tuples = vec![RelationshipTuple::new(
+        SubjectId::new("user:alice").unwrap(),
+        Relation::new("nonexistent").unwrap(),
+        ResourceId::new("repo:a").unwrap(),
+    )];
     let result = engine.write_batch(&bad_tuples);
     assert!(result.is_err());
     assert!(matches!(
@@ -202,11 +200,14 @@ fn v1_m3_transactions() {
 
     let mut txn = engine.transaction().unwrap();
 
-    txn.write(&PartitionId::default(), &RelationshipTuple::new(
-        SubjectId::new("user:alice").unwrap(),
-        Relation::new("owner").unwrap(),
-        ResourceId::new("repo:txn-test").unwrap(),
-    ))
+    txn.write(
+        &PartitionId::default(),
+        &RelationshipTuple::new(
+            SubjectId::new("user:alice").unwrap(),
+            Relation::new("owner").unwrap(),
+            ResourceId::new("repo:txn-test").unwrap(),
+        ),
+    )
     .unwrap();
 
     let rev = txn.commit().unwrap();
@@ -223,13 +224,15 @@ fn v1_m3_transactions() {
     assert!(result.allowed);
 
     let mut txn2 = engine.transaction().unwrap();
-    txn2
-        .write(&PartitionId::default(), &RelationshipTuple::new(
+    txn2.write(
+        &PartitionId::default(),
+        &RelationshipTuple::new(
             SubjectId::new("user:bob").unwrap(),
             Relation::new("owner").unwrap(),
             ResourceId::new("repo:txn-test").unwrap(),
-        ))
-        .unwrap();
+        ),
+    )
+    .unwrap();
     txn2.rollback().unwrap();
 
     let result = engine
@@ -277,7 +280,10 @@ fn v1_m3_backup_restore_roundtrip() {
         .tuples;
     assert_eq!(all_tuples.len(), 2);
 
-    let rev_before = engine.storage().current_revision(&PartitionId::default()).unwrap();
+    let rev_before = engine
+        .storage()
+        .current_revision(&PartitionId::default())
+        .unwrap();
 
     let recovered = engine.recover_from_events(None).unwrap();
     assert!(recovered.as_u64() >= rev_before.as_u64());

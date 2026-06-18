@@ -145,9 +145,9 @@ impl Drop for WatchSubscription {
 mod tests {
     use super::*;
     use crate::engine::GraphEngine;
+    use crate::storage::StorageBackend;
     #[cfg(feature = "sqlite")]
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
-    use crate::storage::StorageBackend;
     use crate::types::*;
     use std::sync::mpsc::TryRecvError;
 

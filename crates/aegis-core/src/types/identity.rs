@@ -66,8 +66,6 @@ impl SubjectId {
     }
 }
 
-
-
 impl fmt::Display for SubjectId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
@@ -234,7 +232,12 @@ impl SubjectSet {
         partition_id: &PartitionId,
         consistency: &crate::types::ConsistencyMode,
     ) -> Result<Vec<SubjectId>, crate::error::AegisError> {
-        let tuples = storage.list_by_object(partition_id, &self.object, Some(&self.relation), consistency)?;
+        let tuples = storage.list_by_object(
+            partition_id,
+            &self.object,
+            Some(&self.relation),
+            consistency,
+        )?;
         Ok(tuples.into_iter().map(|t| t.subject).collect())
     }
 }

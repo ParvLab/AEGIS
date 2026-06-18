@@ -192,5 +192,4 @@ mod tests {
             "revision token from a different node is incompatible with single-node mode"
         );
     }
-
 }

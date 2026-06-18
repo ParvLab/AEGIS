@@ -82,7 +82,11 @@ mod tests {
         repo_perms.insert(
             "read".to_string(),
             PermissionDef {
-                union_of: vec!["viewer".to_string(), "editor".to_string(), "owner".to_string()],
+                union_of: vec![
+                    "viewer".to_string(),
+                    "editor".to_string(),
+                    "owner".to_string(),
+                ],
                 condition: None,
                 description: None,
                 ..Default::default()

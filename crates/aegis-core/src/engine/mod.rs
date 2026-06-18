@@ -2,46 +2,48 @@ pub mod acl;
 pub mod analysis;
 pub mod cache;
 pub mod condition;
+pub mod enforcement_history;
 pub mod gdpr;
 pub mod hierarchy;
 pub mod hooks;
-pub mod partition;
-pub mod enforcement_history;
-pub mod policy_lifecycle;
 #[cfg(feature = "hot-reload")]
 pub mod hot_reload;
 pub mod migration;
+pub mod partition;
 pub mod policy;
+pub mod policy_lifecycle;
 pub mod ratelimit;
-pub mod scheduler;
 pub mod rbac;
+pub mod scheduler;
 pub mod traversal;
 pub mod watch;
 
-use chrono::Utc;
 use crate::engine::cache::{DecisionCache, TraversalCache};
+#[cfg(feature = "hot-reload")]
+use crate::engine::hot_reload::SchemaWatcher;
 use crate::engine::migration::MigrationRunner;
 use crate::engine::partition::PartitionManager;
 use crate::engine::ratelimit::{RateLimitOp, TokenBucketRateLimiter};
-use crate::engine::watch::{SharedWatchers, WatchEvent, WatchEventType, WatchFilter, WatchSubscription};
+use crate::engine::watch::{
+    SharedWatchers, WatchEvent, WatchEventType, WatchFilter, WatchSubscription,
+};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::{StorageBackend, StorageTransaction, TupleFilter};
+use crate::types::schema::SchemaCompatibilityReport;
 use crate::types::{
     AccessReviewEntry, CheckResult, ConsistencyMode, ExplainResult, ExplainTrace, FailClosedMode,
-    HealthReport, MigrationResult, PartitionId, Relation, RelationshipTuple, ResourceId, Revision,
-    RevisionToken, Schema, SubjectId, PaginatedTuples, PaginationParams,
+    HealthReport, MigrationResult, PaginatedTuples, PaginationParams, PartitionId, Relation,
+    RelationshipTuple, ResourceId, Revision, RevisionToken, Schema, SubjectId,
 };
-use crate::types::schema::SchemaCompatibilityReport;
-#[cfg(feature = "hot-reload")]
-use crate::engine::hot_reload::SchemaWatcher;
+use chrono::Utc;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 #[cfg(feature = "hot-reload")]
 use std::thread::JoinHandle;
-use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
-use tracing::{error, field, info, span, Level};
+use tracing::{Level, error, field, info, span};
 
 /// The core authorization engine.
 ///
@@ -79,12 +81,16 @@ pub struct GraphEngine {
     wal_checkpoint_threshold: Option<f64>,
     #[cfg(feature = "async-storage")]
     async_storage: Option<Box<dyn crate::storage::async_traits::AsyncStorageBackend>>,
-    analysis_cache: std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u64, String)>>,
+    analysis_cache:
+        std::sync::Mutex<std::collections::HashMap<String, (std::time::Instant, u64, String)>>,
     drafts: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, policy_lifecycle::PolicyDraft>>,
-    pub(crate) analysis_schedules: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, scheduler::AnalysisSchedule>>,
-    pub(crate) analysis_runs: std::sync::Mutex<std::collections::HashMap<uuid::Uuid, scheduler::AnalysisRun>>,
+    pub(crate) analysis_schedules:
+        std::sync::Mutex<std::collections::HashMap<uuid::Uuid, scheduler::AnalysisSchedule>>,
+    pub(crate) analysis_runs:
+        std::sync::Mutex<std::collections::HashMap<uuid::Uuid, scheduler::AnalysisRun>>,
     pub(crate) enforcement_config: std::sync::Mutex<enforcement_history::EnforcementHistoryConfig>,
-    pub(crate) enforcement_events: std::sync::Mutex<std::collections::VecDeque<enforcement_history::EnforcementEvent>>,
+    pub(crate) enforcement_events:
+        std::sync::Mutex<std::collections::VecDeque<enforcement_history::EnforcementEvent>>,
     pub(crate) enforcement_rate_tracker: std::sync::Mutex<enforcement_history::RateTracker>,
 }
 
@@ -126,7 +132,9 @@ impl GraphEngine {
             schema_watcher: Mutex::new(None),
             #[cfg(feature = "hot-reload")]
             watcher_thread: Mutex::new(None),
-            rate_limiter: Mutex::new(TokenBucketRateLimiter::new(ratelimit::RateLimitConfig::default())),
+            rate_limiter: Mutex::new(TokenBucketRateLimiter::new(
+                ratelimit::RateLimitConfig::default(),
+            )),
             telemetry_enabled: std::sync::atomic::AtomicBool::new(false),
             api_key_hash: None,
             api_key_verified: AtomicBool::new(false),
@@ -143,9 +151,13 @@ impl GraphEngine {
             drafts: std::sync::Mutex::new(std::collections::HashMap::new()),
             analysis_schedules: std::sync::Mutex::new(std::collections::HashMap::new()),
             analysis_runs: std::sync::Mutex::new(std::collections::HashMap::new()),
-            enforcement_config: std::sync::Mutex::new(enforcement_history::EnforcementHistoryConfig::default()),
+            enforcement_config: std::sync::Mutex::new(
+                enforcement_history::EnforcementHistoryConfig::default(),
+            ),
             enforcement_events: std::sync::Mutex::new(std::collections::VecDeque::new()),
-            enforcement_rate_tracker: std::sync::Mutex::new(enforcement_history::RateTracker::new(10_000)),
+            enforcement_rate_tracker: std::sync::Mutex::new(enforcement_history::RateTracker::new(
+                10_000,
+            )),
         }
     }
 
@@ -192,12 +204,17 @@ impl GraphEngine {
     /// Verify an API key against the configured key (if any).
     /// Returns `true` if no API key is configured or if it matches.
     pub fn verify_api_key(&self, api_key: &str) -> bool {
-        let Some(configured_hash) = self.api_key_hash else { return true; };
+        let Some(configured_hash) = self.api_key_hash else {
+            return true;
+        };
         let mut hasher = Sha256::new();
         hasher.update(api_key.as_bytes());
         let result = hasher.finalize();
         let incoming = u64::from_le_bytes(result[..8].try_into().unwrap());
-        configured_hash.to_le_bytes().ct_eq(&incoming.to_le_bytes()).into()
+        configured_hash
+            .to_le_bytes()
+            .ct_eq(&incoming.to_le_bytes())
+            .into()
     }
 
     /// Authenticate the engine with an API key for subsequent write/delete operations.
@@ -315,7 +332,9 @@ impl GraphEngine {
             timestamp: chrono::Utc::now(),
             payload,
         };
-        let Ok(mut watchers) = self.watchers.lock() else { return };
+        let Ok(mut watchers) = self.watchers.lock() else {
+            return;
+        };
         watchers.retain(|_, (filter, tx)| {
             if !filter.matches(&event) {
                 return true;
@@ -333,7 +352,10 @@ impl GraphEngine {
     /// Set a custom MeterProvider for OpenTelemetry metrics.
     /// When set, this provider is used instead of the global meter provider.
     #[cfg(feature = "telemetry")]
-    pub fn with_meter_provider(self, provider: opentelemetry_sdk::metrics::SdkMeterProvider) -> Self {
+    pub fn with_meter_provider(
+        self,
+        provider: opentelemetry_sdk::metrics::SdkMeterProvider,
+    ) -> Self {
         crate::telemetry::otel_metrics::init_provider(provider);
         self
     }
@@ -375,14 +397,19 @@ impl GraphEngine {
     /// Requires the `hot-reload` feature.
     #[cfg(feature = "hot-reload")]
     pub fn check_schema_reload(&self) -> AegisResult<bool> {
-        let watcher = self.schema_watcher.lock().map_err(|e| {
-            AegisError::Internal(format!("schema watcher lock failed: {e}"))
-        })?;
+        let watcher = self
+            .schema_watcher
+            .lock()
+            .map_err(|e| AegisError::Internal(format!("schema watcher lock failed: {e}")))?;
         match watcher.as_ref() {
             Some(w) => {
                 let reloaded = w.check_and_reload(self)?;
                 if reloaded {
-                    self.emit_log(hooks::LogLevel::Info, "Schema hot-reloaded", "(schema file changed)");
+                    self.emit_log(
+                        hooks::LogLevel::Info,
+                        "Schema hot-reloaded",
+                        "(schema file changed)",
+                    );
                 }
                 Ok(reloaded)
             }
@@ -395,7 +422,9 @@ impl GraphEngine {
     /// Requires the `hot-reload` feature.
     #[cfg(feature = "hot-reload")]
     pub fn start_background_poller(self: &Arc<Self>) {
-        let Ok(mut guard) = self.watcher_thread.lock() else { return };
+        let Ok(mut guard) = self.watcher_thread.lock() else {
+            return;
+        };
         if guard.is_some() {
             return;
         }
@@ -439,14 +468,19 @@ impl GraphEngine {
     pub fn with_partition(&self, partition_id: PartitionId) -> AegisResult<()> {
         // Validate partition exists
         self.partition_manager.get_or_create(&partition_id)?;
-        *self.active_partition.write().map_err(|_| {
-            crate::error::AegisError::Internal("partition lock poisoned".into())
-        })? = partition_id;
+        *self
+            .active_partition
+            .write()
+            .map_err(|_| crate::error::AegisError::Internal("partition lock poisoned".into()))? =
+            partition_id;
         Ok(())
     }
 
     pub fn active_partition_id(&self) -> PartitionId {
-        self.active_partition.read().map(|p| p.clone()).unwrap_or_default()
+        self.active_partition
+            .read()
+            .map(|p| p.clone())
+            .unwrap_or_default()
     }
 
     fn with_cache<F, T>(&self, f: F) -> Option<T>
@@ -512,9 +546,14 @@ impl GraphEngine {
 
     /// Health check: returns a report of engine health.
     pub fn health(&self) -> HealthReport {
-        let revision = self.storage.current_revision(&self.active_partition_id()).ok();
+        let revision = self
+            .storage
+            .current_revision(&self.active_partition_id())
+            .ok();
         let integrity = self.storage.integrity_check().ok();
-        let cache_info = self.with_cache(|cache| (cache.hit_rate(), cache.len())).unwrap_or((0.0, 0));
+        let cache_info = self
+            .with_cache(|cache| (cache.hit_rate(), cache.len()))
+            .unwrap_or((0.0, 0));
         let schema = self.schema.read().unwrap_or_else(|e| e.into_inner());
 
         // Update telemetry cache metrics
@@ -526,7 +565,10 @@ impl GraphEngine {
                 if i.passed {
                     "ok".to_string()
                 } else {
-                    i.details.first().cloned().unwrap_or_else(|| "fail".to_string())
+                    i.details
+                        .first()
+                        .cloned()
+                        .unwrap_or_else(|| "fail".to_string())
                 }
             })
             .unwrap_or_else(|| "unknown".to_string());
@@ -544,16 +586,23 @@ impl GraphEngine {
             schema_version: schema.schema_version,
             backend: self.storage.backend_type().to_string(),
             backend_healthy: integrity.as_ref().map(|i| i.passed).unwrap_or(false),
-            telemetry_healthy: self.telemetry_enabled.load(std::sync::atomic::Ordering::Relaxed),
+            telemetry_healthy: self
+                .telemetry_enabled
+                .load(std::sync::atomic::Ordering::Relaxed),
             cache_hit_rate: cache_info.0,
             cache_entries: cache_info.1,
             storage_integrity: integrity.as_ref().map(|i| i.passed).unwrap_or(false),
             error: None,
-            total_checks: crate::telemetry::METRIC_CHECK_TOTAL.load(std::sync::atomic::Ordering::Relaxed),
-            allowed_checks: crate::telemetry::METRIC_CHECK_ALLOWED.load(std::sync::atomic::Ordering::Relaxed),
-            denied_checks: crate::telemetry::METRIC_CHECK_DENIED.load(std::sync::atomic::Ordering::Relaxed),
-            error_checks: crate::telemetry::METRIC_CHECK_ERROR.load(std::sync::atomic::Ordering::Relaxed),
-            cache_size: crate::telemetry::METRIC_CACHE_SIZE.load(std::sync::atomic::Ordering::Relaxed),
+            total_checks: crate::telemetry::METRIC_CHECK_TOTAL
+                .load(std::sync::atomic::Ordering::Relaxed),
+            allowed_checks: crate::telemetry::METRIC_CHECK_ALLOWED
+                .load(std::sync::atomic::Ordering::Relaxed),
+            denied_checks: crate::telemetry::METRIC_CHECK_DENIED
+                .load(std::sync::atomic::Ordering::Relaxed),
+            error_checks: crate::telemetry::METRIC_CHECK_ERROR
+                .load(std::sync::atomic::Ordering::Relaxed),
+            cache_size: crate::telemetry::METRIC_CACHE_SIZE
+                .load(std::sync::atomic::Ordering::Relaxed),
             cache_hit_ratio: cache_info.0,
             integrity_status,
             uptime_ms,
@@ -568,8 +617,14 @@ impl GraphEngine {
     /// Returns the latest revision after recovery.
     /// Only meaningful for backends that persist an event log (e.g. SQLite).
     pub fn recover_from_events(&self, to_revision: Option<Revision>) -> AegisResult<Revision> {
-        let rev = self.storage.recover_from_events(&self.active_partition_id(), to_revision)?;
-        self.emit_log(hooks::LogLevel::Info, "Recovered from event log", &format!("revision={}", rev));
+        let rev = self
+            .storage
+            .recover_from_events(&self.active_partition_id(), to_revision)?;
+        self.emit_log(
+            hooks::LogLevel::Info,
+            "Recovered from event log",
+            &format!("revision={}", rev),
+        );
         Ok(rev)
     }
 
@@ -652,9 +707,8 @@ impl GraphEngine {
         let rel_names: Vec<String> = resolved.relations.clone();
         let condition_str = std::sync::Arc::new(resolved.condition);
         let ctx = std::sync::Arc::new(context);
-        let subject = Arc::new(SubjectId::new(subject.as_str()).map_err(|e| {
-            AegisError::Validation(e)
-        })?);
+        let subject =
+            Arc::new(SubjectId::new(subject.as_str()).map_err(|e| AegisError::Validation(e))?);
 
         std::thread::scope(|s| {
             for rel_name in &rel_names {
@@ -690,7 +744,8 @@ impl GraphEngine {
                         None,
                     );
                     if let Ok(r) = result {
-                        if r.found && evaluate_condition_if_present(cond.as_ref(), ctx_ref.as_ref()) {
+                        if r.found && evaluate_condition_if_present(cond.as_ref(), ctx_ref.as_ref())
+                        {
                             found_ref.store(true, std::sync::atomic::Ordering::Relaxed);
                         }
                     }
@@ -735,7 +790,14 @@ impl GraphEngine {
         consistency: Option<ConsistencyMode>,
         context: condition::ConditionEvalContext,
     ) -> AegisResult<CheckResult> {
-        self.check_inner(subject, permission, resource, consistency, false, Some(context))
+        self.check_inner(
+            subject,
+            permission,
+            resource,
+            consistency,
+            false,
+            Some(context),
+        )
     }
 
     /// Dry-run check with ABAC context.
@@ -747,7 +809,14 @@ impl GraphEngine {
         consistency: Option<ConsistencyMode>,
         context: condition::ConditionEvalContext,
     ) -> AegisResult<CheckResult> {
-        self.check_inner(subject, permission, resource, consistency, true, Some(context))
+        self.check_inner(
+            subject,
+            permission,
+            resource,
+            consistency,
+            true,
+            Some(context),
+        )
     }
 
     /// Async check: evaluate authorization using the async storage backend.
@@ -780,30 +849,48 @@ impl GraphEngine {
         let _start = std::time::Instant::now();
 
         let rl_key = format!("async_check:{}", resource.as_str());
-        if let Err(e) = self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Check) {
+        if let Err(e) = self
+            .rate_limiter
+            .lock()
+            .unwrap()
+            .check(&rl_key, RateLimitOp::Check)
+        {
             crate::telemetry::inc_check_error();
             return Err(e);
         }
 
-        let storage = self.async_storage.as_ref().ok_or_else(|| {
-            AegisError::Internal("async storage not configured".to_string())
-        })?;
+        let storage = self
+            .async_storage
+            .as_ref()
+            .ok_or_else(|| AegisError::Internal("async storage not configured".to_string()))?;
 
         let revision = match consistency {
             Some(ConsistencyMode::AtRevision(rev)) => {
-                let current = storage.current_revision(&self.active_partition_id()).await?;
+                let current = storage
+                    .current_revision(&self.active_partition_id())
+                    .await?;
                 if rev > current {
                     return Err(AegisError::RevisionFromFuture(rev.as_u64() as usize));
                 }
                 rev
             }
-            _ => storage.current_revision(&self.active_partition_id()).await?,
+            _ => {
+                storage
+                    .current_revision(&self.active_partition_id())
+                    .await?
+            }
         };
 
         // Cache check
         let pid = self.active_partition_id();
         let from_cache = self.with_cache(|cache| {
-            cache.get(subject.as_str(), permission, resource.as_str(), pid.as_str(), revision)
+            cache.get(
+                subject.as_str(),
+                permission,
+                resource.as_str(),
+                pid.as_str(),
+                revision,
+            )
         });
         if let Some(Some(allowed)) = from_cache {
             info!(
@@ -814,8 +901,11 @@ impl GraphEngine {
             );
             crate::telemetry::inc_cache_hit();
             crate::telemetry::inc_check_total();
-            if allowed { crate::telemetry::inc_check_allowed(); }
-            else { crate::telemetry::inc_check_denied(); }
+            if allowed {
+                crate::telemetry::inc_check_allowed();
+            } else {
+                crate::telemetry::inc_check_denied();
+            }
             return Ok(CheckResult { allowed, revision });
         }
 
@@ -827,7 +917,10 @@ impl GraphEngine {
             None => {
                 crate::telemetry::inc_check_total();
                 crate::telemetry::inc_check_denied();
-                return Ok(CheckResult { allowed: false, revision });
+                return Ok(CheckResult {
+                    allowed: false,
+                    revision,
+                });
             }
         };
         drop(schema);
@@ -839,12 +932,14 @@ impl GraphEngine {
                 Ok(r) => r,
                 Err(_) => continue,
             };
-            let tuples = storage.list_by_object(
-                &self.active_partition_id(),
-                resource,
-                Some(&rel),
-                &ConsistencyMode::AtRevision(revision),
-            ).await?;
+            let tuples = storage
+                .list_by_object(
+                    &self.active_partition_id(),
+                    resource,
+                    Some(&rel),
+                    &ConsistencyMode::AtRevision(revision),
+                )
+                .await?;
 
             for t in &tuples {
                 if t.subject.as_str() == subject.as_str() {
@@ -858,8 +953,11 @@ impl GraphEngine {
         }
 
         crate::telemetry::inc_check_total();
-        if allowed { crate::telemetry::inc_check_allowed(); }
-        else { crate::telemetry::inc_check_denied(); }
+        if allowed {
+            crate::telemetry::inc_check_allowed();
+        } else {
+            crate::telemetry::inc_check_denied();
+        }
 
         if !allowed {
             self.with_cache(|cache| {
@@ -872,7 +970,10 @@ impl GraphEngine {
                     revision,
                 );
             });
-            return Ok(CheckResult { allowed: false, revision });
+            return Ok(CheckResult {
+                allowed: false,
+                revision,
+            });
         }
 
         self.with_cache(|cache| {
@@ -886,7 +987,10 @@ impl GraphEngine {
             );
         });
 
-        Ok(CheckResult { allowed: true, revision })
+        Ok(CheckResult {
+            allowed: true,
+            revision,
+        })
     }
 
     /// Internal check implementation with dry_run flag.
@@ -913,7 +1017,12 @@ impl GraphEngine {
 
         // Rate limit check
         let rl_key = format!("check:{}", resource.as_str());
-        if let Err(e) = self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Check) {
+        if let Err(e) = self
+            .rate_limiter
+            .lock()
+            .unwrap()
+            .check(&rl_key, RateLimitOp::Check)
+        {
             crate::telemetry::inc_check_error();
             return Err(e);
         }
@@ -932,7 +1041,13 @@ impl GraphEngine {
             let _cache_guard = cache_span.enter();
             let pid = self.active_partition_id();
             let from_cache = self.with_cache(|cache| {
-                cache.get(subject.as_str(), permission, resource.as_str(), pid.as_str(), revision)
+                cache.get(
+                    subject.as_str(),
+                    permission,
+                    resource.as_str(),
+                    pid.as_str(),
+                    revision,
+                )
             });
             if let Some(Some(allowed)) = from_cache {
                 info!(
@@ -975,22 +1090,33 @@ impl GraphEngine {
         // Parallel evaluation via scoped threads when enabled.
         let has_context = context.is_some();
         let ctx = context.unwrap_or_default();
-        let mut allowed = match if self.parallel_eval.load(Ordering::Relaxed) && resolved.relations.len() > 1 {
-            self.evaluate_relations_parallel(
-                resolved, subject, resource, revision, consistency, ctx,
-            )
-        } else {
-            self.evaluate_relations_sequential(
-                resolved, subject, resource, revision, consistency, ctx,
-            )
-        } {
-            Ok(a) => a,
-            Err(e) => {
-                crate::telemetry::inc_check_error();
-                crate::telemetry::inc_check_total();
-                return self.fail_closed_response(e);
-            }
-        };
+        let mut allowed =
+            match if self.parallel_eval.load(Ordering::Relaxed) && resolved.relations.len() > 1 {
+                self.evaluate_relations_parallel(
+                    resolved,
+                    subject,
+                    resource,
+                    revision,
+                    consistency,
+                    ctx,
+                )
+            } else {
+                self.evaluate_relations_sequential(
+                    resolved,
+                    subject,
+                    resource,
+                    revision,
+                    consistency,
+                    ctx,
+                )
+            } {
+                Ok(a) => a,
+                Err(e) => {
+                    crate::telemetry::inc_check_error();
+                    crate::telemetry::inc_check_total();
+                    return self.fail_closed_response(e);
+                }
+            };
 
         // Permission-level Deny effect: if the permission has Effect::Deny,
         // finding any match in the union_of relations denies instead of allows.
@@ -1034,7 +1160,14 @@ impl GraphEngine {
             // Cache the decision
             let pid = self.active_partition_id();
             self.with_cache(|cache| {
-                cache.insert(subject.as_str(), permission, resource.as_str(), pid.as_str(), allowed, revision);
+                cache.insert(
+                    subject.as_str(),
+                    permission,
+                    resource.as_str(),
+                    pid.as_str(),
+                    allowed,
+                    revision,
+                );
             });
 
             self.hooks.trigger(&hooks::HookEvent::OnCheck {
@@ -1216,7 +1349,10 @@ impl GraphEngine {
 
         // Rate limit check
         let rl_key = format!("write:{}", tuple.object.as_str());
-        self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
+        self.rate_limiter
+            .lock()
+            .unwrap()
+            .check(&rl_key, RateLimitOp::Write)?;
 
         // Schema validation
         let resource_type = resource_type_name(tuple.object.as_str());
@@ -1234,7 +1370,9 @@ impl GraphEngine {
         drop(schema);
 
         self.storage.set_actor_identity(self.active_actor());
-        let revision = self.storage.write_tuple(&self.active_partition_id(), tuple)?;
+        let revision = self
+            .storage
+            .write_tuple(&self.active_partition_id(), tuple)?;
         crate::telemetry::update_revision_current(revision.as_u64());
 
         info!(revision = field::display(&revision), "tuple written");
@@ -1271,10 +1409,15 @@ impl GraphEngine {
 
         // Rate limit check
         let rl_key = format!("delete:{}", key.object.as_str());
-        self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
+        self.rate_limiter
+            .lock()
+            .unwrap()
+            .check(&rl_key, RateLimitOp::Write)?;
 
         self.storage.set_actor_identity(self.active_actor());
-        let revision = self.storage.delete_tuple(&self.active_partition_id(), key)?;
+        let revision = self
+            .storage
+            .delete_tuple(&self.active_partition_id(), key)?;
         crate::telemetry::update_revision_current(revision.as_u64());
 
         info!(revision = field::display(&revision), "tuple deleted");
@@ -1287,9 +1430,8 @@ impl GraphEngine {
             revision,
         );
 
-        self.hooks.trigger(&hooks::HookEvent::OnDelete {
-            key: key.clone(),
-        });
+        self.hooks
+            .trigger(&hooks::HookEvent::OnDelete { key: key.clone() });
 
         Ok(RevisionToken::new(revision, self.node_id))
     }
@@ -1314,7 +1456,10 @@ impl GraphEngine {
         self.maybe_checkpoint_wal();
 
         let rl_key = format!("async_write:{}", tuple.object.as_str());
-        self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
+        self.rate_limiter
+            .lock()
+            .unwrap()
+            .check(&rl_key, RateLimitOp::Write)?;
 
         let resource_type = resource_type_name(tuple.object.as_str());
         let schema = self.schema.read().unwrap();
@@ -1330,15 +1475,21 @@ impl GraphEngine {
         }
         drop(schema);
 
-        let storage = self.async_storage.as_ref().ok_or_else(|| {
-            AegisError::Internal("async storage not configured".to_string())
-        })?;
+        let storage = self
+            .async_storage
+            .as_ref()
+            .ok_or_else(|| AegisError::Internal("async storage not configured".to_string()))?;
 
         storage.set_actor_identity(self.active_actor()).await;
-        let revision = storage.write_tuple(&self.active_partition_id(), tuple).await?;
+        let revision = storage
+            .write_tuple(&self.active_partition_id(), tuple)
+            .await?;
         crate::telemetry::update_revision_current(revision.as_u64());
 
-        info!(revision = field::display(&revision), "tuple written (async)");
+        info!(
+            revision = field::display(&revision),
+            "tuple written (async)"
+        );
 
         self.emit_watch_event(
             WatchEventType::TupleAdded,
@@ -1357,10 +1508,7 @@ impl GraphEngine {
 
     /// Async delete: delete a tuple by key using the async storage backend.
     #[cfg(feature = "async-storage")]
-    pub async fn async_delete(
-        &self,
-        key: &crate::types::TupleKey,
-    ) -> AegisResult<RevisionToken> {
+    pub async fn async_delete(&self, key: &crate::types::TupleKey) -> AegisResult<RevisionToken> {
         let _span = span!(
             Level::INFO,
             "aegis.async_delete",
@@ -1375,17 +1523,26 @@ impl GraphEngine {
         self.maybe_checkpoint_wal();
 
         let rl_key = format!("async_delete:{}", key.object.as_str());
-        self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
+        self.rate_limiter
+            .lock()
+            .unwrap()
+            .check(&rl_key, RateLimitOp::Write)?;
 
-        let storage = self.async_storage.as_ref().ok_or_else(|| {
-            AegisError::Internal("async storage not configured".to_string())
-        })?;
+        let storage = self
+            .async_storage
+            .as_ref()
+            .ok_or_else(|| AegisError::Internal("async storage not configured".to_string()))?;
 
         storage.set_actor_identity(self.active_actor()).await;
-        let revision = storage.delete_tuple(&self.active_partition_id(), key).await?;
+        let revision = storage
+            .delete_tuple(&self.active_partition_id(), key)
+            .await?;
         crate::telemetry::update_revision_current(revision.as_u64());
 
-        info!(revision = field::display(&revision), "tuple deleted (async)");
+        info!(
+            revision = field::display(&revision),
+            "tuple deleted (async)"
+        );
 
         self.emit_watch_event(
             WatchEventType::TupleRemoved,
@@ -1395,9 +1552,8 @@ impl GraphEngine {
             revision,
         );
 
-        self.hooks.trigger(&hooks::HookEvent::OnDelete {
-            key: key.clone(),
-        });
+        self.hooks
+            .trigger(&hooks::HookEvent::OnDelete { key: key.clone() });
 
         Ok(RevisionToken::new(revision, self.node_id))
     }
@@ -1417,9 +1573,7 @@ impl GraphEngine {
             Some(ConsistencyMode::AtRevision(rev)) => {
                 let current = self.storage.current_revision(&self.active_partition_id())?;
                 if rev > current {
-                    return Err(AegisError::RevisionFromFuture(
-                        rev.as_u64() as usize,
-                    ));
+                    return Err(AegisError::RevisionFromFuture(rev.as_u64() as usize));
                 }
                 Ok(rev)
             }
@@ -1452,11 +1606,13 @@ impl GraphEngine {
         self.storage.save_policy_version(&save_ver)?;
 
         // Load the target version
-        let schema_json = self.storage.load_policy_version(version)?
+        let schema_json = self
+            .storage
+            .load_policy_version(version)?
             .ok_or_else(|| AegisError::Internal(format!("policy version {} not found", version)))?;
 
-        let new_schema: Schema = serde_json::from_str(&schema_json)
-            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let new_schema: Schema =
+            serde_json::from_str(&schema_json).map_err(|e| AegisError::Internal(e.to_string()))?;
 
         // Swap schema and update schema version
         {
@@ -1497,7 +1653,13 @@ impl GraphEngine {
         to_revision: Option<Revision>,
         pagination: &crate::types::PaginationParams,
     ) -> AegisResult<Vec<crate::types::AuditEntry>> {
-        self.storage.query_audit(&self.active_partition_id(), Some(object), from_revision, to_revision, pagination)
+        self.storage.query_audit(
+            &self.active_partition_id(),
+            Some(object),
+            from_revision,
+            to_revision,
+            pagination,
+        )
     }
 
     /// Query the audit log for all objects within an optional revision range.
@@ -1507,16 +1669,33 @@ impl GraphEngine {
         to_revision: Option<Revision>,
         pagination: &crate::types::PaginationParams,
     ) -> AegisResult<Vec<crate::types::AuditEntry>> {
-        self.storage.query_audit(&self.active_partition_id(), None, from_revision, to_revision, pagination)
+        self.storage.query_audit(
+            &self.active_partition_id(),
+            None,
+            from_revision,
+            to_revision,
+            pagination,
+        )
     }
 
     /// Export all tuples for a given subject (GDPR compliance).
-    pub fn export_subject(&self, subject: &SubjectId) -> AegisResult<Vec<crate::types::RelationshipTuple>> {
-        self.storage.list_by_subject(&self.active_partition_id(), subject, None, &ConsistencyMode::MinimizeLatency)
+    pub fn export_subject(
+        &self,
+        subject: &SubjectId,
+    ) -> AegisResult<Vec<crate::types::RelationshipTuple>> {
+        self.storage.list_by_subject(
+            &self.active_partition_id(),
+            subject,
+            None,
+            &ConsistencyMode::MinimizeLatency,
+        )
     }
 
     /// Export signed subject data (GDPR Article 15 with cryptographic signature).
-    pub fn export_signed_subject_data(&self, subject: &SubjectId) -> AegisResult<gdpr::SignedExport> {
+    pub fn export_signed_subject_data(
+        &self,
+        subject: &SubjectId,
+    ) -> AegisResult<gdpr::SignedExport> {
         let gdpr = self.gdpr();
         gdpr.sign_export(&gdpr.export_subject_data(subject)?)
     }
@@ -1538,12 +1717,19 @@ impl GraphEngine {
         self.storage.set_actor_identity(self.active_actor());
         match policy {
             "cascade" => {
-                let revision = self.storage.delete_subject(&self.active_partition_id(), subject)?;
+                let revision = self
+                    .storage
+                    .delete_subject(&self.active_partition_id(), subject)?;
                 crate::telemetry::update_revision_current(revision.as_u64());
                 Ok(RevisionToken::new(revision, self.node_id))
             }
             "fail" => {
-                let tuples = self.storage.list_by_subject(&self.active_partition_id(), subject, None, &ConsistencyMode::MinimizeLatency)?;
+                let tuples = self.storage.list_by_subject(
+                    &self.active_partition_id(),
+                    subject,
+                    None,
+                    &ConsistencyMode::MinimizeLatency,
+                )?;
                 if tuples.is_empty() {
                     let revision = self.storage.current_revision(&self.active_partition_id())?;
                     crate::telemetry::update_revision_current(revision.as_u64());
@@ -1560,13 +1746,20 @@ impl GraphEngine {
                         "transfer policy requires a transfer_to_subject".into(),
                     )
                 })?;
-                let tuples = self.storage.list_by_subject(&self.active_partition_id(), subject, None, &ConsistencyMode::MinimizeLatency)?;
+                let tuples = self.storage.list_by_subject(
+                    &self.active_partition_id(),
+                    subject,
+                    None,
+                    &ConsistencyMode::MinimizeLatency,
+                )?;
                 if tuples.is_empty() {
                     let revision = self.storage.current_revision(&self.active_partition_id())?;
                     crate::telemetry::update_revision_current(revision.as_u64());
                     return Ok(RevisionToken::new(revision, self.node_id));
                 }
-                let mut txn = self.storage.begin_transaction(&self.active_partition_id())?;
+                let mut txn = self
+                    .storage
+                    .begin_transaction(&self.active_partition_id())?;
                 for tuple in &tuples {
                     let new_tuple = RelationshipTuple {
                         subject: target.clone(),
@@ -1597,16 +1790,16 @@ impl GraphEngine {
     }
 
     /// Write multiple tuples atomically within a single transaction.
-    pub fn write_batch(
-        &self,
-        tuples: &[RelationshipTuple],
-    ) -> AegisResult<RevisionToken> {
+    pub fn write_batch(&self, tuples: &[RelationshipTuple]) -> AegisResult<RevisionToken> {
         let _span = span!(Level::INFO, "aegis.write_batch", count = tuples.len()).entered();
         self.check_closed()?;
         self.check_authenticated()?;
         self.maybe_checkpoint_wal();
         let rl_key = "write_batch";
-        self.rate_limiter.lock().unwrap().check(rl_key, RateLimitOp::Write)?;
+        self.rate_limiter
+            .lock()
+            .unwrap()
+            .check(rl_key, RateLimitOp::Write)?;
 
         // Schema validation for each tuple
         let schema = self.schema.read().unwrap();
@@ -1626,7 +1819,9 @@ impl GraphEngine {
         drop(schema);
 
         self.storage.set_actor_identity(self.active_actor());
-        let revision = self.storage.write_tuples_batch(&self.active_partition_id(), tuples)?;
+        let revision = self
+            .storage
+            .write_tuples_batch(&self.active_partition_id(), tuples)?;
         crate::telemetry::update_revision_current(revision.as_u64());
         for tuple in tuples {
             self.emit_watch_event(
@@ -1643,7 +1838,9 @@ impl GraphEngine {
 
     /// Begin a storage transaction for atomic multi-operation writes.
     pub fn transaction(&self) -> AegisResult<Box<dyn StorageTransaction>> {
-        let mut txn = self.storage.begin_transaction(&self.active_partition_id())?;
+        let mut txn = self
+            .storage
+            .begin_transaction(&self.active_partition_id())?;
         if let Some(actor) = self.active_actor() {
             txn.set_actor_identity(Some(actor));
         }
@@ -1657,8 +1854,11 @@ impl GraphEngine {
         relation: Option<&Relation>,
         consistency: Option<ConsistencyMode>,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        let c = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
-        self.storage.list_by_object(&self.active_partition_id(), object, relation, c)
+        let c = consistency
+            .as_ref()
+            .unwrap_or(&ConsistencyMode::MinimizeLatency);
+        self.storage
+            .list_by_object(&self.active_partition_id(), object, relation, c)
     }
 
     /// List all tuples for a given subject, optionally filtered by relation.
@@ -1668,8 +1868,11 @@ impl GraphEngine {
         relation: Option<&Relation>,
         consistency: Option<ConsistencyMode>,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        let c = consistency.as_ref().unwrap_or(&ConsistencyMode::MinimizeLatency);
-        self.storage.list_by_subject(&self.active_partition_id(), subject, relation, c)
+        let c = consistency
+            .as_ref()
+            .unwrap_or(&ConsistencyMode::MinimizeLatency);
+        self.storage
+            .list_by_subject(&self.active_partition_id(), subject, relation, c)
     }
 
     /// List all tuples matching a relation on an object.
@@ -1678,7 +1881,8 @@ impl GraphEngine {
         object: &ResourceId,
         relation: &Relation,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        self.storage.list_by_relation(&self.active_partition_id(), object, relation)
+        self.storage
+            .list_by_relation(&self.active_partition_id(), object, relation)
     }
 
     /// Query tuples with filters and pagination.
@@ -1688,16 +1892,16 @@ impl GraphEngine {
         pagination: &PaginationParams,
         consistency: Option<ConsistencyMode>,
     ) -> AegisResult<PaginatedTuples> {
-        let _span = span!(
-            Level::INFO,
-            crate::telemetry::spans::QUERY,
-        )
-        .entered();
+        let _span = span!(Level::INFO, crate::telemetry::spans::QUERY,).entered();
 
         let consistency = consistency.unwrap_or_default();
         let pagination = pagination.clone().capped();
-        self.storage
-            .query_tuples(&self.active_partition_id(), filter, &pagination, &consistency)
+        self.storage.query_tuples(
+            &self.active_partition_id(),
+            filter,
+            &pagination,
+            &consistency,
+        )
     }
 
     /// Run schema migrations to reach the target version.
@@ -1720,11 +1924,21 @@ impl GraphEngine {
     pub fn delete_object(&self, object: &ResourceId) -> AegisResult<RevisionToken> {
         self.check_closed()?;
         self.check_authenticated()?;
-        let _span = span!(Level::INFO, "aegis.delete_object", resource = object.as_str()).entered();
+        let _span = span!(
+            Level::INFO,
+            "aegis.delete_object",
+            resource = object.as_str()
+        )
+        .entered();
         let rl_key = format!("delete_object:{}", object.as_str());
-        self.rate_limiter.lock().unwrap().check(&rl_key, RateLimitOp::Write)?;
+        self.rate_limiter
+            .lock()
+            .unwrap()
+            .check(&rl_key, RateLimitOp::Write)?;
         self.storage.set_actor_identity(self.active_actor());
-        let revision = self.storage.delete_object(&self.active_partition_id(), object)?;
+        let revision = self
+            .storage
+            .delete_object(&self.active_partition_id(), object)?;
         crate::telemetry::update_revision_current(revision.as_u64());
         info!(revision = field::display(&revision), "object deleted");
         Ok(RevisionToken::new(revision, self.node_id))
@@ -1751,7 +1965,10 @@ impl GraphEngine {
     }
 
     /// Export all permissions for a given subject across all resources.
-    pub fn access_review_for_subject(&self, subject: &SubjectId) -> AegisResult<Vec<AccessReviewEntry>> {
+    pub fn access_review_for_subject(
+        &self,
+        subject: &SubjectId,
+    ) -> AegisResult<Vec<AccessReviewEntry>> {
         let tuples = self.storage.list_by_subject(
             &self.active_partition_id(),
             subject,
@@ -1780,7 +1997,10 @@ impl GraphEngine {
     }
 
     /// Export all subjects with access to a given resource.
-    pub fn access_review_for_resource(&self, resource: &ResourceId) -> AegisResult<Vec<AccessReviewEntry>> {
+    pub fn access_review_for_resource(
+        &self,
+        resource: &ResourceId,
+    ) -> AegisResult<Vec<AccessReviewEntry>> {
         let tuples = self.storage.list_by_object(
             &self.active_partition_id(),
             resource,
@@ -1822,7 +2042,9 @@ impl GraphEngine {
     /// Run integrity check if the configured interval has elapsed since the last check.
     pub fn ensure_integrity_check(&self) -> AegisResult<()> {
         let interval = *self.integrity_check_interval.read().unwrap();
-        let Some(interval) = interval else { return Ok(()); };
+        let Some(interval) = interval else {
+            return Ok(());
+        };
         let mut last = self.last_integrity_check.lock().unwrap();
         if last.map_or(true, |t| t.elapsed() >= interval) {
             let report = self.storage.integrity_check()?;
@@ -1841,11 +2063,17 @@ impl GraphEngine {
     }
 
     fn maybe_checkpoint_wal(&self) {
-        let Some(threshold) = self.wal_checkpoint_threshold else { return; };
+        let Some(threshold) = self.wal_checkpoint_threshold else {
+            return;
+        };
         if let Some(wal_size) = self.storage.wal_size_mb() {
             if wal_size > threshold {
                 let _ = self.storage.close();
-                tracing::info!("WAL auto-checkpoint triggered ({} MB > {} MB)", wal_size, threshold);
+                tracing::info!(
+                    "WAL auto-checkpoint triggered ({} MB > {} MB)",
+                    wal_size,
+                    threshold
+                );
             }
         }
     }
@@ -1887,11 +2115,11 @@ fn resource_type_name(id: &str) -> String {
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+    use crate::engine::acl;
+    use crate::engine::rbac;
     #[cfg(feature = "sqlite")]
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
     use crate::types::*;
-    use crate::engine::rbac;
-    use crate::engine::acl;
     fn make_engine() -> GraphEngine {
         let schema = Schema {
             schema_version: 1,
@@ -1963,9 +2191,7 @@ mod tests {
             ))
             .unwrap();
 
-        let result = engine
-            .check(&subject, "read", &resource, None)
-            .unwrap();
+        let result = engine.check(&subject, "read", &resource, None).unwrap();
         assert!(result.allowed);
         assert!(result.revision.as_u64() > 0);
     }
@@ -1999,9 +2225,7 @@ mod tests {
             ))
             .unwrap();
 
-        let result = engine
-            .check(&subject, "admin", &resource, None)
-            .unwrap();
+        let result = engine.check(&subject, "admin", &resource, None).unwrap();
         assert!(result.allowed);
 
         // viewer should NOT have admin
@@ -2014,9 +2238,7 @@ mod tests {
             ))
             .unwrap();
 
-        let result = engine
-            .check(&viewer, "admin", &resource, None)
-            .unwrap();
+        let result = engine.check(&viewer, "admin", &resource, None).unwrap();
         assert!(!result.allowed);
     }
 
@@ -2034,9 +2256,7 @@ mod tests {
             ))
             .unwrap();
 
-        let explain = engine
-            .explain(&subject, "read", &resource, None)
-            .unwrap();
+        let explain = engine.explain(&subject, "read", &resource, None).unwrap();
         assert!(explain.allowed);
         assert!(explain.revision.as_u64() > 0);
     }
@@ -2070,16 +2290,12 @@ mod tests {
             .unwrap();
 
         // First check populates cache
-        let result = engine
-            .check(&subject, "read", &resource, None)
-            .unwrap();
+        let result = engine.check(&subject, "read", &resource, None).unwrap();
         assert!(result.allowed);
 
         // Invalidate and verify still works (cache miss is fine)
         engine.invalidate_cache();
-        let result = engine
-            .check(&subject, "read", &resource, None)
-            .unwrap();
+        let result = engine.check(&subject, "read", &resource, None).unwrap();
         assert!(result.allowed);
     }
 
@@ -2108,9 +2324,7 @@ mod tests {
 
         // Disable parallel, verify check still works
         engine.set_parallel_eval(false);
-        let result = engine
-            .check(&subject, "read", &resource, None)
-            .unwrap();
+        let result = engine.check(&subject, "read", &resource, None).unwrap();
         assert!(result.allowed);
     }
 
@@ -2133,7 +2347,12 @@ mod tests {
 
         // Read with FullyConsistent mode
         let result = engine
-            .check(&subject, "read", &resource, Some(ConsistencyMode::FullyConsistent))
+            .check(
+                &subject,
+                "read",
+                &resource,
+                Some(ConsistencyMode::FullyConsistent),
+            )
             .unwrap();
         assert!(result.allowed);
         assert!(result.revision >= token.revision);
@@ -2158,7 +2377,12 @@ mod tests {
 
         // Check at this revision — should be allowed (viewer can read)
         let result = engine
-            .check(&subject, "read", &resource, Some(ConsistencyMode::AtRevision(token1.revision)))
+            .check(
+                &subject,
+                "read",
+                &resource,
+                Some(ConsistencyMode::AtRevision(token1.revision)),
+            )
             .unwrap();
         assert!(result.allowed);
     }
@@ -2178,7 +2402,11 @@ mod tests {
 
         // Trigger a close event
         engine.close().ok();
-        engine.emit_log(crate::engine::hooks::LogLevel::Info, "test message", "test context");
+        engine.emit_log(
+            crate::engine::hooks::LogLevel::Info,
+            "test message",
+            "test context",
+        );
 
         let msgs = logged.lock().unwrap();
         assert!(!msgs.is_empty(), "expected at least one log message");
@@ -2250,10 +2478,16 @@ types:
     #[test]
     fn test_empty_transaction() {
         let engine = make_engine();
-        let rev_before = engine.storage().current_revision(&PartitionId::default()).unwrap();
+        let rev_before = engine
+            .storage()
+            .current_revision(&PartitionId::default())
+            .unwrap();
         let txn = engine.transaction().unwrap();
         let _rev = txn.commit().unwrap();
-        let rev_after = engine.storage().current_revision(&PartitionId::default()).unwrap();
+        let rev_after = engine
+            .storage()
+            .current_revision(&PartitionId::default())
+            .unwrap();
         assert_eq!(rev_before, rev_after);
     }
 
@@ -2271,7 +2505,15 @@ types:
         txn.write(&PartitionId::default(), &tuple).unwrap();
         let rev = txn.commit().unwrap();
         assert!(rev.as_u64() > 0);
-        let tuples = engine.storage().list_by_object(&PartitionId::default(), &resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let tuples = engine
+            .storage()
+            .list_by_object(
+                &PartitionId::default(),
+                &resource,
+                None,
+                &ConsistencyMode::MinimizeLatency,
+            )
+            .unwrap();
         assert_eq!(tuples.len(), 1);
     }
 
@@ -2282,12 +2524,21 @@ types:
         let engine = make_engine();
         let subject = SubjectId::new("user:1").unwrap();
         let resource = ResourceId::new("repo:a").unwrap();
-        let token = engine.write(&RelationshipTuple::new(
-            subject.clone(),
-            Relation::new("owner").unwrap(),
-            resource.clone(),
-        )).unwrap();
-        let result = engine.check(&subject, "read", &resource, Some(ConsistencyMode::AtRevision(token.revision))).unwrap();
+        let token = engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
+        let result = engine
+            .check(
+                &subject,
+                "read",
+                &resource,
+                Some(ConsistencyMode::AtRevision(token.revision)),
+            )
+            .unwrap();
         assert!(result.allowed);
     }
 
@@ -2341,8 +2592,16 @@ types:
         let engine = make_engine();
         let subject = SubjectId::new("user:alice").unwrap();
         let resource = ResourceId::new("repo:fluxbus").unwrap();
-        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone())).unwrap();
-        let dry = engine.check_dry_run(&subject, "read", &resource, None).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
+        let dry = engine
+            .check_dry_run(&subject, "read", &resource, None)
+            .unwrap();
         assert!(dry.allowed);
         assert!(dry.revision.as_u64() > 0);
     }
@@ -2353,14 +2612,32 @@ types:
         // First write bumps revision so token.revision > 0
         let dummy = SubjectId::new("user:dummy").unwrap();
         let dummy_r = ResourceId::new("repo:dummy").unwrap();
-        engine.write(&RelationshipTuple::new(dummy, Relation::new("owner").unwrap(), dummy_r)).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                dummy,
+                Relation::new("owner").unwrap(),
+                dummy_r,
+            ))
+            .unwrap();
 
         let subject = SubjectId::new("user:dave").unwrap();
         let resource = ResourceId::new("repo:dave").unwrap();
-        let tuple = RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone());
+        let tuple = RelationshipTuple::new(
+            subject.clone(),
+            Relation::new("owner").unwrap(),
+            resource.clone(),
+        );
         let token = engine.write_dry_run(&tuple).unwrap();
         assert!(token.revision.as_u64() > 0);
-        let tuples = engine.storage().list_by_object(&PartitionId::default(), &resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let tuples = engine
+            .storage()
+            .list_by_object(
+                &PartitionId::default(),
+                &resource,
+                None,
+                &ConsistencyMode::MinimizeLatency,
+            )
+            .unwrap();
         assert_eq!(tuples.len(), 0);
     }
 
@@ -2369,7 +2646,11 @@ types:
         let engine = make_engine();
         let subject = SubjectId::new("user:bad").unwrap();
         let resource = ResourceId::new("repo:bad").unwrap();
-        let tuple = RelationshipTuple::new(subject, Relation::new("nonexistent_relation").unwrap(), resource);
+        let tuple = RelationshipTuple::new(
+            subject,
+            Relation::new("nonexistent_relation").unwrap(),
+            resource,
+        );
         let result = engine.write_dry_run(&tuple);
         assert!(result.is_err());
     }
@@ -2379,7 +2660,11 @@ types:
         let engine = make_engine();
         let subject = SubjectId::new("user:carol").unwrap();
         let resource = ResourceId::new("repo:carol").unwrap();
-        let tuple = RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone());
+        let tuple = RelationshipTuple::new(
+            subject.clone(),
+            Relation::new("owner").unwrap(),
+            resource.clone(),
+        );
         engine.write(&tuple).unwrap();
         engine.check(&subject, "read", &resource, None).unwrap();
         let subject2 = SubjectId::new("user:other").unwrap();
@@ -2399,16 +2684,54 @@ types:
         let r1 = ResourceId::new("repo:r1").unwrap();
         let r2 = ResourceId::new("repo:r2").unwrap();
         let r3 = ResourceId::new("repo:r3").unwrap();
-        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), r1.clone())).unwrap();
-        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("viewer").unwrap(), r2.clone())).unwrap();
-        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), r3.clone())).unwrap();
-        let key = TupleKey { subject: subject.clone(), relation: Relation::new("viewer").unwrap(), object: r2.clone() };
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                r1.clone(),
+            ))
+            .unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("viewer").unwrap(),
+                r2.clone(),
+            ))
+            .unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                r3.clone(),
+            ))
+            .unwrap();
+        let key = TupleKey {
+            subject: subject.clone(),
+            relation: Relation::new("viewer").unwrap(),
+            object: r2.clone(),
+        };
         engine.delete(&key).unwrap();
         for r in &[&r1, &r3] {
-            let tuples = engine.storage().list_by_object(&PartitionId::default(), r, None, &ConsistencyMode::MinimizeLatency).unwrap();
+            let tuples = engine
+                .storage()
+                .list_by_object(
+                    &PartitionId::default(),
+                    r,
+                    None,
+                    &ConsistencyMode::MinimizeLatency,
+                )
+                .unwrap();
             assert!(!tuples.is_empty(), "tuple for {:?} should still exist", r);
         }
-        let deleted_tuples = engine.storage().list_by_object(&PartitionId::default(), &r2, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let deleted_tuples = engine
+            .storage()
+            .list_by_object(
+                &PartitionId::default(),
+                &r2,
+                None,
+                &ConsistencyMode::MinimizeLatency,
+            )
+            .unwrap();
         assert!(deleted_tuples.is_empty(), "deleted tuple should not exist");
     }
 
@@ -2420,11 +2743,13 @@ types:
         let sub = engine.watch(WatchFilter::default());
         let subject = SubjectId::new("user:watch").unwrap();
         for i in 0..3 {
-            engine.write(&RelationshipTuple::new(
-                subject.clone(),
-                Relation::new("owner").unwrap(),
-                ResourceId::new(&format!("repo:watch{i}")).unwrap(),
-            )).unwrap();
+            engine
+                .write(&RelationshipTuple::new(
+                    subject.clone(),
+                    Relation::new("owner").unwrap(),
+                    ResourceId::new(&format!("repo:watch{i}")).unwrap(),
+                ))
+                .unwrap();
         }
         let mut count = 0;
         while let Ok(_) = sub.try_recv() {
@@ -2440,12 +2765,24 @@ types:
         let engine = make_engine();
         let subject = SubjectId::new("user:audit").unwrap();
         let resource = ResourceId::new("repo:audit").unwrap();
-        let token = engine.write(&RelationshipTuple::new(
-            subject.clone(),
-            Relation::new("owner").unwrap(),
-            resource.clone(),
-        )).unwrap();
-        let entries = engine.query_audit(&resource, None, None, &PaginationParams { limit: 10, cursor: None }).unwrap();
+        let token = engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
+        let entries = engine
+            .query_audit(
+                &resource,
+                None,
+                None,
+                &PaginationParams {
+                    limit: 10,
+                    cursor: None,
+                },
+            )
+            .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].revision, token.revision);
         assert_eq!(entries[0].subject, "user:audit");
@@ -2461,17 +2798,29 @@ types:
 
         // Set actor identity before write
         engine.set_actor(Some("service-user"));
-        let token = engine.write(&RelationshipTuple::new(
-            subject.clone(),
-            Relation::new("owner").unwrap(),
-            resource.clone(),
-        )).unwrap();
+        let token = engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
 
         // Verify active_actor returns the identity
         assert_eq!(engine.active_actor(), Some("service-user".to_string()));
 
         // Verify identity appears in audit
-        let entries = engine.query_audit(&resource, None, None, &PaginationParams { limit: 10, cursor: None }).unwrap();
+        let entries = engine
+            .query_audit(
+                &resource,
+                None,
+                None,
+                &PaginationParams {
+                    limit: 10,
+                    cursor: None,
+                },
+            )
+            .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].identity, Some("service-user".to_string()));
         assert_eq!(entries[0].revision, token.revision);
@@ -2479,13 +2828,25 @@ types:
         // Clear actor and write again
         engine.set_actor(None);
         let subject2 = SubjectId::new("user:no_actor").unwrap();
-        let _ = engine.write(&RelationshipTuple::new(
-            subject2.clone(),
-            Relation::new("viewer").unwrap(),
-            resource.clone(),
-        )).unwrap();
+        let _ = engine
+            .write(&RelationshipTuple::new(
+                subject2.clone(),
+                Relation::new("viewer").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
 
-        let entries2 = engine.query_audit(&resource, None, None, &PaginationParams { limit: 10, cursor: None }).unwrap();
+        let entries2 = engine
+            .query_audit(
+                &resource,
+                None,
+                None,
+                &PaginationParams {
+                    limit: 10,
+                    cursor: None,
+                },
+            )
+            .unwrap();
         assert_eq!(entries2.len(), 2);
         // Second entry should have None identity
         assert_eq!(entries2[1].identity, None);
@@ -2497,11 +2858,13 @@ types:
         let subject = SubjectId::new("user:del_actor").unwrap();
         let resource = ResourceId::new("repo:del_actor").unwrap();
 
-        engine.write(&RelationshipTuple::new(
-            subject.clone(),
-            Relation::new("owner").unwrap(),
-            resource.clone(),
-        )).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
 
         // Set identity and delete
         engine.set_actor(Some("cleanup-service"));
@@ -2512,7 +2875,17 @@ types:
         };
         let _ = engine.delete(&key).unwrap();
 
-        let entries = engine.query_audit(&resource, None, None, &PaginationParams { limit: 10, cursor: None }).unwrap();
+        let entries = engine
+            .query_audit(
+                &resource,
+                None,
+                None,
+                &PaginationParams {
+                    limit: 10,
+                    cursor: None,
+                },
+            )
+            .unwrap();
         assert_eq!(entries.len(), 2);
         // Write entry (no identity) then delete entry (with identity)
         assert_eq!(entries[0].identity, None);
@@ -2527,14 +2900,28 @@ types:
 
         engine.set_actor(Some("txn-actor"));
         let mut txn = engine.transaction().unwrap();
-        txn.write(&PartitionId::default(), &RelationshipTuple::new(
-            SubjectId::new("user:txn1").unwrap(),
-            Relation::new("owner").unwrap(),
-            resource.clone(),
-        )).unwrap();
+        txn.write(
+            &PartitionId::default(),
+            &RelationshipTuple::new(
+                SubjectId::new("user:txn1").unwrap(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ),
+        )
+        .unwrap();
         txn.commit().unwrap();
 
-        let entries = engine.query_audit(&resource, None, None, &PaginationParams { limit: 10, cursor: None }).unwrap();
+        let entries = engine
+            .query_audit(
+                &resource,
+                None,
+                None,
+                &PaginationParams {
+                    limit: 10,
+                    cursor: None,
+                },
+            )
+            .unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].identity, Some("txn-actor".to_string()));
     }
@@ -2552,7 +2939,10 @@ types:
 
     #[test]
     fn test_double_initialize() {
-        let config = SqliteConfig { path: ":memory:".to_string(), ..Default::default() };
+        let config = SqliteConfig {
+            path: ":memory:".to_string(),
+            ..Default::default()
+        };
         let mut storage = SqliteStorage::new(config).unwrap();
         storage.initialize().unwrap();
         storage.initialize().unwrap();
@@ -2566,7 +2956,13 @@ types:
         let engine = Arc::new(make_engine());
         let subject = SubjectId::new("user:concurrent").unwrap();
         let resource = ResourceId::new("repo:concurrent").unwrap();
-        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone())).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
         let mut handles = vec![];
         for _ in 0..10 {
             let engine = Arc::clone(&engine);
@@ -2595,7 +2991,11 @@ types:
                 let _guard = lock.lock().unwrap();
                 let subject = SubjectId::new(&format!("user:writer{i}")).unwrap();
                 let resource = ResourceId::new(&format!("repo:writer{i}")).unwrap();
-                engine.write(&RelationshipTuple::new(subject, Relation::new("owner").unwrap(), resource))
+                engine.write(&RelationshipTuple::new(
+                    subject,
+                    Relation::new("owner").unwrap(),
+                    resource,
+                ))
             }));
         }
         for h in handles {
@@ -2614,7 +3014,11 @@ types:
             writer_handles.push(std::thread::spawn(move || {
                 let subject = SubjectId::new(&format!("user:rw{i}")).unwrap();
                 let resource = ResourceId::new(&format!("repo:rw{i}")).unwrap();
-                engine.write(&RelationshipTuple::new(subject, Relation::new("owner").unwrap(), resource))
+                engine.write(&RelationshipTuple::new(
+                    subject,
+                    Relation::new("owner").unwrap(),
+                    resource,
+                ))
             }));
         }
         let mut reader_handles = vec![];
@@ -2640,7 +3044,13 @@ types:
         let engine = Arc::new(make_engine());
         let subject = SubjectId::new("user:pool").unwrap();
         let resource = ResourceId::new("repo:pool").unwrap();
-        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone())).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
         let mut handles = vec![];
         for _ in 0..20 {
             let engine = Arc::clone(&engine);
@@ -2661,12 +3071,24 @@ types:
         let engine = make_engine();
         let root = SubjectId::new("user:deep").unwrap();
         let mut prev = ResourceId::new("repo:level0").unwrap();
-        engine.write(&RelationshipTuple::new(root.clone(), Relation::new("owner").unwrap(), prev.clone())).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                root.clone(),
+                Relation::new("owner").unwrap(),
+                prev.clone(),
+            ))
+            .unwrap();
         let depth = 5;
         for i in 1..depth {
             let current = ResourceId::new(&format!("repo:level{i}")).unwrap();
             let as_subject = SubjectId::new(&format!("repo:level{}", i - 1)).unwrap();
-            engine.write(&RelationshipTuple::new(as_subject, Relation::new("owner").unwrap(), current.clone())).unwrap();
+            engine
+                .write(&RelationshipTuple::new(
+                    as_subject,
+                    Relation::new("owner").unwrap(),
+                    current.clone(),
+                ))
+                .unwrap();
             prev = current;
         }
         let result = engine.check(&root, "read", &prev, None).unwrap();
@@ -2679,14 +3101,22 @@ types:
         let resource = ResourceId::new("repo:siblings").unwrap();
         for i in 0..100 {
             let subject = SubjectId::new(&format!("user:sib{i}")).unwrap();
-            engine.write(&RelationshipTuple::new(subject, Relation::new("owner").unwrap(), resource.clone())).unwrap();
+            engine
+                .write(&RelationshipTuple::new(
+                    subject,
+                    Relation::new("owner").unwrap(),
+                    resource.clone(),
+                ))
+                .unwrap();
         }
-        let result = engine.check(
-            &SubjectId::new("user:sib0").unwrap(),
-            "read",
-            &resource,
-            None,
-        ).unwrap();
+        let result = engine
+            .check(
+                &SubjectId::new("user:sib0").unwrap(),
+                "read",
+                &resource,
+                None,
+            )
+            .unwrap();
         assert!(result.allowed);
     }
 
@@ -2697,10 +3127,27 @@ types:
         let engine = make_engine();
         let subject = SubjectId::new("user:persist").unwrap();
         let resource = ResourceId::new("repo:persist").unwrap();
-        engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource.clone())).unwrap();
-        let _rev1 = engine.storage().current_revision(&PartitionId::default()).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
+        let _rev1 = engine
+            .storage()
+            .current_revision(&PartitionId::default())
+            .unwrap();
         engine.recover_from_events(None).unwrap();
-        let tuples = engine.storage().list_by_object(&PartitionId::default(), &resource, None, &ConsistencyMode::MinimizeLatency).unwrap();
+        let tuples = engine
+            .storage()
+            .list_by_object(
+                &PartitionId::default(),
+                &resource,
+                None,
+                &ConsistencyMode::MinimizeLatency,
+            )
+            .unwrap();
         assert_eq!(tuples.len(), 1);
     }
 
@@ -2712,13 +3159,24 @@ types:
         let subject = SubjectId::new("user:page").unwrap();
         for i in 0..100 {
             let resource = ResourceId::new(&format!("repo:page{i}")).unwrap();
-            engine.write(&RelationshipTuple::new(subject.clone(), Relation::new("owner").unwrap(), resource)).unwrap();
+            engine
+                .write(&RelationshipTuple::new(
+                    subject.clone(),
+                    Relation::new("owner").unwrap(),
+                    resource,
+                ))
+                .unwrap();
         }
-        let result = engine.query(
-            &TupleFilter::default(),
-            &PaginationParams { limit: 10, cursor: None },
-            None,
-        ).unwrap();
+        let result = engine
+            .query(
+                &TupleFilter::default(),
+                &PaginationParams {
+                    limit: 10,
+                    cursor: None,
+                },
+                None,
+            )
+            .unwrap();
         assert_eq!(result.tuples.len(), 10);
         assert!(result.next_cursor.is_some());
     }
@@ -2734,15 +3192,57 @@ types:
             types: {
                 let mut types = std::collections::HashMap::new();
                 let mut repo_relations = std::collections::HashMap::new();
-                repo_relations.insert("owner".to_string(), RelationDef { inherit_from: vec![], description: None });
+                repo_relations.insert(
+                    "owner".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut repo_permissions = std::collections::HashMap::new();
-                repo_permissions.insert("read".to_string(), PermissionDef { union_of: vec!["owner".to_string()], condition: None, description: None, ..Default::default() });
-                types.insert("repo".to_string(), TypeDef { relations: repo_relations, permissions: repo_permissions, ..Default::default() });
+                repo_permissions.insert(
+                    "read".to_string(),
+                    PermissionDef {
+                        union_of: vec!["owner".to_string()],
+                        condition: None,
+                        description: None,
+                        ..Default::default()
+                    },
+                );
+                types.insert(
+                    "repo".to_string(),
+                    TypeDef {
+                        relations: repo_relations,
+                        permissions: repo_permissions,
+                        ..Default::default()
+                    },
+                );
                 let mut doc_relations = std::collections::HashMap::new();
-                doc_relations.insert("editor".to_string(), RelationDef { inherit_from: vec![], description: None });
+                doc_relations.insert(
+                    "editor".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut doc_permissions = std::collections::HashMap::new();
-                doc_permissions.insert("read".to_string(), PermissionDef { union_of: vec!["editor".to_string()], condition: None, description: None, ..Default::default() });
-                types.insert("doc".to_string(), TypeDef { relations: doc_relations, permissions: doc_permissions, ..Default::default() });
+                doc_permissions.insert(
+                    "read".to_string(),
+                    PermissionDef {
+                        union_of: vec!["editor".to_string()],
+                        condition: None,
+                        description: None,
+                        ..Default::default()
+                    },
+                );
+                types.insert(
+                    "doc".to_string(),
+                    TypeDef {
+                        relations: doc_relations,
+                        permissions: doc_permissions,
+                        ..Default::default()
+                    },
+                );
                 types
             },
         };
@@ -2752,12 +3252,29 @@ types:
         let alice = SubjectId::new("user:alice").unwrap();
         let repo = ResourceId::new("repo:test").unwrap();
         let doc = ResourceId::new("doc:test").unwrap();
-        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("owner").unwrap(), repo.clone())).unwrap();
-        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("editor").unwrap(), doc.clone())).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                alice.clone(),
+                Relation::new("owner").unwrap(),
+                repo.clone(),
+            ))
+            .unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                alice.clone(),
+                Relation::new("editor").unwrap(),
+                doc.clone(),
+            ))
+            .unwrap();
         assert!(engine.check(&alice, "read", &repo, None).unwrap().allowed);
         assert!(engine.check(&alice, "read", &doc, None).unwrap().allowed);
-        let filter = TupleFilter { object_type: Some("repo".to_string()), ..Default::default() };
-        let result = engine.query(&filter, &PaginationParams::default(), None).unwrap();
+        let filter = TupleFilter {
+            object_type: Some("repo".to_string()),
+            ..Default::default()
+        };
+        let result = engine
+            .query(&filter, &PaginationParams::default(), None)
+            .unwrap();
         assert_eq!(result.tuples.len(), 1);
         assert!(result.tuples[0].object.as_str().starts_with("repo:"));
     }
@@ -2771,15 +3288,31 @@ types:
             types: {
                 let mut types = std::collections::HashMap::new();
                 let mut relations = std::collections::HashMap::new();
-                relations.insert("viewer".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert(
+                    "viewer".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut permissions = std::collections::HashMap::new();
-                permissions.insert("read".to_string(), PermissionDef {
-                    union_of: vec!["viewer".to_string()],
-                    condition: Some("role eq admin".to_string()),
-                    description: None,
-                    ..Default::default()
-                });
-                types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
+                permissions.insert(
+                    "read".to_string(),
+                    PermissionDef {
+                        union_of: vec!["viewer".to_string()],
+                        condition: Some("role eq admin".to_string()),
+                        description: None,
+                        ..Default::default()
+                    },
+                );
+                types.insert(
+                    "repo".to_string(),
+                    TypeDef {
+                        relations,
+                        permissions,
+                        ..Default::default()
+                    },
+                );
                 types
             },
         };
@@ -2788,7 +3321,13 @@ types:
         let engine = GraphEngine::new(Box::new(storage), schema);
         let alice = SubjectId::new("user:alice").unwrap();
         let repo = ResourceId::new("repo:test").unwrap();
-        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("viewer").unwrap(), repo.clone())).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                alice.clone(),
+                Relation::new("viewer").unwrap(),
+                repo.clone(),
+            ))
+            .unwrap();
 
         // Without context — condition present but no metadata → denied
         let result = engine.check(&alice, "read", &repo, None).unwrap();
@@ -2796,14 +3335,20 @@ types:
 
         // With matching context — role eq admin
         let mut ctx = crate::engine::condition::ConditionEvalContext::default();
-        ctx.subject_meta.insert("role".to_string(), "admin".to_string());
-        let result = engine.check_with_context(&alice, "read", &repo, None, ctx).unwrap();
+        ctx.subject_meta
+            .insert("role".to_string(), "admin".to_string());
+        let result = engine
+            .check_with_context(&alice, "read", &repo, None, ctx)
+            .unwrap();
         assert!(result.allowed, "matching context should allow");
 
         // With non-matching context — role eq viewer
         let mut ctx = crate::engine::condition::ConditionEvalContext::default();
-        ctx.subject_meta.insert("role".to_string(), "viewer".to_string());
-        let result = engine.check_with_context(&alice, "read", &repo, None, ctx).unwrap();
+        ctx.subject_meta
+            .insert("role".to_string(), "viewer".to_string());
+        let result = engine
+            .check_with_context(&alice, "read", &repo, None, ctx)
+            .unwrap();
         assert!(!result.allowed, "non-matching context should deny");
     }
 
@@ -2816,15 +3361,31 @@ types:
             types: {
                 let mut types = std::collections::HashMap::new();
                 let mut relations = std::collections::HashMap::new();
-                relations.insert("viewer".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert(
+                    "viewer".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut permissions = std::collections::HashMap::new();
-                permissions.insert("read".to_string(), PermissionDef {
-                    union_of: vec!["viewer".to_string()],
-                    condition: Some("role eq admin".to_string()),
-                    description: None,
-                    ..Default::default()
-                });
-                types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
+                permissions.insert(
+                    "read".to_string(),
+                    PermissionDef {
+                        union_of: vec!["viewer".to_string()],
+                        condition: Some("role eq admin".to_string()),
+                        description: None,
+                        ..Default::default()
+                    },
+                );
+                types.insert(
+                    "repo".to_string(),
+                    TypeDef {
+                        relations,
+                        permissions,
+                        ..Default::default()
+                    },
+                );
                 types
             },
         };
@@ -2833,11 +3394,20 @@ types:
         let engine = GraphEngine::new(Box::new(storage), schema);
         let alice = SubjectId::new("user:alice").unwrap();
         let repo = ResourceId::new("repo:test").unwrap();
-        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("viewer").unwrap(), repo.clone())).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                alice.clone(),
+                Relation::new("viewer").unwrap(),
+                repo.clone(),
+            ))
+            .unwrap();
 
         let mut ctx = crate::engine::condition::ConditionEvalContext::default();
-        ctx.subject_meta.insert("role".to_string(), "admin".to_string());
-        let result = engine.check_dry_run_with_context(&alice, "read", &repo, None, ctx).unwrap();
+        ctx.subject_meta
+            .insert("role".to_string(), "admin".to_string());
+        let result = engine
+            .check_dry_run_with_context(&alice, "read", &repo, None, ctx)
+            .unwrap();
         assert!(result.allowed, "dry-run with matching context should allow");
 
         // dry_run without context
@@ -2854,20 +3424,43 @@ types:
             types: {
                 let mut types = std::collections::HashMap::new();
                 let mut relations = std::collections::HashMap::new();
-                relations.insert("owner".to_string(), RelationDef { inherit_from: vec![], description: None });
-                relations.insert("banned".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert(
+                    "owner".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
+                relations.insert(
+                    "banned".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut permissions = std::collections::HashMap::new();
-                permissions.insert("read".to_string(), PermissionDef {
-                    union_of: vec!["owner".to_string()],
-                    condition: None,
-                    description: None,
-                    ..Default::default()
-                });
+                permissions.insert(
+                    "read".to_string(),
+                    PermissionDef {
+                        union_of: vec!["owner".to_string()],
+                        condition: None,
+                        description: None,
+                        ..Default::default()
+                    },
+                );
                 let deny = vec![DenyDef {
                     relations: vec!["banned".to_string()],
                     description: Some("banned users cannot read".to_string()),
                 }];
-                types.insert("repo".to_string(), TypeDef { relations, permissions, deny, ..Default::default() });
+                types.insert(
+                    "repo".to_string(),
+                    TypeDef {
+                        relations,
+                        permissions,
+                        deny,
+                        ..Default::default()
+                    },
+                );
                 types
             },
         };
@@ -2878,14 +3471,29 @@ types:
         let repo = ResourceId::new("repo:test").unwrap();
 
         // Alice is owner — should be allowed
-        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("owner").unwrap(), repo.clone())).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                alice.clone(),
+                Relation::new("owner").unwrap(),
+                repo.clone(),
+            ))
+            .unwrap();
         let result = engine.check(&alice, "read", &repo, None).unwrap();
         assert!(result.allowed, "owner should be allowed to read");
 
         // Alice is also banned — deny should override allow
-        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("banned").unwrap(), repo.clone())).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                alice.clone(),
+                Relation::new("banned").unwrap(),
+                repo.clone(),
+            ))
+            .unwrap();
         let result = engine.check(&alice, "read", &repo, None).unwrap();
-        assert!(!result.allowed, "deny rule for banned should override owner allow");
+        assert!(
+            !result.allowed,
+            "deny rule for banned should override owner allow"
+        );
     }
 
     #[test]
@@ -2897,15 +3505,31 @@ types:
             types: {
                 let mut types = std::collections::HashMap::new();
                 let mut relations = std::collections::HashMap::new();
-                relations.insert("admin".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert(
+                    "admin".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut permissions = std::collections::HashMap::new();
-                permissions.insert("admin".to_string(), PermissionDef {
-                    union_of: vec!["admin".to_string()],
-                    condition: None,
-                    description: None,
-                    ..Default::default()
-                });
-                types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
+                permissions.insert(
+                    "admin".to_string(),
+                    PermissionDef {
+                        union_of: vec!["admin".to_string()],
+                        condition: None,
+                        description: None,
+                        ..Default::default()
+                    },
+                );
+                types.insert(
+                    "repo".to_string(),
+                    TypeDef {
+                        relations,
+                        permissions,
+                        ..Default::default()
+                    },
+                );
                 types
             },
         };
@@ -2920,7 +3544,8 @@ types:
         assert!(token.revision.as_u64() > 0);
 
         // Check role
-        let result = rbac::check_role(&engine, &PartitionId::default(), &alice, "admin", &repo).unwrap();
+        let result =
+            rbac::check_role(&engine, &PartitionId::default(), &alice, "admin", &repo).unwrap();
         assert!(result.allowed, "alice should have admin role");
 
         // Get roles
@@ -2930,7 +3555,8 @@ types:
 
         // Unassign role
         let _ = rbac::unassign_role(&engine, &alice, "admin", &repo).unwrap();
-        let result = rbac::check_role(&engine, &PartitionId::default(), &alice, "admin", &repo).unwrap();
+        let result =
+            rbac::check_role(&engine, &PartitionId::default(), &alice, "admin", &repo).unwrap();
         assert!(!result.allowed, "alice should no longer have admin role");
     }
 
@@ -2943,22 +3569,47 @@ types:
             types: {
                 let mut types = std::collections::HashMap::new();
                 let mut relations = std::collections::HashMap::new();
-                relations.insert("viewer".to_string(), RelationDef { inherit_from: vec![], description: None });
-                relations.insert("editor".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert(
+                    "viewer".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
+                relations.insert(
+                    "editor".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut permissions = std::collections::HashMap::new();
-                permissions.insert("read".to_string(), PermissionDef {
-                    union_of: vec!["viewer".to_string(), "editor".to_string()],
-                    condition: None,
-                    description: None,
-                    ..Default::default()
-                });
-                permissions.insert("write".to_string(), PermissionDef {
-                    union_of: vec!["editor".to_string()],
-                    condition: None,
-                    description: None,
-                    ..Default::default()
-                });
-                types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
+                permissions.insert(
+                    "read".to_string(),
+                    PermissionDef {
+                        union_of: vec!["viewer".to_string(), "editor".to_string()],
+                        condition: None,
+                        description: None,
+                        ..Default::default()
+                    },
+                );
+                permissions.insert(
+                    "write".to_string(),
+                    PermissionDef {
+                        union_of: vec!["editor".to_string()],
+                        condition: None,
+                        description: None,
+                        ..Default::default()
+                    },
+                );
+                types.insert(
+                    "repo".to_string(),
+                    TypeDef {
+                        relations,
+                        permissions,
+                        ..Default::default()
+                    },
+                );
                 types
             },
         };
@@ -3001,15 +3652,31 @@ types:
             types: {
                 let mut types = std::collections::HashMap::new();
                 let mut relations = std::collections::HashMap::new();
-                relations.insert("member".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert(
+                    "member".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut permissions = std::collections::HashMap::new();
-                permissions.insert("member".to_string(), PermissionDef {
-                    union_of: vec!["member".to_string()],
-                    condition: None,
-                    description: None,
-                    ..Default::default()
-                });
-                types.insert("team".to_string(), TypeDef { relations, permissions, ..Default::default() });
+                permissions.insert(
+                    "member".to_string(),
+                    PermissionDef {
+                        union_of: vec!["member".to_string()],
+                        condition: None,
+                        description: None,
+                        ..Default::default()
+                    },
+                );
+                types.insert(
+                    "team".to_string(),
+                    TypeDef {
+                        relations,
+                        permissions,
+                        ..Default::default()
+                    },
+                );
                 types
             },
         };
@@ -3043,9 +3710,18 @@ types:
 
         let logs = logged.lock().unwrap();
         let joined = logs.join(" ");
-        assert!(!joined.contains("secret"), "Logs should not contain secrets: {joined}");
-        assert!(!joined.contains("password"), "Logs should not contain passwords: {joined}");
-        assert!(!joined.contains("api_key"), "Logs should not contain api_key: {joined}");
+        assert!(
+            !joined.contains("secret"),
+            "Logs should not contain secrets: {joined}"
+        );
+        assert!(
+            !joined.contains("password"),
+            "Logs should not contain passwords: {joined}"
+        );
+        assert!(
+            !joined.contains("api_key"),
+            "Logs should not contain api_key: {joined}"
+        );
     }
 
     #[test]
@@ -3057,20 +3733,43 @@ types:
             types: {
                 let mut types = std::collections::HashMap::new();
                 let mut relations = std::collections::HashMap::new();
-                relations.insert("member".to_string(), RelationDef { inherit_from: vec![], description: None });
-                relations.insert("banned".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert(
+                    "member".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
+                relations.insert(
+                    "banned".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut permissions = std::collections::HashMap::new();
-                permissions.insert("access".to_string(), PermissionDef {
-                    union_of: vec!["member".to_string()],
-                    condition: None,
-                    description: None,
-                    ..Default::default()
-                });
+                permissions.insert(
+                    "access".to_string(),
+                    PermissionDef {
+                        union_of: vec!["member".to_string()],
+                        condition: None,
+                        description: None,
+                        ..Default::default()
+                    },
+                );
                 let deny = vec![DenyDef {
                     relations: vec!["banned".to_string()],
                     description: Some("banned users denied".to_string()),
                 }];
-                types.insert("workspace".to_string(), TypeDef { relations, permissions, deny, ..Default::default() });
+                types.insert(
+                    "workspace".to_string(),
+                    TypeDef {
+                        relations,
+                        permissions,
+                        deny,
+                        ..Default::default()
+                    },
+                );
                 types
             },
         };
@@ -3081,7 +3780,13 @@ types:
         let ws = ResourceId::new("workspace:acme").unwrap();
 
         // Alice is a member (no deny relation)
-        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("member").unwrap(), ws.clone())).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                alice.clone(),
+                Relation::new("member").unwrap(),
+                ws.clone(),
+            ))
+            .unwrap();
         let result = engine.check(&alice, "access", &ws, None).unwrap();
         assert!(result.allowed, "member without ban should be allowed");
     }

@@ -1,9 +1,9 @@
 #![cfg(feature = "sqlite")]
 use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
-use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
 use aegis_core::storage::TupleFilter;
+use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::types::*;
 use std::time::Instant;
 

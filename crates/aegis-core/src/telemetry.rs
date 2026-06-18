@@ -80,8 +80,8 @@ pub fn init_logger() -> TelemetryGuard {
 #[cfg(feature = "telemetry")]
 pub fn init_otel() -> Result<TelemetryGuard, Box<dyn std::error::Error>> {
     use opentelemetry::global;
-    use opentelemetry_sdk::trace::SdkTracerProvider;
     use opentelemetry_sdk::Resource;
+    use opentelemetry_sdk::trace::SdkTracerProvider;
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
@@ -168,13 +168,13 @@ pub fn update_revision_current(val: u64) {
 #[cfg(feature = "telemetry")]
 pub mod otel_metrics {
     //! OpenTelemetry metric instruments, available only with the `telemetry` feature.
-    use std::sync::atomic::Ordering;
     use std::sync::OnceLock;
+    use std::sync::atomic::Ordering;
 
+    use opentelemetry::KeyValue;
     use opentelemetry::global;
     use opentelemetry::metrics::Meter;
     use opentelemetry::metrics::MeterProvider as _;
-    use opentelemetry::KeyValue;
 
     use super::{
         METRIC_GRAPH_TENANT_COUNT, METRIC_GRAPH_TUPLE_COUNT, METRIC_REVISION_CURRENT,
@@ -203,20 +203,14 @@ pub mod otel_metrics {
                 .u64_observable_gauge("aegis.graph.tuple_count")
                 .with_description("Number of tuples in storage")
                 .with_callback(|observer| {
-                    observer.observe(
-                        METRIC_GRAPH_TUPLE_COUNT.load(Ordering::Relaxed),
-                        &[],
-                    );
+                    observer.observe(METRIC_GRAPH_TUPLE_COUNT.load(Ordering::Relaxed), &[]);
                 })
                 .build();
             let _ = m
                 .u64_observable_gauge("aegis.graph.tenant_count")
                 .with_description("Number of tenants/namespaces")
                 .with_callback(|observer| {
-                    observer.observe(
-                        METRIC_GRAPH_TENANT_COUNT.load(Ordering::Relaxed),
-                        &[],
-                    );
+                    observer.observe(METRIC_GRAPH_TENANT_COUNT.load(Ordering::Relaxed), &[]);
                 })
                 .build();
             let _ = m
@@ -233,20 +227,14 @@ pub mod otel_metrics {
                 .u64_observable_gauge("aegis.schema.version")
                 .with_description("Current schema version")
                 .with_callback(|observer| {
-                    observer.observe(
-                        METRIC_SCHEMA_VERSION.load(Ordering::Relaxed),
-                        &[],
-                    );
+                    observer.observe(METRIC_SCHEMA_VERSION.load(Ordering::Relaxed), &[]);
                 })
                 .build();
             let _ = m
                 .u64_observable_gauge("aegis.revision.current")
                 .with_description("Current revision number")
                 .with_callback(|observer| {
-                    observer.observe(
-                        METRIC_REVISION_CURRENT.load(Ordering::Relaxed),
-                        &[],
-                    );
+                    observer.observe(METRIC_REVISION_CURRENT.load(Ordering::Relaxed), &[]);
                 })
                 .build();
         });
@@ -259,7 +247,13 @@ pub mod otel_metrics {
             .u64_counter("aegis.check.total")
             .with_description("Total number of authorization checks")
             .build();
-        counter.add(1, &[KeyValue::new("allowed", if allowed { "true" } else { "false" })]);
+        counter.add(
+            1,
+            &[KeyValue::new(
+                "allowed",
+                if allowed { "true" } else { "false" },
+            )],
+        );
     }
 
     /// Counter: checks that resulted in allow.
@@ -300,7 +294,13 @@ pub mod otel_metrics {
             .with_description("Duration of authorization checks in milliseconds")
             .with_unit("ms")
             .build();
-        histogram.record(duration_ms, &[KeyValue::new("allowed", if allowed { "true" } else { "false" })]);
+        histogram.record(
+            duration_ms,
+            &[KeyValue::new(
+                "allowed",
+                if allowed { "true" } else { "false" },
+            )],
+        );
     }
 
     /// Gauge (up-down counter): current cache size.
@@ -330,18 +330,14 @@ pub mod otel_metrics {
 mod tests {
     use super::otel_metrics;
     use crate::engine::GraphEngine;
-    use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
     use crate::storage::StorageBackend;
-    use crate::types::{
-        Relation, RelationshipTuple, ResourceId, Schema, SubjectId,
-    };
+    use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
+    use crate::types::{Relation, RelationshipTuple, ResourceId, Schema, SubjectId};
     use opentelemetry_sdk::metrics::InMemoryMetricExporter;
     use opentelemetry_sdk::metrics::PeriodicReader;
     use opentelemetry_sdk::metrics::SdkMeterProvider;
 
-    fn make_engine_with_provider(
-        provider: SdkMeterProvider,
-    ) -> GraphEngine {
+    fn make_engine_with_provider(provider: SdkMeterProvider) -> GraphEngine {
         let schema = Schema {
             schema_version: 1,
             namespace: "test".to_string(),
@@ -399,9 +395,7 @@ mod tests {
     fn test_in_memory_metrics_exporter() {
         let exporter = InMemoryMetricExporter::default();
         let reader = PeriodicReader::builder(exporter.clone()).build();
-        let provider = SdkMeterProvider::builder()
-            .with_reader(reader)
-            .build();
+        let provider = SdkMeterProvider::builder().with_reader(reader).build();
 
         let engine = make_engine_with_provider(provider);
 
@@ -417,9 +411,7 @@ mod tests {
             ))
             .unwrap();
 
-        let _ = engine
-            .check(&subject, "read", &resource, None)
-            .unwrap();
+        let _ = engine.check(&subject, "read", &resource, None).unwrap();
 
         // Verify statics were updated
         assert!(

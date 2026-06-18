@@ -105,18 +105,35 @@ mod tests {
         let team = ResourceId::new("team:eng").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
 
-        storage.write_tuple(&partition_id, &RelationshipTuple::new(
-            SubjectId::new("org:acme").unwrap(),
-            Relation::new("parent").unwrap(),
-            team.clone(),
-        )).unwrap();
-        storage.write_tuple(&partition_id, &RelationshipTuple::new(
-            SubjectId::new("team:eng").unwrap(),
-            Relation::new("parent").unwrap(),
-            repo.clone(),
-        )).unwrap();
+        storage
+            .write_tuple(
+                &partition_id,
+                &RelationshipTuple::new(
+                    SubjectId::new("org:acme").unwrap(),
+                    Relation::new("parent").unwrap(),
+                    team.clone(),
+                ),
+            )
+            .unwrap();
+        storage
+            .write_tuple(
+                &partition_id,
+                &RelationshipTuple::new(
+                    SubjectId::new("team:eng").unwrap(),
+                    Relation::new("parent").unwrap(),
+                    repo.clone(),
+                ),
+            )
+            .unwrap();
 
-        let ancestors = get_ancestors(&partition_id, storage.as_ref(), &repo, &Relation::new("parent").unwrap(), &consistency).unwrap();
+        let ancestors = get_ancestors(
+            &partition_id,
+            storage.as_ref(),
+            &repo,
+            &Relation::new("parent").unwrap(),
+            &consistency,
+        )
+        .unwrap();
         assert!(ancestors.contains(&team));
         assert!(ancestors.contains(&org));
     }
@@ -128,18 +145,35 @@ mod tests {
         let team = ResourceId::new("team:eng").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
 
-        storage.write_tuple(&partition_id, &RelationshipTuple::new(
-            SubjectId::new("org:acme").unwrap(),
-            Relation::new("parent").unwrap(),
-            team.clone(),
-        )).unwrap();
-        storage.write_tuple(&partition_id, &RelationshipTuple::new(
-            SubjectId::new("team:eng").unwrap(),
-            Relation::new("parent").unwrap(),
-            repo.clone(),
-        )).unwrap();
+        storage
+            .write_tuple(
+                &partition_id,
+                &RelationshipTuple::new(
+                    SubjectId::new("org:acme").unwrap(),
+                    Relation::new("parent").unwrap(),
+                    team.clone(),
+                ),
+            )
+            .unwrap();
+        storage
+            .write_tuple(
+                &partition_id,
+                &RelationshipTuple::new(
+                    SubjectId::new("team:eng").unwrap(),
+                    Relation::new("parent").unwrap(),
+                    repo.clone(),
+                ),
+            )
+            .unwrap();
 
-        let descendants = get_descendants(&partition_id, storage.as_ref(), &org, &Relation::new("parent").unwrap(), &consistency).unwrap();
+        let descendants = get_descendants(
+            &partition_id,
+            storage.as_ref(),
+            &org,
+            &Relation::new("parent").unwrap(),
+            &consistency,
+        )
+        .unwrap();
         assert!(descendants.contains(&team));
         assert!(descendants.contains(&repo));
     }
@@ -150,13 +184,38 @@ mod tests {
         let org = ResourceId::new("org:acme").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
 
-        storage.write_tuple(&partition_id, &RelationshipTuple::new(
-            SubjectId::new("org:acme").unwrap(),
-            Relation::new("parent").unwrap(),
-            repo.clone(),
-        )).unwrap();
+        storage
+            .write_tuple(
+                &partition_id,
+                &RelationshipTuple::new(
+                    SubjectId::new("org:acme").unwrap(),
+                    Relation::new("parent").unwrap(),
+                    repo.clone(),
+                ),
+            )
+            .unwrap();
 
-        assert!(is_ancestor(&partition_id, storage.as_ref(), &org, &repo, &Relation::new("parent").unwrap(), &consistency).unwrap());
-        assert!(!is_ancestor(&partition_id, storage.as_ref(), &repo, &org, &Relation::new("parent").unwrap(), &consistency).unwrap());
+        assert!(
+            is_ancestor(
+                &partition_id,
+                storage.as_ref(),
+                &org,
+                &repo,
+                &Relation::new("parent").unwrap(),
+                &consistency
+            )
+            .unwrap()
+        );
+        assert!(
+            !is_ancestor(
+                &partition_id,
+                storage.as_ref(),
+                &repo,
+                &org,
+                &Relation::new("parent").unwrap(),
+                &consistency
+            )
+            .unwrap()
+        );
     }
 }

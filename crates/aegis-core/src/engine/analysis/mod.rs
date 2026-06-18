@@ -154,7 +154,12 @@ impl GraphEngine {
                 Ok(r) => r,
                 Err(_) => continue,
             };
-            let tuples = match storage.list_by_object(&pid, resource, Some(&relation), &ConsistencyMode::MinimizeLatency) {
+            let tuples = match storage.list_by_object(
+                &pid,
+                resource,
+                Some(&relation),
+                &ConsistencyMode::MinimizeLatency,
+            ) {
                 Ok(t) => t,
                 Err(_) => continue,
             };
@@ -203,14 +208,18 @@ impl GraphEngine {
                             Err(_) => continue,
                         };
                         for t in &ok {
-                            let new_subj = format!("{}#{}", t.subject.as_str(), t.relation.as_str());
+                            let new_subj =
+                                format!("{}#{}", t.subject.as_str(), t.relation.as_str());
                             let mut new_paths = paths.clone();
                             new_paths.push(ExplainTrace {
                                 subject: new_subj.clone(),
                                 relation: t.relation.as_str().to_string(),
                                 object: t.object.as_str().to_string(),
                             });
-                            new_candidates.entry(new_subj).or_default().extend(new_paths);
+                            new_candidates
+                                .entry(new_subj)
+                                .or_default()
+                                .extend(new_paths);
                         }
                     }
                 }
@@ -227,12 +236,17 @@ impl GraphEngine {
         let total = candidates.len() as u64;
 
         // Apply pagination
-        let offset = pagination.cursor.as_ref().map(|c| c.offset as usize).unwrap_or(0);
+        let offset = pagination
+            .cursor
+            .as_ref()
+            .map(|c| c.offset as usize)
+            .unwrap_or(0);
         let limit = pagination.limit as usize;
         let mut all_subjects: Vec<(String, Vec<ExplainTrace>)> = candidates.into_iter().collect();
         all_subjects.sort_by(|a, b| a.0.cmp(&b.0));
         let has_more = offset + limit < total as usize;
-        let page: Vec<(String, Vec<ExplainTrace>)> = all_subjects.into_iter().skip(offset).take(limit).collect();
+        let page: Vec<(String, Vec<ExplainTrace>)> =
+            all_subjects.into_iter().skip(offset).take(limit).collect();
 
         let subjects: Vec<SubjectWithPaths> = page
             .into_iter()
@@ -267,12 +281,18 @@ impl GraphEngine {
         let _revision = self.resolve_revision(None)?;
 
         // Collect all tuples
-        let all_tuples = self.storage.query_tuples(
-            &pid,
-            &TupleFilter::default(),
-            &PaginationParams { cursor: None, limit: 1_000_000 },
-            &ConsistencyMode::MinimizeLatency,
-        ).map_err(|e| AegisError::Internal(e.to_string()))?;
+        let all_tuples = self
+            .storage
+            .query_tuples(
+                &pid,
+                &TupleFilter::default(),
+                &PaginationParams {
+                    cursor: None,
+                    limit: 1_000_000,
+                },
+                &ConsistencyMode::MinimizeLatency,
+            )
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
 
         let mut gained = Vec::new();
         let mut lost = Vec::new();
@@ -284,7 +304,9 @@ impl GraphEngine {
                 break;
             }
 
-            let subject_filter = subject_sample.map(|s| s.contains(&t.subject)).unwrap_or(true);
+            let subject_filter = subject_sample
+                .map(|s| s.contains(&t.subject))
+                .unwrap_or(true);
             if !subject_filter {
                 continue;
             }
@@ -309,18 +331,20 @@ impl GraphEngine {
                     break;
                 }
 
-                let resolved_before = crate::engine::policy::resolve_permission(schema_before, &resource_type, perm);
-                let resolved_after = crate::engine::policy::resolve_permission(schema_after, &resource_type, perm);
+                let resolved_before =
+                    crate::engine::policy::resolve_permission(schema_before, &resource_type, perm);
+                let resolved_after =
+                    crate::engine::policy::resolve_permission(schema_after, &resource_type, perm);
 
                 let before_allowed = resolved_before.map_or(false, |r| {
-                    r.relations.iter().any(|rel| {
-                        rel.as_str() == t.relation.as_str()
-                    })
+                    r.relations
+                        .iter()
+                        .any(|rel| rel.as_str() == t.relation.as_str())
                 });
                 let after_allowed = resolved_after.map_or(false, |r| {
-                    r.relations.iter().any(|rel| {
-                        rel.as_str() == t.relation.as_str()
-                    })
+                    r.relations
+                        .iter()
+                        .any(|rel| rel.as_str() == t.relation.as_str())
                 });
 
                 let subj_str = t.subject.as_str().to_string();
@@ -354,7 +378,11 @@ impl GraphEngine {
     }
 
     /// Build an analysis report for export.
-    pub fn analysis_report(&self, report_type: &str, data: serde_json::Value) -> AegisResult<AnalysisReport> {
+    pub fn analysis_report(
+        &self,
+        report_type: &str,
+        data: serde_json::Value,
+    ) -> AegisResult<AnalysisReport> {
         Ok(AnalysisReport {
             report_type: report_type.to_string(),
             generated_at: chrono::Utc::now().to_rfc3339(),

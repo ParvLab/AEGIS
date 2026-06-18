@@ -1,11 +1,11 @@
 #![cfg(feature = "sqlite")]
 use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
-use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
+use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::types::*;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 fn make_schema() -> Schema {
@@ -161,13 +161,14 @@ fn str006_write_queue_depth() {
     }
 
     for h in handles {
-        h.join()
-            .unwrap()
-            .expect("concurrent write should succeed");
+        h.join().unwrap().expect("concurrent write should succeed");
     }
 
     // Verify revision increased
-    let rev = engine.storage().current_revision(&PartitionId::default()).unwrap();
+    let rev = engine
+        .storage()
+        .current_revision(&PartitionId::default())
+        .unwrap();
     assert!(
         rev.as_u64() >= 100,
         "expected >= 100 writes, got rev {}",
@@ -231,8 +232,7 @@ fn str007_large_graph_stress() {
     let mut latencies = Vec::with_capacity(num_checks);
 
     for _ in 0..num_checks {
-        let user =
-            SubjectId::new(&format!("user:u{}", fastrand::usize(0..num_subjects))).unwrap();
+        let user = SubjectId::new(&format!("user:u{}", fastrand::usize(0..num_subjects))).unwrap();
         let repo = ResourceId::new(&format!("repo:r{}", fastrand::usize(0..num_repos))).unwrap();
         let check_start = Instant::now();
         let result = engine.check(&user, "access", &repo, None).unwrap();
