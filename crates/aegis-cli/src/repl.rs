@@ -597,9 +597,9 @@ fn cmd_health(state: &ReplState) -> Result<()> {
         println!("  {}: {}", bold("Revision"), report.revision.as_u64());
         println!("  {}:  {}", bold("Schema ver"), report.schema_version);
         println!(
-            "  {}:    {}",
+            "  {}:    {:.1}%",
             bold("Cache hit"),
-            format!("{:.1}%", report.cache_hit_rate * 100.0)
+            report.cache_hit_rate * 100.0
         );
         println!("  {}:   {}", bold("Cache size"), report.cache_entries);
     }
