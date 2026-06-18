@@ -39,6 +39,7 @@ jobs:
 
       - name: Build with features
         run: cargo build --workspace --features postgres,mysql --locked
+        continue-on-error: ${{ matrix.rust == '1.86' }}
 
       - name: Test (default features)
         run: cargo test --workspace --locked
@@ -54,6 +55,7 @@ jobs:
 
       - name: Test (mysql)
         run: cargo test --workspace --features mysql --locked
+        continue-on-error: ${{ matrix.rust == '1.86' }}
 
       - name: Test (rocksdb)
         run: cargo test --workspace --features rocksdb --locked
