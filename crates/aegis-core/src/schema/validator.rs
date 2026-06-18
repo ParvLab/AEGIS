@@ -100,6 +100,7 @@ pub fn lint_schema(schema: &Schema, strict: bool) -> LintReport {
 
         // Check condition syntax validity on permissions
         for (perm_name, perm_def) in &type_def.permissions {
+            #[allow(clippy::collapsible_if)]
             if let Some(ref cond) = perm_def.condition {
                 if let Err(e) = crate::engine::condition::parse_condition(cond) {
                     let msg = format!(

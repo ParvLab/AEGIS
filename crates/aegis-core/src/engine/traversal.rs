@@ -264,6 +264,7 @@ pub fn bfs_traversal_with_limits_and_context(
             // Subject-set resolution: if the tuple's subject is a subject-set
             // (e.g. "team:eng#member"), we need to verify that our original
             // traversal subject satisfies the subject-set condition.
+            #[allow(clippy::collapsible_if)]
             if let Some(ref subject_set) = tuple.subject.as_subject_set() {
                 if !is_subject_set_member(
                     partition_id,
@@ -399,6 +400,7 @@ fn check_direct(
             return Ok(true);
         }
         // Subject-set match: subject is like `team:eng#member`
+        #[allow(clippy::collapsible_if)]
         if let Some(ref subject_set) = t.subject.as_subject_set() {
             if is_subject_set_member(
                 partition_id,

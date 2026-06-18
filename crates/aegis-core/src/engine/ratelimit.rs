@@ -75,6 +75,7 @@ impl TokenBucketRateLimiter {
 
         // Evict the least-recently-accessed entry if we need to insert a new key
         // and the map is at capacity.
+        #[allow(clippy::collapsible_if)]
         if !buckets.contains_key(key) && buckets.len() >= self.config.max_keys {
             if let Some(oldest_key) = buckets
                 .iter()

@@ -364,16 +364,19 @@ impl StorageBackend for InMemoryStorage {
             .tuples
             .values()
             .filter(|t| {
+                #[allow(clippy::collapsible_if)]
                 if let Some(ref st) = filter.subject_type {
                     if !t.subject.as_str().starts_with(st.trim_end_matches('#')) {
                         return false;
                     }
                 }
+                #[allow(clippy::collapsible_if)]
                 if let Some(ref rel) = filter.relation {
                     if t.relation != *rel {
                         return false;
                     }
                 }
+                #[allow(clippy::collapsible_if)]
                 if let Some(ref ot) = filter.object_type {
                     if !t.object.as_str().starts_with(ot) {
                         return false;

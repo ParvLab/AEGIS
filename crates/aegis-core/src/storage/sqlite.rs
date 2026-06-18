@@ -1512,6 +1512,7 @@ impl StorageBackend for SqliteStorage {
     }
 
     fn close(&self) -> AegisResult<()> {
+        #[allow(clippy::collapsible_if)]
         if self.config.wal_mode && self.config.path != ":memory:" {
             if let Ok(conn) = self.pool.get() {
                 let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
@@ -1980,6 +1981,7 @@ impl SqliteStorage {
                     row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
                 let rev = Revision::new(rev as u64);
+                #[allow(clippy::collapsible_if)]
                 if let Some(target) = to_revision {
                     if rev > target {
                         continue;
@@ -2367,6 +2369,7 @@ impl StorageTransaction for SqliteTransaction {
     }
 
     fn rollback(mut self: Box<Self>) -> AegisResult<()> {
+        #[allow(clippy::collapsible_if)]
         if !self.committed {
             if let Some(conn) = self.conn.take() {
                 conn.execute_batch("ROLLBACK")
@@ -2379,6 +2382,7 @@ impl StorageTransaction for SqliteTransaction {
 
 impl Drop for SqliteTransaction {
     fn drop(&mut self) {
+        #[allow(clippy::collapsible_if)]
         if !self.committed {
             if let Some(conn) = self.conn.take() {
                 let _ = conn.execute_batch("ROLLBACK");

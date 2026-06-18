@@ -158,7 +158,7 @@ impl GraphEngine {
             *resource_counts.entry(e.resource.clone()).or_default() += 1;
         }
         let mut by_resource: Vec<(String, u64)> = resource_counts.into_iter().collect();
-        by_resource.sort_by(|a, b| b.1.cmp(&a.1));
+        by_resource.sort_by_key(|b| std::cmp::Reverse(b.1));
 
         Ok(EnforcementTrends {
             total_events,
@@ -240,6 +240,8 @@ impl GraphEngine {
         }
 
         // Periodically purge expired events (every ~1000 records)
+        // Periodically purge expired events (every ~1000 records)
+        #[allow(clippy::collapsible_if)]
         if cfg.max_days > 0 {
             if let Ok(mut events) = self.enforcement_events.lock() {
                 if events.len() % 1000 == 0 {

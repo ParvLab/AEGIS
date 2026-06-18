@@ -48,6 +48,7 @@ impl GraphEngine {
         if !allowed {
             let schema = self.schema.read().unwrap();
             let type_def = schema.types.get(&resource_type);
+            #[allow(clippy::collapsible_if)]
             if let Some(type_def) = type_def {
                 if !type_def.deny.is_empty() {
                     'deny_check: for deny_def in &type_def.deny {
@@ -56,6 +57,7 @@ impl GraphEngine {
                                 Ok(r) => r,
                                 Err(_) => continue,
                             };
+                            #[allow(clippy::collapsible_if)]
                             if let Ok(tr) = crate::engine::traversal::bfs_traversal(
                                 &self.active_partition_id(),
                                 self.storage.as_ref(),

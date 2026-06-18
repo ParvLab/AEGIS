@@ -103,7 +103,7 @@ impl RocksDbStorage {
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?
             .is_none()
         {
-            db.put_cf(&cf_meta, META_REVISION.as_bytes(), &0u64.to_le_bytes())
+            db.put_cf(&cf_meta, META_REVISION.as_bytes(), 0u64.to_le_bytes())
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         }
 
@@ -112,12 +112,8 @@ impl RocksDbStorage {
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?
             .is_none()
         {
-            db.put_cf(
-                &cf_meta,
-                META_SCHEMA_VERSION.as_bytes(),
-                &1u32.to_le_bytes(),
-            )
-            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            db.put_cf(&cf_meta, META_SCHEMA_VERSION.as_bytes(), 1u32.to_le_bytes())
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         }
 
         Ok(Self {
@@ -149,7 +145,7 @@ impl RocksDbStorage {
             .cf_handle(CF_META)
             .ok_or_else(|| AegisError::StorageConnection("missing meta cf".into()))?;
         self.db
-            .put_cf(&cf, META_SCHEMA_VERSION.as_bytes(), &version.to_le_bytes())
+            .put_cf(&cf, META_SCHEMA_VERSION.as_bytes(), version.to_le_bytes())
             .map_err(|e| AegisError::StorageQuery(e.to_string()))
     }
 
@@ -192,7 +188,7 @@ impl RocksDbStorage {
             .checked_add(1)
             .ok_or_else(|| AegisError::Internal("revision overflow".into()))?;
         self.db
-            .put_cf(&cf, META_REVISION.as_bytes(), &new_rev.to_le_bytes())
+            .put_cf(&cf, META_REVISION.as_bytes(), new_rev.to_le_bytes())
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         Ok(Revision::new(new_rev))
     }
@@ -211,6 +207,7 @@ impl RocksDbStorage {
             if !key.starts_with(&pid_prefix) {
                 break;
             }
+            #[allow(clippy::collapsible_if)]
             if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&value) {
                 if let Some(h) = event["event_hash"].as_str() {
                     last_hash = h.to_string();
@@ -220,6 +217,7 @@ impl RocksDbStorage {
         Ok(last_hash)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_event(
         &self,
         partition_id: &PartitionId,
@@ -303,7 +301,7 @@ impl RocksDbStorage {
 
         let mut batch = rocksdb::WriteBatch::default();
         batch.put_cf(&cf_tuples, &key, val.as_bytes());
-        batch.put_cf(&cf_idx, &idx_key, &[]);
+        batch.put_cf(&cf_idx, &idx_key, []);
         self.db
             .write(batch)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -455,7 +453,7 @@ impl StorageBackend for RocksDbStorage {
             batch.delete_cf(&cf_idx, &idx_key);
             // Insert new
             batch.put_cf(&cf_tuples, &pk, val.as_bytes());
-            batch.put_cf(&cf_idx, &idx_key, &[]);
+            batch.put_cf(&cf_idx, &idx_key, []);
 
             let metadata_str = tuple
                 .metadata
@@ -834,6 +832,7 @@ impl StorageBackend for RocksDbStorage {
                     } else {
                         self.db.get_cf(&cf, &pk)
                     };
+                    #[allow(clippy::collapsible_if)]
                     if let Some(val) = val.map_err(|e| AegisError::StorageQuery(e.to_string()))? {
                         if let Ok(tuple) = tuple_from_value(&val) {
                             results.push(tuple);
@@ -967,20 +966,20 @@ impl StorageBackend for RocksDbStorage {
                 let rel = parts[2];
                 let subj = parts[3];
 
-                if let Some(ref ot) = filter.object_type {
-                    if !obj.starts_with(&format!("{ot}:")) {
-                        continue;
-                    }
+                if let Some(ref ot) = filter.object_type
+                    && !obj.starts_with(&format!("{ot}:"))
+                {
+                    continue;
                 }
-                if let Some(ref r) = filter.relation {
-                    if rel != r.as_str() {
-                        continue;
-                    }
+                if let Some(ref r) = filter.relation
+                    && rel != r.as_str()
+                {
+                    continue;
                 }
-                if let Some(ref st) = filter.subject_type {
-                    if !subj.starts_with(&format!("{st}:")) {
-                        continue;
-                    }
+                if let Some(ref st) = filter.subject_type
+                    && !subj.starts_with(&format!("{st}:"))
+                {
+                    continue;
                 }
 
                 let pk = tuple_key(partition_id.as_str(), subj, rel, obj);
@@ -989,7 +988,9 @@ impl StorageBackend for RocksDbStorage {
                 } else {
                     self.db.get_cf(&cf_tuples, &pk)
                 };
+                #[allow(clippy::collapsible_if)]
                 if let Ok(Some(value)) = value_opt {
+                    #[allow(clippy::collapsible_if)]
                     if let Ok(tuple) = tuple_from_value(&value) {
                         if let Some(ref mk) = filter.metadata_key {
                             let has_key = tuple
@@ -1009,6 +1010,7 @@ impl StorageBackend for RocksDbStorage {
             // Prefix scan by subject type within partition
             let prefix = format!("{}\x00{}:", partition_id.as_str(), st);
             let prefix_bytes = prefix.as_bytes();
+            #[allow(clippy::type_complexity)]
             let iter: Box<dyn Iterator<Item = Result<(Box<[u8]>, Box<[u8]>), _>>> =
                 if let Some(ref snap) = snapshot {
                     Box::new(snap.iterator_cf(
@@ -1038,6 +1040,7 @@ impl StorageBackend for RocksDbStorage {
         } else if filter.metadata_key.is_some() || filter.metadata_value.is_some() {
             // Full scan within partition for metadata filtering, but bounded by limit
             let pid_prefix_bytes = pid_prefix.as_bytes();
+            #[allow(clippy::type_complexity)]
             let iter: Box<dyn Iterator<Item = Result<(Box<[u8]>, Box<[u8]>), _>>> =
                 if let Some(ref snap) = snapshot {
                     Box::new(snap.iterator_cf(
@@ -1055,6 +1058,7 @@ impl StorageBackend for RocksDbStorage {
                 if !key.starts_with(pid_prefix_bytes) {
                     break;
                 }
+                #[allow(clippy::collapsible_if)]
                 if let Ok(tuple) = tuple_from_value(&value) {
                     if let Some(ref mk) = filter.metadata_key {
                         let has_key = tuple
@@ -1237,10 +1241,10 @@ impl StorageBackend for RocksDbStorage {
                 }
 
                 let event_obj = event["object"].as_str().unwrap_or("").to_string();
-                if let Some(obj) = object {
-                    if event_obj != obj.as_str() {
-                        continue;
-                    }
+                if let Some(obj) = object
+                    && event_obj != obj.as_str()
+                {
+                    continue;
                 }
 
                 let action = if event["action"] == "add" {
@@ -1340,7 +1344,7 @@ impl StorageBackend for RocksDbStorage {
             .cf_handle(CF_META)
             .ok_or_else(|| AegisError::StorageConnection("missing meta cf".into()))?;
         self.db
-            .put_cf(&cf, META_SCHEMA_VERSION.as_bytes(), &version.to_le_bytes())
+            .put_cf(&cf, META_SCHEMA_VERSION.as_bytes(), version.to_le_bytes())
             .map_err(|e| AegisError::StorageQuery(e.to_string()))
     }
 
@@ -1485,7 +1489,7 @@ impl StorageBackend for RocksDbStorage {
                         let idx_key =
                             object_idx_key(partition_id.as_str(), object, relation, subject);
                         replay_batch.put_cf(&cf_tuples, &pk, val.as_bytes());
-                        replay_batch.put_cf(&cf_idx, &idx_key, &[]);
+                        replay_batch.put_cf(&cf_idx, &idx_key, []);
                     }
                     "remove" => {
                         let pk = tuple_key(partition_id.as_str(), subject, relation, object);
@@ -1510,7 +1514,7 @@ impl StorageBackend for RocksDbStorage {
                 .put_cf(
                     &cf_meta,
                     META_REVISION.as_bytes(),
-                    &last_revision.as_u64().to_le_bytes(),
+                    last_revision.as_u64().to_le_bytes(),
                 )
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         }
@@ -1590,10 +1594,7 @@ impl StorageBackend for RocksDbStorage {
                 let subject = event["subject"].as_str().unwrap_or("");
                 let relation = event["relation"].as_str().unwrap_or("");
                 let object = event["object"].as_str().unwrap_or("");
-                let metadata = event["metadata"].as_str().or_else(|| {
-                    // metadata can be JSON null or absent
-                    None
-                });
+                let metadata = event["metadata"].as_str().or(None);
                 let timestamp = event["timestamp"].as_str().unwrap_or("");
                 let identity = event["identity"].as_str();
                 let prev_hash = event["previous_hash"].as_str().unwrap_or("");
@@ -1696,7 +1697,7 @@ impl StorageBackend for RocksDbStorage {
             let val = serde_json::to_string(tuple)
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             batch.put_cf(&cf_tuples, &pk, val.as_bytes());
-            batch.put_cf(&cf_idx, &idx_key, &[]);
+            batch.put_cf(&cf_idx, &idx_key, []);
         }
 
         for event in events {
@@ -1727,7 +1728,7 @@ impl StorageBackend for RocksDbStorage {
         batch.put_cf(
             &cf_meta,
             META_REVISION.as_bytes(),
-            &revision.as_u64().to_le_bytes(),
+            revision.as_u64().to_le_bytes(),
         );
 
         self.db
@@ -1984,7 +1985,7 @@ impl RocksDbTransaction {
         let pk = tuple_key(partition_id, subject, relation, object);
         let idx_key = object_idx_key(partition_id, object, relation, subject);
         self.batch.put_cf(&self.cf_tuples, &pk, value);
-        self.batch.put_cf(&self.cf_idx, &idx_key, &[]);
+        self.batch.put_cf(&self.cf_idx, &idx_key, []);
         Ok(())
     }
 
@@ -2011,6 +2012,7 @@ impl RocksDbTransaction {
             if !key.starts_with(&pid_prefix) {
                 break;
             }
+            #[allow(clippy::collapsible_if)]
             if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&value) {
                 if let Some(h) = event["event_hash"].as_str() {
                     last_hash = h.to_string();
@@ -2049,12 +2051,12 @@ impl StorageTransaction for RocksDbTransaction {
         self.batch.delete_cf(&self.cf_idx, &idx_key);
         // Insert new
         self.batch.put_cf(&self.cf_tuples, &pk, val.as_bytes());
-        self.batch.put_cf(&self.cf_idx, &idx_key, &[]);
+        self.batch.put_cf(&self.cf_idx, &idx_key, []);
 
         let metadata_json = tuple
             .metadata
             .as_ref()
-            .map(|m| serde_json::to_string(m))
+            .map(serde_json::to_string)
             .transpose()
             .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
         self.pending_events.push((
@@ -2134,7 +2136,7 @@ impl StorageTransaction for RocksDbTransaction {
         s.batch.put_cf(
             &s.cf_meta,
             META_REVISION.as_bytes(),
-            &revision.as_u64().to_le_bytes(),
+            revision.as_u64().to_le_bytes(),
         );
 
         // Write the batch atomically

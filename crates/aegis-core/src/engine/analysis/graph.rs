@@ -20,6 +20,7 @@ impl GraphEngine {
     ) -> AegisResult<ReachabilityReport> {
         // Cache check
         let cache_key = format!("reach:{}:{}:{}", resource.as_str(), max_depth, max_nodes);
+        #[allow(clippy::collapsible_if)]
         if let Some(ttl) = cache_ttl_ms {
             if let Some(cached) = self.get_cached_analysis(&cache_key, ttl) {
                 return Ok(cached);
@@ -188,7 +189,7 @@ impl GraphEngine {
             })
             .collect();
 
-        result.sort_by(|a, b| b.resource_count.cmp(&a.resource_count));
+        result.sort_by_key(|b| std::cmp::Reverse(b.resource_count));
         Ok(result)
     }
 
@@ -210,6 +211,7 @@ impl GraphEngine {
     }
 
     fn set_cached_analysis(&self, key: &str, value: &impl serde::Serialize, ttl_ms: u64) {
+        #[allow(clippy::collapsible_if)]
         if let Ok(mut cache) = self.analysis_cache.lock() {
             if let Ok(json) = serde_json::to_string(value) {
                 cache.insert(key.to_string(), (Instant::now(), ttl_ms, json));

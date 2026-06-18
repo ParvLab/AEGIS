@@ -265,6 +265,7 @@ impl GraphEngine {
 
     /// Emit a structured log event through the registered callback (if any).
     fn emit_log(&self, level: hooks::LogLevel, message: &str, context: &str) {
+        #[allow(clippy::collapsible_if)]
         if let Ok(guard) = self.logger.lock() {
             if let Some(ref logger) = *guard {
                 logger(level, message, context);
@@ -458,6 +459,7 @@ impl GraphEngine {
     #[cfg(feature = "hot-reload")]
     pub fn stop_watcher(&self) {
         self.shutdown_flag.store(true, Ordering::Relaxed);
+        #[allow(clippy::collapsible_if)]
         if let Ok(mut guard) = self.watcher_thread.lock() {
             if let Some(handle) = guard.take() {
                 handle.join().ok();
@@ -739,6 +741,7 @@ impl GraphEngine {
                         Some(ctx_ref.as_ref()),
                         None,
                     );
+                    #[allow(clippy::collapsible_if)]
                     if let Ok(r) = result {
                         if r.found && evaluate_condition_if_present(cond.as_ref(), ctx_ref.as_ref())
                         {
@@ -907,19 +910,21 @@ impl GraphEngine {
 
         // Resolve permission to relations
         let resource_type = resource_type_name(resource.as_str());
-        let schema = self.schema.read().unwrap();
-        let resolved = match policy::resolve_permission(&schema, &resource_type, permission) {
-            Some(r) => r,
-            None => {
-                crate::telemetry::inc_check_total();
-                crate::telemetry::inc_check_denied();
-                return Ok(CheckResult {
-                    allowed: false,
-                    revision,
-                });
-            }
+        let resolved = {
+            let schema = self.schema.read().unwrap();
+            let result = match policy::resolve_permission(&schema, &resource_type, permission) {
+                Some(r) => r,
+                None => {
+                    crate::telemetry::inc_check_total();
+                    crate::telemetry::inc_check_denied();
+                    return Ok(CheckResult {
+                        allowed: false,
+                        revision,
+                    });
+                }
+            };
+            result
         };
-        drop(schema);
 
         // Evaluate each candidate relation by checking tuples from async storage
         let mut allowed = false;
@@ -1140,6 +1145,7 @@ impl GraphEngine {
                             Some(revision),
                             consistency,
                         );
+                        #[allow(clippy::collapsible_if)]
                         if let Ok(tr) = traversal_result {
                             if tr.found {
                                 allowed = false;
@@ -1293,6 +1299,7 @@ impl GraphEngine {
                             Some(revision),
                             consistency,
                         );
+                        #[allow(clippy::collapsible_if)]
                         if let Ok(tr) = tr {
                             if tr.found {
                                 allowed = false;
@@ -1458,18 +1465,19 @@ impl GraphEngine {
             .check(&rl_key, RateLimitOp::Write)?;
 
         let resource_type = resource_type_name(tuple.object.as_str());
-        let schema = self.schema.read().unwrap();
-        let type_def = match schema.types.get(&resource_type) {
-            Some(t) => t,
-            None => return Err(AegisError::UnknownSubjectType(resource_type)),
-        };
-        if !type_def.relations.contains_key(tuple.relation.as_str()) {
-            return Err(AegisError::UnknownRelation {
-                type_name: resource_type,
-                relation: tuple.relation.to_string(),
-            });
+        {
+            let schema = self.schema.read().unwrap();
+            let type_def = match schema.types.get(&resource_type) {
+                Some(t) => t,
+                None => return Err(AegisError::UnknownSubjectType(resource_type)),
+            };
+            if !type_def.relations.contains_key(tuple.relation.as_str()) {
+                return Err(AegisError::UnknownRelation {
+                    type_name: resource_type,
+                    relation: tuple.relation.to_string(),
+                });
+            }
         }
-        drop(schema);
 
         let storage = self
             .async_storage
@@ -2062,6 +2070,7 @@ impl GraphEngine {
         let Some(threshold) = self.wal_checkpoint_threshold else {
             return;
         };
+        #[allow(clippy::collapsible_if)]
         if let Some(wal_size) = self.storage.wal_size_mb() {
             if wal_size > threshold {
                 let _ = self.storage.close();
