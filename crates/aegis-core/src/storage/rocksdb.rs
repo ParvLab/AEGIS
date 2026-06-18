@@ -1,6 +1,3 @@
-use crate::engine::enforcement_history::EnforcementEvent;
-use crate::engine::policy_lifecycle::PolicyDraft;
-use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
 use crate::error::{AegisError, AegisResult};
 use crate::storage::traits::{
     BackendType, IntegrityReport, PolicyVersion, StorageBackend, StorageMeta, StorageTransaction,
@@ -12,12 +9,9 @@ use crate::types::{
     TupleMutation,
 };
 use chrono::{DateTime, Utc};
-use rocksdb::{
-    BlockBasedOptions, Cache, ColumnFamily, ColumnFamilyDescriptor, DB, DBIterator, Direction,
-    IteratorMode, Options,
-};
-use serde_json;
+use rocksdb::{BlockBasedOptions, Cache, ColumnFamily, DB, Direction, IteratorMode, Options};
 use std::collections::HashMap;
+use std::sync::Arc;
 use uuid::Uuid;
 
 const CF_META: &str = "meta";
@@ -59,7 +53,7 @@ fn tuple_from_value(value: &[u8]) -> AegisResult<RelationshipTuple> {
 }
 
 pub struct RocksDbStorage {
-    db: DB,
+    db: Arc<DB>,
     node_id: Uuid,
     revision_mutex: std::sync::Mutex<()>,
     actor_identity: std::sync::Mutex<Option<String>>,
@@ -91,8 +85,10 @@ impl RocksDbStorage {
             CF_ENFORCEMENT_EVENTS,
         ];
 
-        let db = DB::open_cf(&opts, path, cfs)
-            .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
+        let db = Arc::new(
+            DB::open_cf(&opts, path, cfs)
+                .map_err(|e| AegisError::StorageConnection(e.to_string()))?,
+        );
 
         // Initialize revision if not present
         let cf_meta = db
@@ -123,7 +119,7 @@ impl RocksDbStorage {
 
         Ok(Self {
             db,
-            node_id,
+            node_id: Uuid::new_v4(),
             revision_mutex: std::sync::Mutex::new(()),
             actor_identity: std::sync::Mutex::new(None),
         })
@@ -276,7 +272,7 @@ impl RocksDbStorage {
         &self,
         partition_id: &PartitionId,
         tuple: &RelationshipTuple,
-        revision: Revision,
+        _revision: Revision,
     ) -> AegisResult<()> {
         let cf_tuples = self
             .db
@@ -315,7 +311,7 @@ impl RocksDbStorage {
         &self,
         partition_id: &PartitionId,
         key: &TupleKey,
-        revision: Revision,
+        _revision: Revision,
     ) -> AegisResult<()> {
         let cf_tuples = self
             .db
@@ -1092,7 +1088,7 @@ impl StorageBackend for RocksDbStorage {
 
         let next_cursor = if (offset as usize + tuples.len()) < total {
             Some(PaginationCursor {
-                offset: offset + limit,
+                offset: offset + limit as u64,
                 revision,
             })
         } else {
@@ -1111,7 +1107,7 @@ impl StorageBackend for RocksDbStorage {
     }
 
     fn current_token(&self) -> AegisResult<RevisionToken> {
-        let revision = self.current_revision()?;
+        let revision = self.current_revision(&PartitionId::default())?;
         Ok(RevisionToken::new(revision, self.node_id))
     }
 
@@ -1220,8 +1216,8 @@ impl StorageBackend for RocksDbStorage {
                     break;
                 }
 
+                let event_obj = event["object"].as_str().unwrap_or("").to_string();
                 if let Some(obj) = object {
-                    let event_obj = event["object"].as_str().unwrap_or("");
                     if event_obj != obj.as_str() {
                         continue;
                     }
@@ -1250,7 +1246,7 @@ impl StorageBackend for RocksDbStorage {
                     action,
                     subject: event["subject"].as_str().unwrap_or("").to_string(),
                     relation: event["relation"].as_str().unwrap_or("").to_string(),
-                    object: event_obj.to_string(),
+                    object: event_obj,
                     timestamp,
                     metadata,
                     identity,
@@ -1733,7 +1729,7 @@ impl StorageBackend for RocksDbStorage {
         while iter.valid() {
             if let (Some(key), Some(value)) = (iter.key(), iter.value()) {
                 let key_str = String::from_utf8_lossy(key);
-                if let Ok(version_num) = key_str.parse::<u32>() {
+                if key_str.parse::<u32>().is_ok() {
                     if let Ok(pv) = serde_json::from_slice::<PolicyVersion>(value) {
                         versions.push(pv);
                     }
@@ -1904,7 +1900,7 @@ impl StorageBackend for RocksDbStorage {
 
 /// A RocksDB transaction using WriteBatch for atomicity.
 pub struct RocksDbTransaction {
-    db: DB,
+    db: Arc<DB>,
     partition_id: String,
     batch: rocksdb::WriteBatch,
     cf_tuples: rocksdb::ColumnFamily,

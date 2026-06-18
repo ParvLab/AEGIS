@@ -75,14 +75,14 @@ impl TokenBucketRateLimiter {
 
         // Evict the least-recently-accessed entry if we need to insert a new key
         // and the map is at capacity.
-        if !buckets.contains_key(key)
-            && buckets.len() >= self.config.max_keys
-            && let Some(oldest_key) = buckets
+        if !buckets.contains_key(key) && buckets.len() >= self.config.max_keys {
+            if let Some(oldest_key) = buckets
                 .iter()
                 .min_by_key(|(_, state)| state.last_accessed)
                 .map(|(k, _)| k.clone())
-        {
-            buckets.remove(&oldest_key);
+            {
+                buckets.remove(&oldest_key);
+            }
         }
 
         let state = buckets.entry(key.to_string()).or_insert_with(|| {

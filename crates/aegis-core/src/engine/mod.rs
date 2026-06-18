@@ -265,10 +265,10 @@ impl GraphEngine {
 
     /// Emit a structured log event through the registered callback (if any).
     fn emit_log(&self, level: hooks::LogLevel, message: &str, context: &str) {
-        if let Ok(guard) = self.logger.lock()
-            && let Some(ref logger) = *guard
-        {
-            logger(level, message, context);
+        if let Ok(guard) = self.logger.lock() {
+            if let Some(ref logger) = *guard {
+                logger(level, message, context);
+            }
         }
     }
 

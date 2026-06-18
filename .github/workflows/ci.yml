@@ -27,36 +27,36 @@ jobs:
 
       - name: Clippy (1.86 compatible crates)
         if: matrix.rust == '1.86'
-        run: cargo clippy -p aegis-core -p aegis-cli -p aegis-test-utils -p aegis-ffi
+        run: cargo clippy -p aegis-core -p aegis-cli -p aegis-test-utils -p aegis-ffi --locked
 
       - name: Clippy (full workspace)
-        if: matrix.rust != '1.85'
-        run: cargo clippy --workspace --all-features -- -D warnings
+        if: matrix.rust != '1.86'
+        run: cargo clippy --workspace --all-features --locked -- -D warnings
         continue-on-error: ${{ matrix.rust == 'nightly' }}
 
       - name: Build
-        run: cargo build --workspace
+        run: cargo build --workspace --locked
 
       - name: Build with features
-        run: cargo build --workspace --features postgres,mysql
+        run: cargo build --workspace --features postgres,mysql --locked
 
       - name: Test (default features)
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Test (no default features)
-        run: cargo test --workspace --no-default-features
+        run: cargo test --workspace --no-default-features --locked
 
       - name: Test (sqlite)
-        run: cargo test --workspace --features sqlite
+        run: cargo test --workspace --features sqlite --locked
 
       - name: Test (postgres)
-        run: cargo test --workspace --features postgres
+        run: cargo test --workspace --features postgres --locked
 
       - name: Test (mysql)
-        run: cargo test --workspace --features mysql
+        run: cargo test --workspace --features mysql --locked
 
       - name: Test (rocksdb)
-        run: cargo test --workspace --features rocksdb
+        run: cargo test --workspace --features rocksdb --locked
 
       - name: Install wasm-pack
         uses: taiki-e/install-action@v2

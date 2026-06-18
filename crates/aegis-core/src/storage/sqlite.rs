@@ -1511,11 +1511,10 @@ impl StorageBackend for SqliteStorage {
     }
 
     fn close(&self) -> AegisResult<()> {
-        if self.config.wal_mode
-            && self.config.path != ":memory:"
-            && let Ok(conn) = self.pool.get()
-        {
-            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        if self.config.wal_mode && self.config.path != ":memory:" {
+            if let Ok(conn) = self.pool.get() {
+                let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+            }
         }
         Ok(())
     }
@@ -2365,11 +2364,11 @@ impl StorageTransaction for SqliteTransaction {
     }
 
     fn rollback(mut self: Box<Self>) -> AegisResult<()> {
-        if !self.committed
-            && let Some(conn) = self.conn.take()
-        {
-            conn.execute_batch("ROLLBACK")
-                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        if !self.committed {
+            if let Some(conn) = self.conn.take() {
+                conn.execute_batch("ROLLBACK")
+                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            }
         }
         Ok(())
     }
@@ -2377,10 +2376,10 @@ impl StorageTransaction for SqliteTransaction {
 
 impl Drop for SqliteTransaction {
     fn drop(&mut self) {
-        if !self.committed
-            && let Some(conn) = self.conn.take()
-        {
-            let _ = conn.execute_batch("ROLLBACK");
+        if !self.committed {
+            if let Some(conn) = self.conn.take() {
+                let _ = conn.execute_batch("ROLLBACK");
+            }
         }
     }
 }
