@@ -55,10 +55,11 @@ impl RevisionToken {
 }
 
 /// Controls the consistency guarantee for a read operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ConsistencyMode {
     /// Fast path: read from the latest available local snapshot.
     /// May be slightly stale in multi-instance deployments.
+    #[default]
     MinimizeLatency,
 
     /// Read from a snapshot at least as fresh as the given revision.
@@ -68,12 +69,6 @@ pub enum ConsistencyMode {
     /// Read the absolute latest committed state.
     /// Highest latency in distributed setups.
     FullyConsistent,
-}
-
-impl Default for ConsistencyMode {
-    fn default() -> Self {
-        Self::MinimizeLatency
-    }
 }
 
 /// Represents the result of a graph mutation.
@@ -157,16 +152,11 @@ pub struct AccessReviewEntry {
 }
 
 /// Configuration for fail-closed vs fail-open behavior.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum FailClosedMode {
+    #[default]
     DenyOnError,
     AllowOnError,
-}
-
-impl Default for FailClosedMode {
-    fn default() -> Self {
-        Self::DenyOnError
-    }
 }
 
 /// Represents a single audit log entry.

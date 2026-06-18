@@ -16,6 +16,12 @@ struct PartitionState {
     rate_limiter: TokenBucketRateLimiter,
 }
 
+impl Default for PartitionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PartitionManager {
     pub fn new() -> Self {
         Self {
@@ -47,10 +53,10 @@ impl PartitionManager {
 
     pub fn check_rate_limit(&self, partition_id: &PartitionId) -> AegisResult<()> {
         let key = partition_id.to_string();
-        if let Ok(map) = self.partitions.lock() {
-            if let Some(state) = map.get(&key) {
-                return state.rate_limiter.check(&key, RateLimitOp::Check);
-            }
+        if let Ok(map) = self.partitions.lock()
+            && let Some(state) = map.get(&key)
+        {
+            return state.rate_limiter.check(&key, RateLimitOp::Check);
         }
         // If no partition-specific state, use default
         self.default_partition

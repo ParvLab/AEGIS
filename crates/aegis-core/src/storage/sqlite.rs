@@ -1511,10 +1511,11 @@ impl StorageBackend for SqliteStorage {
     }
 
     fn close(&self) -> AegisResult<()> {
-        if self.config.wal_mode && self.config.path != ":memory:" {
-            if let Ok(conn) = self.pool.get() {
-                let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-            }
+        if self.config.wal_mode
+            && self.config.path != ":memory:"
+            && let Ok(conn) = self.pool.get()
+        {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
         }
         Ok(())
     }
@@ -1859,7 +1860,7 @@ impl StorageBackend for SqliteStorage {
         let compare_schema_json = schedule
             .compare_schema
             .as_ref()
-            .map(|s| serde_json::to_string(s))
+            .map(serde_json::to_string)
             .transpose()
             .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
         conn.execute(
@@ -1979,11 +1980,10 @@ impl SqliteStorage {
                     row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
                 let rev = Revision::new(rev as u64);
-                if let Some(target) = to_revision {
-                    if rev > target {
+                if let Some(target) = to_revision
+                    && rev > target {
                         continue;
                     }
-                }
                 let now = Utc::now().to_rfc3339();
 
                 match action.as_str() {
@@ -2018,7 +2018,7 @@ impl SqliteStorage {
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             }
 
-            Ok(Self::read_revision(conn)?)
+            Self::read_revision(conn)
         })
     }
 
@@ -2088,7 +2088,7 @@ impl SqliteStorage {
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
-            Ok(Self::read_revision(conn)?)
+            Self::read_revision(conn)
         })
     }
 
@@ -2365,11 +2365,11 @@ impl StorageTransaction for SqliteTransaction {
     }
 
     fn rollback(mut self: Box<Self>) -> AegisResult<()> {
-        if !self.committed {
-            if let Some(conn) = self.conn.take() {
-                conn.execute_batch("ROLLBACK")
-                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
-            }
+        if !self.committed
+            && let Some(conn) = self.conn.take()
+        {
+            conn.execute_batch("ROLLBACK")
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         }
         Ok(())
     }
@@ -2377,10 +2377,10 @@ impl StorageTransaction for SqliteTransaction {
 
 impl Drop for SqliteTransaction {
     fn drop(&mut self) {
-        if !self.committed {
-            if let Some(conn) = self.conn.take() {
-                let _ = conn.execute_batch("ROLLBACK");
-            }
+        if !self.committed
+            && let Some(conn) = self.conn.take()
+        {
+            let _ = conn.execute_batch("ROLLBACK");
         }
     }
 }

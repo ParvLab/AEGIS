@@ -310,6 +310,12 @@ pub struct InMemoryAsyncStorage {
     storage: Arc<Mutex<InMemoryStorage>>,
 }
 
+impl Default for InMemoryAsyncStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryAsyncStorage {
     pub fn new() -> Self {
         let mut inner = InMemoryStorage::new();

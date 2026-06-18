@@ -85,7 +85,7 @@ impl SignedExport {
 
         Ok(pub_key
             .verify_strict(
-                &computed_hash.as_bytes(),
+                computed_hash.as_bytes(),
                 &ed25519_dalek::Signature::from_bytes(
                     self.signature
                         .as_slice()

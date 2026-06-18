@@ -28,16 +28,11 @@ pub struct RelationDef {
 }
 
 /// The effect of a permission or deny rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Effect {
+    #[default]
     Allow,
     Deny,
-}
-
-impl Default for Effect {
-    fn default() -> Self {
-        Self::Allow
-    }
 }
 
 /// Defines a computed permission from a set of relations.

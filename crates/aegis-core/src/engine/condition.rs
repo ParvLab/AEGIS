@@ -186,28 +186,28 @@ fn evaluate_leaf(attr: &str, op: &ConditionOp, ctx: &ConditionEvalContext) -> bo
         .or_else(|| ctx.env.get(attr));
 
     match op {
-        ConditionOp::Eq(expected) => value.map_or(false, |v| v == expected),
-        ConditionOp::Neq(expected) => value.map_or(true, |v| v != expected),
-        ConditionOp::In(items) => value.map_or(false, |v| items.contains(v)),
+        ConditionOp::Eq(expected) => value == Some(expected),
+        ConditionOp::Neq(expected) => value != Some(expected),
+        ConditionOp::In(items) => value.is_some_and(|v| items.contains(v)),
         ConditionOp::Exists => value.is_some(),
         ConditionOp::NotExists => value.is_none(),
         ConditionOp::Gt(expected) => value
             .and_then(|v| v.parse::<f64>().ok())
             .zip(expected.parse::<f64>().ok())
-            .map_or(false, |(v, e)| v > e),
+            .is_some_and(|(v, e)| v > e),
         ConditionOp::Lt(expected) => value
             .and_then(|v| v.parse::<f64>().ok())
             .zip(expected.parse::<f64>().ok())
-            .map_or(false, |(v, e)| v < e),
+            .is_some_and(|(v, e)| v < e),
         ConditionOp::Before(time_str) => {
             let now = Utc::now();
             let parsed = parse_time(time_str);
-            parsed.map_or(false, |t| now < t)
+            parsed.is_some_and(|t| now < t)
         }
         ConditionOp::After(time_str) => {
             let now = Utc::now();
             let parsed = parse_time(time_str);
-            parsed.map_or(false, |t| now > t)
+            parsed.is_some_and(|t| now > t)
         }
         ConditionOp::DayOfWeek(days) => {
             let now = Utc::now();

@@ -34,10 +34,10 @@ impl GraphEngine {
         let overlay = InMemoryOverlay::new(self.storage.as_ref());
 
         for t in add {
-            let _ = overlay.write_tuple_internal(&pid, t);
+            overlay.write_tuple_internal(&pid, t);
         }
         for k in remove {
-            let _ = overlay.delete_tuple_internal(&pid, k);
+            overlay.delete_tuple_internal(&pid, k);
         }
 
         // Evaluate checks against modified state

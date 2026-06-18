@@ -63,7 +63,7 @@ impl DecisionCache {
             partition_id.to_string(),
         );
 
-        let is_valid = self.entries.get(&key).map_or(false, |entry| {
+        let is_valid = self.entries.get(&key).is_some_and(|entry| {
             entry.revision >= current_revision && entry.created_at.elapsed() < self.ttl
         });
 
@@ -108,10 +108,10 @@ impl DecisionCache {
         self.access_order.retain(|k| k != &key);
 
         // Evict LRU entry if at capacity
-        if self.entries.len() >= self.capacity {
-            if let Some(lru_key) = self.access_order.pop_front() {
-                self.entries.remove(&lru_key);
-            }
+        if self.entries.len() >= self.capacity
+            && let Some(lru_key) = self.access_order.pop_front()
+        {
+            self.entries.remove(&lru_key);
         }
 
         self.access_order.push_back(key.clone());
@@ -195,7 +195,7 @@ impl TraversalCache {
         let is_valid = self
             .entries
             .get(&key)
-            .map_or(false, |(_, rev)| *rev >= current_revision);
+            .is_some_and(|(_, rev)| *rev >= current_revision);
         if is_valid {
             // Move to MRU position
             if let Some(pos) = self.access_order.iter().position(|k| k == &key) {
@@ -228,10 +228,10 @@ impl TraversalCache {
         self.access_order.retain(|k| k != &key);
 
         // Evict LRU entry if at capacity
-        if self.entries.len() >= self.capacity {
-            if let Some(lru_key) = self.access_order.pop_front() {
-                self.entries.remove(&lru_key);
-            }
+        if self.entries.len() >= self.capacity
+            && let Some(lru_key) = self.access_order.pop_front()
+        {
+            self.entries.remove(&lru_key);
         }
 
         self.access_order.push_back(key.clone());

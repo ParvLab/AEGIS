@@ -39,42 +39,39 @@ impl GraphEngine {
         };
         drop(schema);
 
-        let all_traces;
-        let allowed;
         let mut denial_reason = None::<DenialReason>;
 
         let traversal_result = self.explain(subject, permission, resource, consistency)?;
-        allowed = traversal_result.allowed;
-        all_traces = traversal_result.trace;
+        let allowed = traversal_result.allowed;
+        let all_traces = traversal_result.trace;
 
         if !allowed {
             let schema = self.schema.read().unwrap();
             let type_def = schema.types.get(&resource_type);
-            if let Some(type_def) = type_def {
-                if !type_def.deny.is_empty() {
-                    'deny_check: for deny_def in &type_def.deny {
-                        for deny_rel in &deny_def.relations {
-                            let relation = match Relation::new(deny_rel) {
-                                Ok(r) => r,
-                                Err(_) => continue,
-                            };
-                            if let Ok(tr) = crate::engine::traversal::bfs_traversal(
-                                &self.active_partition_id(),
-                                self.storage.as_ref(),
-                                subject,
-                                &relation,
-                                resource,
-                                Some(revision),
-                                consistency,
-                            ) {
-                                if tr.found {
-                                    denial_reason = Some(DenialReason::ExplicitDeny {
-                                        subject: subject.as_str().to_string(),
-                                        rule: deny_rel.clone(),
-                                    });
-                                    break 'deny_check;
-                                }
-                            }
+            if let Some(type_def) = type_def
+                && !type_def.deny.is_empty()
+            {
+                'deny_check: for deny_def in &type_def.deny {
+                    for deny_rel in &deny_def.relations {
+                        let relation = match Relation::new(deny_rel) {
+                            Ok(r) => r,
+                            Err(_) => continue,
+                        };
+                        if let Ok(tr) = crate::engine::traversal::bfs_traversal(
+                            &self.active_partition_id(),
+                            self.storage.as_ref(),
+                            subject,
+                            &relation,
+                            resource,
+                            Some(revision),
+                            consistency,
+                        ) && tr.found
+                        {
+                            denial_reason = Some(DenialReason::ExplicitDeny {
+                                subject: subject.as_str().to_string(),
+                                rule: deny_rel.clone(),
+                            });
+                            break 'deny_check;
                         }
                     }
                 }
@@ -336,12 +333,12 @@ impl GraphEngine {
                 let resolved_after =
                     crate::engine::policy::resolve_permission(schema_after, &resource_type, perm);
 
-                let before_allowed = resolved_before.map_or(false, |r| {
+                let before_allowed = resolved_before.is_some_and(|r| {
                     r.relations
                         .iter()
                         .any(|rel| rel.as_str() == t.relation.as_str())
                 });
-                let after_allowed = resolved_after.map_or(false, |r| {
+                let after_allowed = resolved_after.is_some_and(|r| {
                     r.relations
                         .iter()
                         .any(|rel| rel.as_str() == t.relation.as_str())

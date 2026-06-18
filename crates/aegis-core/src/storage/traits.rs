@@ -29,7 +29,7 @@ pub fn compute_event_hash(
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(previous_hash.as_bytes());
-    hasher.update(&revision.to_le_bytes());
+    hasher.update(revision.to_le_bytes());
     hasher.update(action.as_bytes());
     hasher.update(subject.as_bytes());
     hasher.update(relation.as_bytes());

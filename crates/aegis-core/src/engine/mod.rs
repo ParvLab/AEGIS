@@ -265,10 +265,10 @@ impl GraphEngine {
 
     /// Emit a structured log event through the registered callback (if any).
     fn emit_log(&self, level: hooks::LogLevel, message: &str, context: &str) {
-        if let Ok(guard) = self.logger.lock() {
-            if let Some(ref logger) = *guard {
-                logger(level, message, context);
-            }
+        if let Ok(guard) = self.logger.lock()
+            && let Some(ref logger) = *guard
+        {
+            logger(level, message, context);
         }
     }
 
@@ -661,7 +661,7 @@ impl GraphEngine {
             let rev = Some(revision);
             let mut cache_guard = self.traversal_cache.lock().ok();
             let cache_ref = cache_guard.as_deref_mut();
-            let result = match traversal::bfs_traversal_with_limits_and_context(
+            let result = traversal::bfs_traversal_with_limits_and_context(
                 &self.active_partition_id(),
                 self.storage.as_ref(),
                 subject,
@@ -674,10 +674,7 @@ impl GraphEngine {
                 cache_ref,
                 Some(&context),
                 None,
-            ) {
-                Ok(r) => r,
-                Err(e) => return Err(e),
-            };
+            )?;
 
             if result.found && evaluate_condition_if_present(&condition_str, &context) {
                 return Ok(true);
@@ -707,8 +704,7 @@ impl GraphEngine {
         let rel_names: Vec<String> = resolved.relations.clone();
         let condition_str = std::sync::Arc::new(resolved.condition);
         let ctx = std::sync::Arc::new(context);
-        let subject =
-            Arc::new(SubjectId::new(subject.as_str()).map_err(|e| AegisError::Validation(e))?);
+        let subject = Arc::new(SubjectId::new(subject.as_str()).map_err(AegisError::Validation)?);
 
         std::thread::scope(|s| {
             for rel_name in &rel_names {
@@ -743,11 +739,11 @@ impl GraphEngine {
                         Some(ctx_ref.as_ref()),
                         None,
                     );
-                    if let Ok(r) = result {
-                        if r.found && evaluate_condition_if_present(cond.as_ref(), ctx_ref.as_ref())
-                        {
-                            found_ref.store(true, std::sync::atomic::Ordering::Relaxed);
-                        }
+                    if let Ok(r) = result
+                        && r.found
+                        && evaluate_condition_if_present(cond.as_ref(), ctx_ref.as_ref())
+                    {
+                        found_ref.store(true, std::sync::atomic::Ordering::Relaxed);
                     }
                 });
             }
@@ -1144,11 +1140,11 @@ impl GraphEngine {
                             Some(revision),
                             consistency,
                         );
-                        if let Ok(tr) = traversal_result {
-                            if tr.found {
-                                allowed = false;
-                                break 'deny_outer;
-                            }
+                        if let Ok(tr) = traversal_result
+                            && tr.found
+                        {
+                            allowed = false;
+                            break 'deny_outer;
                         }
                     }
                 }
@@ -1297,11 +1293,11 @@ impl GraphEngine {
                             Some(revision),
                             consistency,
                         );
-                        if let Ok(tr) = tr {
-                            if tr.found {
-                                allowed = false;
-                                break 'deny_outer;
-                            }
+                        if let Ok(tr) = tr
+                            && tr.found
+                        {
+                            allowed = false;
+                            break 'deny_outer;
                         }
                     }
                 }
@@ -2046,7 +2042,7 @@ impl GraphEngine {
             return Ok(());
         };
         let mut last = self.last_integrity_check.lock().unwrap();
-        if last.map_or(true, |t| t.elapsed() >= interval) {
+        if last.is_none_or(|t| t.elapsed() >= interval) {
             let report = self.storage.integrity_check()?;
             if !report.passed {
                 tracing::error!("integrity check failed: {:?}", report.details);
@@ -2066,15 +2062,15 @@ impl GraphEngine {
         let Some(threshold) = self.wal_checkpoint_threshold else {
             return;
         };
-        if let Some(wal_size) = self.storage.wal_size_mb() {
-            if wal_size > threshold {
-                let _ = self.storage.close();
-                tracing::info!(
-                    "WAL auto-checkpoint triggered ({} MB > {} MB)",
-                    wal_size,
-                    threshold
-                );
-            }
+        if let Some(wal_size) = self.storage.wal_size_mb()
+            && wal_size > threshold
+        {
+            let _ = self.storage.close();
+            tracing::info!(
+                "WAL auto-checkpoint triggered ({} MB > {} MB)",
+                wal_size,
+                threshold
+            );
         }
     }
 }

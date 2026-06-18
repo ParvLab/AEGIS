@@ -20,10 +20,10 @@ impl GraphEngine {
     ) -> AegisResult<ReachabilityReport> {
         // Cache check
         let cache_key = format!("reach:{}:{}:{}", resource.as_str(), max_depth, max_nodes);
-        if let Some(ttl) = cache_ttl_ms {
-            if let Some(cached) = self.get_cached_analysis(&cache_key, ttl) {
-                return Ok(cached);
-            }
+        if let Some(ttl) = cache_ttl_ms
+            && let Some(cached) = self.get_cached_analysis(&cache_key, ttl)
+        {
+            return Ok(cached);
         }
 
         let start = Instant::now();
@@ -125,7 +125,7 @@ impl GraphEngine {
         for t in &all.tuples {
             let resource_type = t.object.as_str().split(':').next().unwrap_or("");
             let type_def = schema.types.get(resource_type);
-            let relation_valid = type_def.map_or(false, |td| {
+            let relation_valid = type_def.is_some_and(|td| {
                 td.relations.contains_key(t.relation.as_str())
                     || td.permissions.contains_key(t.relation.as_str())
                     || td.deny.iter().any(|d| {
@@ -210,10 +210,10 @@ impl GraphEngine {
     }
 
     fn set_cached_analysis(&self, key: &str, value: &impl serde::Serialize, ttl_ms: u64) {
-        if let Ok(mut cache) = self.analysis_cache.lock() {
-            if let Ok(json) = serde_json::to_string(value) {
-                cache.insert(key.to_string(), (Instant::now(), ttl_ms, json));
-            }
+        if let Ok(mut cache) = self.analysis_cache.lock()
+            && let Ok(json) = serde_json::to_string(value)
+        {
+            cache.insert(key.to_string(), (Instant::now(), ttl_ms, json));
         }
     }
 }

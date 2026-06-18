@@ -37,6 +37,12 @@ pub struct InMemoryStorage {
     inner: Arc<Mutex<Inner>>,
 }
 
+impl Default for InMemoryStorage {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryStorage {
     pub fn new() -> Self {
         Self {
@@ -297,7 +303,7 @@ impl StorageBackend for InMemoryStorage {
             .tuples
             .values()
             .filter(|t| t.object == *object)
-            .filter(|t| relation.map_or(true, |r| t.relation == *r))
+            .filter(|t| relation.is_none_or(|r| t.relation == *r))
             .cloned()
             .collect();
         Ok(result)
@@ -318,7 +324,7 @@ impl StorageBackend for InMemoryStorage {
             .tuples
             .values()
             .filter(|t| t.subject == *subject)
-            .filter(|t| relation.map_or(true, |r| t.relation == *r))
+            .filter(|t| relation.is_none_or(|r| t.relation == *r))
             .cloned()
             .collect();
         Ok(result)
@@ -358,20 +364,20 @@ impl StorageBackend for InMemoryStorage {
             .tuples
             .values()
             .filter(|t| {
-                if let Some(ref st) = filter.subject_type {
-                    if !t.subject.as_str().starts_with(st.trim_end_matches('#')) {
-                        return false;
-                    }
+                if let Some(ref st) = filter.subject_type
+                    && !t.subject.as_str().starts_with(st.trim_end_matches('#'))
+                {
+                    return false;
                 }
-                if let Some(ref rel) = filter.relation {
-                    if t.relation != *rel {
-                        return false;
-                    }
+                if let Some(ref rel) = filter.relation
+                    && t.relation != *rel
+                {
+                    return false;
                 }
-                if let Some(ref ot) = filter.object_type {
-                    if !t.object.as_str().starts_with(ot) {
-                        return false;
-                    }
+                if let Some(ref ot) = filter.object_type
+                    && !t.object.as_str().starts_with(ot)
+                {
+                    return false;
                 }
                 true
             })
@@ -462,9 +468,9 @@ impl StorageBackend for InMemoryStorage {
         let result: Vec<AuditEntry> = inner
             .events
             .iter()
-            .filter(|e| object.map_or(true, |o| e.object == o.as_str()))
-            .filter(|e| from_revision.map_or(true, |r| e.revision >= r))
-            .filter(|e| to_revision.map_or(true, |r| e.revision <= r))
+            .filter(|e| object.is_none_or(|o| e.object == o.as_str()))
+            .filter(|e| from_revision.is_none_or(|r| e.revision >= r))
+            .filter(|e| to_revision.is_none_or(|r| e.revision <= r))
             .cloned()
             .collect();
         Ok(result)
@@ -536,9 +542,9 @@ impl StorageBackend for InMemoryStorage {
             match event.action {
                 TupleMutation::Add => {
                     let tuple = RelationshipTuple::new(
-                        SubjectId::new(&event.subject).map_err(|e| AegisError::Validation(e))?,
-                        Relation::new(&event.relation).map_err(|e| AegisError::Validation(e))?,
-                        ResourceId::new(&event.object).map_err(|e| AegisError::Validation(e))?,
+                        SubjectId::new(&event.subject).map_err(AegisError::Validation)?,
+                        Relation::new(&event.relation).map_err(AegisError::Validation)?,
+                        ResourceId::new(&event.object).map_err(AegisError::Validation)?,
                     );
                     inner.tuples.insert(key, tuple);
                 }

@@ -128,9 +128,9 @@ pub fn deserialize_acls(engine: &GraphEngine, json: &str) -> AegisResult<Vec<Rev
         serde_json::from_str(json).map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
     let mut tokens = Vec::new();
     for entry in &collection.entries {
-        let subject = SubjectId::new(&entry.subject).map_err(|e| AegisError::Validation(e))?;
-        let relation = Relation::new(&entry.relation).map_err(|e| AegisError::Validation(e))?;
-        let object = ResourceId::new(&entry.object).map_err(|e| AegisError::Validation(e))?;
+        let subject = SubjectId::new(&entry.subject).map_err(AegisError::Validation)?;
+        let relation = Relation::new(&entry.relation).map_err(AegisError::Validation)?;
+        let object = ResourceId::new(&entry.object).map_err(AegisError::Validation)?;
 
         let tuple = match (&entry.metadata, &entry.condition) {
             (Some(meta), Some(cond)) => {

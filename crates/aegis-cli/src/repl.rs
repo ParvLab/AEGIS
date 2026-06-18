@@ -534,11 +534,7 @@ fn cmd_list(state: &ReplState, args: &[&str]) -> Result<()> {
                     t.object.as_str()
                 );
             }
-            println!(
-                "  {} {} tuple(s)",
-                bold(&tuples.len().to_string()),
-                "results"
-            );
+            println!("  {} results tuple(s)", bold(&tuples.len().to_string()));
         }
     }
     Ok(())
@@ -1026,13 +1022,12 @@ fn cmd_restore(state: &ReplState, args: &[&str]) -> Result<()> {
     }
     let version = backup.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
 
-    if version >= 2 {
-        if let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str()) {
-            if !sy.is_empty() {
-                let schema = parse_schema(sy).context("failed to parse schema from backup")?;
-                state.engine.reload_schema(schema)?;
-            }
-        }
+    if version >= 2
+        && let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str())
+        && !sy.is_empty()
+    {
+        let schema = parse_schema(sy).context("failed to parse schema from backup")?;
+        state.engine.reload_schema(schema)?;
     }
 
     let tuples: Vec<RelationshipTuple> = serde_json::from_value(
@@ -1130,7 +1125,7 @@ fn cmd_recover_repl(state: &ReplState, args: &[&str]) -> Result<()> {
         i += 1;
     }
 
-    let to_rev = to_revision.map(|r| Revision::new(r));
+    let to_rev = to_revision.map(Revision::new);
     if dry_run {
         let current_rev = state
             .engine
@@ -1317,7 +1312,7 @@ fn cmd_policy_draft(state: &mut ReplState, args: &[&str]) -> Result<()> {
             let report =
                 state
                     .engine
-                    .access_diff(&*state.engine.schema(), &draft.schema, None, None)?;
+                    .access_diff(&state.engine.schema(), &draft.schema, None, None)?;
             if state.json_mode {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {

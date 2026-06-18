@@ -722,14 +722,12 @@ fn main() -> Result<()> {
                 }
             }
             let version = backup.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
-            if version >= 2 {
-                if let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str()) {
-                    if !sy.is_empty() {
-                        let schema =
-                            parse_schema(sy).context("failed to parse schema from backup")?;
-                        engine.reload_schema(schema)?;
-                    }
-                }
+            if version >= 2
+                && let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str())
+                && !sy.is_empty()
+            {
+                let schema = parse_schema(sy).context("failed to parse schema from backup")?;
+                engine.reload_schema(schema)?;
             }
             let tuples: Vec<RelationshipTuple> = serde_json::from_value(
                 backup
@@ -1064,8 +1062,7 @@ fn main() -> Result<()> {
                         .into_iter()
                         .find(|d| d.id == uid)
                         .ok_or_else(|| anyhow::anyhow!("draft {id} not found"))?;
-                    let report =
-                        engine.access_diff(&*engine.schema(), &draft.schema, None, None)?;
+                    let report = engine.access_diff(&engine.schema(), &draft.schema, None, None)?;
                     println!("{}", serde_json::to_string_pretty(&report)?);
                 }
                 PolicyDraftAction::Submit { id, .. } => {
@@ -1221,7 +1218,7 @@ fn main() -> Result<()> {
                 sub.id()
             );
             loop {
-                if let Some(event) = sub.try_recv().ok() {
+                if let Ok(event) = sub.try_recv() {
                     let json = serde_json::json!({
                         "event_type": format!("{:?}", event.event_type),
                         "subject": event.subject,

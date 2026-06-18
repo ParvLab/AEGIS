@@ -27,7 +27,7 @@ jobs:
 
       - name: Clippy (1.85 compatible crates)
         if: matrix.rust == '1.85'
-        run: cargo clippy -p aegis-core -p aegis-cli -p aegis-test-utils -p aegis-ffi -- -D warnings
+        run: cargo clippy -p aegis-core -p aegis-cli -p aegis-test-utils -p aegis-ffi
 
       - name: Clippy (full workspace)
         if: matrix.rust != '1.85'

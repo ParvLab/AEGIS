@@ -100,16 +100,16 @@ pub fn lint_schema(schema: &Schema, strict: bool) -> LintReport {
 
         // Check condition syntax validity on permissions
         for (perm_name, perm_def) in &type_def.permissions {
-            if let Some(ref cond) = perm_def.condition {
-                if let Err(e) = crate::engine::condition::parse_condition(cond) {
-                    let msg = format!(
-                        "permission '{perm_name}' on type '{type_name}' has invalid condition syntax: {e}"
-                    );
-                    if strict {
-                        errors.push(msg);
-                    } else {
-                        warnings.push(msg);
-                    }
+            if let Some(ref cond) = perm_def.condition
+                && let Err(e) = crate::engine::condition::parse_condition(cond)
+            {
+                let msg = format!(
+                    "permission '{perm_name}' on type '{type_name}' has invalid condition syntax: {e}"
+                );
+                if strict {
+                    errors.push(msg);
+                } else {
+                    warnings.push(msg);
                 }
             }
         }
@@ -228,7 +228,7 @@ pub fn validate_resource_type(schema: &Schema, resource: &str) -> AegisResult<()
     let type_name = resource
         .split(':')
         .next()
-        .ok_or_else(|| AegisError::Validation(crate::types::ValidationError::Empty))?;
+        .ok_or(AegisError::Validation(crate::types::ValidationError::Empty))?;
 
     if !schema.types.contains_key(type_name) {
         return Err(AegisError::UnknownSubjectType(type_name.to_string()));
@@ -241,7 +241,7 @@ pub fn validate_relation(schema: &Schema, resource: &str, relation: &str) -> Aeg
     let type_name = resource
         .split(':')
         .next()
-        .ok_or_else(|| AegisError::Validation(crate::types::ValidationError::Empty))?;
+        .ok_or(AegisError::Validation(crate::types::ValidationError::Empty))?;
 
     if !schema.has_relation(type_name, relation) && !schema.has_permission(type_name, relation) {
         return Err(AegisError::UnknownRelation {
