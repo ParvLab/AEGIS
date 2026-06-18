@@ -31,11 +31,10 @@ types:
 /// Create an engine backed by a unique temp file (avoids :memory: isolation quirks
 /// with WAL + pooled connections under concurrent write load).
 fn make_file_engine(max_readers: u32) -> (GraphEngine, String) {
-    let path = format!(
-        "{}\\aegis_stress_{}.db",
-        std::env::temp_dir().display(),
-        fastrand::u64(..)
-    );
+    let path = std::env::temp_dir()
+        .join(format!("aegis_stress_{}.db", fastrand::u64(..)))
+        .to_string_lossy()
+        .into_owned();
     let config = SqliteConfig {
         path: path.clone(),
         max_readers,
