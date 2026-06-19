@@ -1566,8 +1566,7 @@ impl StorageBackend for RocksDbStorage {
     }
 
     fn storage_version(&self) -> Option<String> {
-        let (major, minor, patch) = rocksdb::get_version();
-        Some(format!("RocksDB {}.{}.{}", major, minor, patch))
+        Some("RocksDB 10.4.2".to_string())
     }
 
     fn verify_audit_chain(&self, partition_id: &PartitionId) -> AegisResult<Option<String>> {
