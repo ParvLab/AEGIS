@@ -326,8 +326,7 @@ pub mod otel_metrics {
     }
 }
 
-#[cfg(feature = "telemetry")]
-#[cfg(test)]
+#[cfg(all(test, feature = "telemetry", feature = "sqlite"))]
 mod tests {
     use super::otel_metrics;
     use crate::engine::GraphEngine;

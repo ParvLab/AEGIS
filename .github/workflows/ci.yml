@@ -84,11 +84,13 @@ jobs:
           wasm-pack test --firefox --headless -- --no-default-features --features wasm || echo "Firefox not available, skipping"
 
       - name: Security audit
+        shell: bash
         run: |
           cargo install cargo-audit --locked 2>/dev/null || true
           cargo audit 2>&1 | head -50 || true
 
       - name: Dependency deny
+        shell: bash
         run: |
           cargo install cargo-deny --locked 2>/dev/null || true
           cargo deny check 2>&1 | head -50 || true
