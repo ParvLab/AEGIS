@@ -1010,7 +1010,9 @@ fn cmd_restore(state: &ReplState, args: &[&str]) -> Result<()> {
     }
     let version = backup.get("version").and_then(|v| v.as_i64()).unwrap_or(1);
 
+    #[allow(clippy::collapsible_if)]
     if version >= 2 {
+        #[allow(clippy::collapsible_if)]
         if let Some(sy) = backup.get("schema_yaml").and_then(|s| s.as_str()) {
             if !sy.is_empty() {
                 let schema = parse_schema(sy).context("failed to parse schema from backup")?;

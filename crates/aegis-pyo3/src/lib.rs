@@ -884,6 +884,7 @@ impl PyAegis {
     }
 
     #[pyo3(signature = (checks_per_second=None, check_burst=None, writes_per_second=None, write_burst=None, max_traversal_depth=None, max_traversal_visits=None, max_keys=None))]
+    #[allow(clippy::too_many_arguments)]
     fn set_rate_limiter(
         &self,
         checks_per_second: Option<u32>,

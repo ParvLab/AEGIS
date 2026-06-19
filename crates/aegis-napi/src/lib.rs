@@ -1009,6 +1009,7 @@ impl JsAegis {
 
     // S3.10 — set_rate_limiter
     #[napi]
+    #[allow(clippy::too_many_arguments)]
     pub fn set_rate_limiter(
         &self,
         checks_per_second: Option<u32>,

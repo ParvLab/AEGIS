@@ -1848,6 +1848,7 @@ pub extern "C" fn aegis_watch_poll(sub: *mut AegisWatchSubscription) -> *mut Aeg
         .map(|v| error_string(&v.to_string()))
         .unwrap_or(std::ptr::null_mut());
 
+    #[allow(clippy::let_and_return)]
     let ptr = Box::into_raw(Box::new(AegisWatchEvent {
         event_type: evt_type,
         subject: error_string(&event.subject),
@@ -2208,7 +2209,9 @@ pub extern "C" fn aegis_transaction_rollback(txn: *mut AegisTransaction) -> *mut
 pub extern "C" fn aegis_transaction_free(txn: *mut AegisTransaction) {
     if !txn.is_null() {
         let txn = unsafe { Box::from_raw(txn) };
+        #[allow(clippy::collapsible_if)]
         if !txn.consumed.load(Ordering::Relaxed) {
+            #[allow(clippy::collapsible_if)]
             if let Ok(mut guard) = txn.inner.lock() {
                 if let Some(inner) = guard.take() {
                     let _ = inner.rollback();
