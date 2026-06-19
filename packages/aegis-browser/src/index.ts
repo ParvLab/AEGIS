@@ -273,7 +273,8 @@ export class AegisEngine {
 
   async createAnalysisSchedule(name: string, intervalSeconds: number, queriesJson: string, compareSchemaJson?: string): Promise<string> {
     if (this.useWorker && this.worker) {
-      const res = await this.send({ type: "createAnalysisSchedule", id: this.nextId(), name, intervalSeconds, queriesJson, compareSchemaJson });
+      const configJson = JSON.stringify({ name, intervalSeconds, queriesJson, compareSchemaJson });
+      const res = await this.send({ type: "createAnalysisSchedule", id: this.nextId(), configJson });
       return (res as any).result;
     }
     const m = await import("../rust/pkg/aegis_browser.js") as any;

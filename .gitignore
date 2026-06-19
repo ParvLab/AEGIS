@@ -1,6 +1,7 @@
 # Rust build artifacts
 target/
 node_modules/
+dist/
 
 # IDE and editor files
 .vs/
@@ -18,6 +19,10 @@ desktop.ini
 # Environment files
 .env
 .env.*
+
+# NAPI build artifacts
+*.node
+*.pdb
 
 # Test and temp files
 *.db

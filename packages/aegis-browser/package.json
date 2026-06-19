@@ -6,9 +6,9 @@
   "types": "dist/index.d.ts",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/aegis-auth/aegis.git"
+    "url": "git+https://github.com/ParvLab/AEGIS.git"
   },
-  "homepage": "https://github.com/aegis-auth/aegis/packages/aegis-browser",
+  "homepage": "https://github.com/ParvLab/AEGIS/packages/aegis-browser",
   "author": "Aegis Authors",
   "files": [
     "dist/",
@@ -18,7 +18,7 @@
     "build:rust": "cd rust && wasm-pack build --target web --out-dir ../pkg && cd ..",
     "build:ts": "tsc",
     "build": "npm run build:rust && npm run build:ts",
-    "optimize": "wasm-opt -Oz -o pkg/aegis_browser_bg.wasm pkg/aegis_browser_bg.wasm",
+    "optimize": "wasm-opt -Oz -o pkg/aegis_browser_bg.wasm pkg/aegis_browser_bg.wasm || echo \"wasm-opt not available, skipping\"",
     "test": "wasm-pack test --chrome --headless",
     "prepublishOnly": "npm run build && npm run optimize"
   },

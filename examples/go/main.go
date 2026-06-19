@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	aegis "github.com/aegis-auth/aegis-go"
+	aegis "github.com/ParvLab/AEGIS/go"
 )
 
 const schema = `

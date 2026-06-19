@@ -3,15 +3,15 @@
 **Embedded, relationship-based authorization runtime (ReBAC).**  
 Single-process, zero external servers, multi-language.
 
-[![CI — ubuntu](https://img.shields.io/github/actions/workflow/status/aegis-auth/aegis/ci.yml?branch=main&label=ubuntu&logo=ubuntu)](https://github.com/aegis-auth/aegis/actions)
-[![CI — windows](https://img.shields.io/github/actions/workflow/status/aegis-auth/aegis/ci.yml?branch=main&label=windows&logo=windows)](https://github.com/aegis-auth/aegis/actions)
-[![CI — macOS](https://img.shields.io/github/actions/workflow/status/aegis-auth/aegis/ci.yml?branch=main&label=macOS&logo=apple)](https://github.com/aegis-auth/aegis/actions)
-[![Rust](https://img.shields.io/badge/rust_MSRV-1.96-dea584?logo=rust)](https://github.com/aegis-auth/aegis)
+[![CI — ubuntu](https://img.shields.io/github/actions/workflow/status/ParvLab/AEGIS/ci.yml?branch=main&label=ubuntu&logo=ubuntu)](https://github.com/ParvLab/AEGIS/actions)
+[![CI — windows](https://img.shields.io/github/actions/workflow/status/ParvLab/AEGIS/ci.yml?branch=main&label=windows&logo=windows)](https://github.com/ParvLab/AEGIS/actions)
+[![CI — macOS](https://img.shields.io/github/actions/workflow/status/ParvLab/AEGIS/ci.yml?branch=main&label=macOS&logo=apple)](https://github.com/ParvLab/AEGIS/actions)
+[![Rust](https://img.shields.io/badge/rust_MSRV-1.96-dea584?logo=rust)](https://github.com/ParvLab/AEGIS)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![npm — @aegis-v/engine](https://img.shields.io/npm/v/@aegis-v/engine?label=%40aegis-auth%2Fengine&logo=npm)](https://www.npmjs.com/package/@aegis-v/engine)
-[![npm — @aegis-v/browser](https://img.shields.io/npm/v/@aegis-v/browser?label=%40aegis%2Fbrowser&logo=npm)](https://www.npmjs.com/package/@aegis-v/browser)
+[![npm — @aegis-v/engine](https://img.shields.io/npm/v/@aegis-v/engine?label=%40aegis-v%2Fengine&logo=npm)](https://www.npmjs.com/package/@aegis-v/engine)
+[![npm — @aegis-v/browser](https://img.shields.io/npm/v/@aegis-v/browser?label=%40aegis-v%2Fbrowser&logo=npm)](https://www.npmjs.com/package/@aegis-v/browser)
 [![PyPI — aegis-auth](https://img.shields.io/pypi/v/aegis-auth?label=aegis-auth&logo=pypi)](https://pypi.org/project/aegis-auth/)
-[![Go Reference](https://img.shields.io/badge/go-reference-00ADD8?logo=go)](https://pkg.go.dev/github.com/aegis-auth/aegis-go)
+[![Go Reference](https://img.shields.io/badge/go-reference-00ADD8?logo=go)](https://pkg.go.dev/github.com/ParvLab/AEGIS/go)
 
 </div>
 
@@ -293,7 +293,7 @@ print(result.allowed)  # True
 ### Go
 
 ```bash
-go get github.com/aegis-auth/aegis-go
+go get github.com/ParvLab/AEGIS-go
 ```
 
 Requires `libaegis_ffi` shared library on the library path.
@@ -303,7 +303,7 @@ package main
 
 import (
     "fmt"
-    "github.com/aegis-auth/aegis-go"
+    "github.com/ParvLab/AEGIS-go"
 )
 
 func main() {
@@ -905,7 +905,7 @@ We welcome contributions! Please see our guidelines:
 ### Development Setup
 
 ```bash
-git clone https://github.com/aegis-auth/aegis.git
+git clone https://github.com/ParvLab/AEGIS.git
 cd aegis
 cargo build --workspace
 cargo test --workspace
@@ -935,7 +935,7 @@ limitations under the License.
 
 **Aegis** — Embedded authorization. Zero servers. ReBAC-native.
 
-[GitHub](https://github.com/aegis-auth/aegis) · [Documentation](docs/architecture.md) · [Specification](aegis-spec.md) · [Implementation Plan](AEGIS_IMPLEMENTATION_PLAN.md) · [Test Plan](aegis-test-plan.md)
+[GitHub](https://github.com/ParvLab/AEGIS) · [Documentation](docs/architecture.md) · [Specification](aegis-spec.md) · [Implementation Plan](AEGIS_IMPLEMENTATION_PLAN.md) · [Test Plan](aegis-test-plan.md)
 
 </div>
 ]]>

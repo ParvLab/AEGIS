@@ -197,7 +197,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       }
       case "rejectPolicyDraft": {
         if (!engine) throw new Error("not initialized");
-        const result = engine.reject_policy_draft(msg.id, msg.reason);
+        const result = engine.reject_policy_draft(msg.draftId, msg.rejectionReason);
         postMessage({ type: "rejectPolicyDraft", id, result } satisfies WorkerResponse);
         break;
       }
@@ -235,8 +235,8 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       }
       case "deleteAnalysisSchedule": {
         if (!engine) throw new Error("not initialized");
-        const result = engine.delete_analysis_schedule(msg.id);
-        postMessage({ type: "deleteAnalysisSchedule", id, result } satisfies WorkerResponse);
+        const result = engine.delete_analysis_schedule(msg.scheduleId);
+        postMessage({ type: "deleteAnalysisSchedule", id, ok: !!result } satisfies WorkerResponse);
         break;
       }
       case "runAnalysisNow": {
@@ -256,7 +256,7 @@ self.onmessage = async (e: MessageEvent<WorkerRequest>) => {
       case "setEnforcementHistoryConfig": {
         if (!engine) throw new Error("not initialized");
         const result = engine.set_enforcement_history_config(msg.configJson);
-        postMessage({ type: "setEnforcementHistoryConfig", id, result } satisfies WorkerResponse);
+        postMessage({ type: "setEnforcementHistoryConfig", id, ok: !!result } satisfies WorkerResponse);
         break;
       }
       case "getEnforcementHistoryConfig": {
