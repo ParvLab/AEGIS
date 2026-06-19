@@ -61,7 +61,7 @@
 //! ```
 
 use crate::engine::GraphEngine;
-use crate::error::AegisResult;
+use crate::error::{AegisError, AegisResult};
 use crate::types::*;
 use std::collections::{BTreeSet, HashMap, HashSet};
 
@@ -118,9 +118,11 @@ pub fn check_role(
                 // Check if subject has the child role relation directly.
                 // Use list_by_subject to check for a direct tuple match,
                 // since engine.check would resolve it as a permission (not what we want).
+                let relation =
+                    Relation::new(child_role_name).map_err(|e| AegisError::Internal(e.to_string()))?;
                 let tuples = engine.list_by_subject(
                     subject,
-                    Some(&Relation::new(child_role_name).unwrap()),
+                    Some(&relation),
                     None,
                 )?;
                 if tuples.iter().any(|t| t.object == *resource) {

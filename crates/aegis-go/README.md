@@ -5,7 +5,7 @@ Go bindings for the Aegis embedded authorization engine.
 ## Install
 
 ```bash
-go get github.com/anomalyco/aegis/crates/aegis-go
+go get github.com/aegis-auth/aegis-go
 ```
 
 Requires `libaegis_ffi` shared library on the library path.
@@ -17,7 +17,7 @@ package main
 
 import (
     "fmt"
-    "github.com/anomalyco/aegis/crates/aegis-go"
+    "github.com/aegis-auth/aegis-go"
 )
 
 func main() {

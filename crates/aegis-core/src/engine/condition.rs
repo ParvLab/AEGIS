@@ -79,7 +79,12 @@ pub fn parse_condition(expr: &str) -> AegisResult<ConditionExpr> {
             }
         }
         if let Some(pos) = split_pos {
-            let close = close_paren.unwrap();
+            let close = close_paren.ok_or_else(|| {
+                crate::error::AegisError::SchemaValidation(format!(
+                    "unmatched opening parenthesis in condition: {:?}",
+                    expr
+                ))
+            })?;
             let left_str = trimmed[1..close].trim();
             let offset = if op_type == Some("OR") { 4 } else { 5 };
             let right_str = trimmed[pos + offset..].trim();

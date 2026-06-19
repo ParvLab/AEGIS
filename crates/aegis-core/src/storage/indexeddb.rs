@@ -133,34 +133,6 @@ fn js_to_tuple(val: &JsValue) -> AegisResult<RelationshipTuple> {
     Ok(t)
 }
 
-#[allow(dead_code)]
-fn event_to_js(e: &AuditEntry, previous_hash: Option<&str>, event_hash: Option<&str>) -> JsValue {
-    let obj = Object::new();
-    set_num(&obj, "revision", e.revision.as_u64() as f64);
-    let action = match e.action {
-        TupleMutation::Add => "add",
-        TupleMutation::Remove => "remove",
-    };
-    set_str(&obj, "action", action);
-    set_str(&obj, "subject", &e.subject);
-    set_str(&obj, "relation", &e.relation);
-    set_str(&obj, "object", &e.object);
-    set_str(&obj, "timestamp", &e.timestamp.to_rfc3339());
-    if let Some(ref m) = e.metadata {
-        set_val(&obj, "metadata", &map_js(m));
-    }
-    if let Some(ref id) = e.identity {
-        set_str(&obj, "identity", id);
-    }
-    if let Some(ph) = previous_hash {
-        set_str(&obj, "previous_hash", ph);
-    }
-    if let Some(eh) = event_hash {
-        set_str(&obj, "event_hash", eh);
-    }
-    obj.into()
-}
-
 fn js_to_event(val: &JsValue) -> AegisResult<AuditEntry> {
     let rev = get_num(val, "revision").unwrap_or(0.0) as u64;
     let action = match get_str(val, "action").unwrap_or_default().as_str() {
@@ -190,11 +162,6 @@ fn js_to_event(val: &JsValue) -> AegisResult<AuditEntry> {
         metadata,
         identity,
     })
-}
-
-#[allow(dead_code)]
-fn js_event_hash(val: &JsValue) -> (Option<String>, Option<String>) {
-    (get_str(val, "previous_hash"), get_str(val, "event_hash"))
 }
 
 fn event_obj_from_fields(
