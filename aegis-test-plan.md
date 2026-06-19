@@ -539,7 +539,7 @@ tuples:
 ## Appendix: CI Pipeline Integration
 
 ```yaml
-# .github/workflows/test.yml
+# .github/workflows/ci.yml
 jobs:
   unit:
     runs-on: ubuntu-latest

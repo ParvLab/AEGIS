@@ -1512,11 +1512,11 @@ impl StorageBackend for SqliteStorage {
     }
 
     fn close(&self) -> AegisResult<()> {
-        #[allow(clippy::collapsible_if)]
-        if self.config.wal_mode && self.config.path != ":memory:" {
-            if let Ok(conn) = self.pool.get() {
-                let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
-            }
+        if self.config.wal_mode
+            && self.config.path != ":memory:"
+            && let Ok(conn) = self.pool.get()
+        {
+            let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
         }
         Ok(())
     }
@@ -1981,11 +1981,8 @@ impl SqliteStorage {
                     row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
                 let rev = Revision::new(rev as u64);
-                #[allow(clippy::collapsible_if)]
-                if let Some(target) = to_revision {
-                    if rev > target {
-                        continue;
-                    }
+                if let Some(target) = to_revision && rev > target {
+                    continue;
                 }
                 let now = Utc::now().to_rfc3339();
 
@@ -2369,12 +2366,11 @@ impl StorageTransaction for SqliteTransaction {
     }
 
     fn rollback(mut self: Box<Self>) -> AegisResult<()> {
-        #[allow(clippy::collapsible_if)]
-        if !self.committed {
-            if let Some(conn) = self.conn.take() {
-                conn.execute_batch("ROLLBACK")
-                    .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
-            }
+        if !self.committed
+            && let Some(conn) = self.conn.take()
+        {
+            conn.execute_batch("ROLLBACK")
+                .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         }
         Ok(())
     }
@@ -2382,11 +2378,10 @@ impl StorageTransaction for SqliteTransaction {
 
 impl Drop for SqliteTransaction {
     fn drop(&mut self) {
-        #[allow(clippy::collapsible_if)]
-        if !self.committed {
-            if let Some(conn) = self.conn.take() {
-                let _ = conn.execute_batch("ROLLBACK");
-            }
+        if !self.committed
+            && let Some(conn) = self.conn.take()
+        {
+            let _ = conn.execute_batch("ROLLBACK");
         }
     }
 }

@@ -209,17 +209,16 @@ pub fn lint_schema(schema: &Schema) -> LintResult {
 
         // Check condition syntax on permissions
         for (perm_name, perm_def) in &type_def.permissions {
-            #[allow(clippy::collapsible_if)]
-            if let Some(ref cond) = perm_def.condition {
-                if let Err(e) = crate::engine::condition::parse_condition(cond) {
-                    diagnostics.push(LintDiagnostic {
-                        severity: LintSeverity::Error,
-                        message: format!(
-                            "permission '{perm_name}' on type '{type_name}' has invalid condition syntax: {e}"
-                        ),
-                        location: Some(format!("types.{type_name}.permissions.{perm_name}.condition")),
-                    });
-                }
+            if let Some(ref cond) = perm_def.condition
+                && let Err(e) = crate::engine::condition::parse_condition(cond)
+            {
+                diagnostics.push(LintDiagnostic {
+                    severity: LintSeverity::Error,
+                    message: format!(
+                        "permission '{perm_name}' on type '{type_name}' has invalid condition syntax: {e}"
+                    ),
+                    location: Some(format!("types.{type_name}.permissions.{perm_name}.condition")),
+                });
             }
         }
 

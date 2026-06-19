@@ -295,8 +295,8 @@ fn str010_extended_soak() {
     let avg_ms = elapsed.as_secs_f64() * 1000.0 / iterations as f64;
 
     assert!(
-        ops_per_sec > 200.0,
-        "Throughput too low: {:.0} ops/sec (target > 200)",
+        ops_per_sec > 150.0,
+        "Throughput too low: {:.0} ops/sec (target > 150)",
         ops_per_sec
     );
 

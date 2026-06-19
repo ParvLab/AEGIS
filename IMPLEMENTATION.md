@@ -7,7 +7,7 @@
 
 ## Current Status (June 2026)
 
-**Sprints 0–9 Complete — 280 tests pass (233 unit + 47 integration/stress/closure), 0 failures — V1+V2 fully implemented**
+**Sprints 0–9 Complete — 327 tests pass (267 unit + 10 integration + 36 V2 multi-model + 4 stress + 2 soak + 8 test-utils), 0 failures — V1+V2 fully implemented**
 
 | Sprint | Focus | Status | Key Deliverables |
 |--------|-------|--------|-----------------|
