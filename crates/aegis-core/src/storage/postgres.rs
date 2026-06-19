@@ -196,6 +196,7 @@ impl PostgresStorage {
         Ok(Revision::new(rev as u64))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn append_event_async(
         client: &tokio_postgres::Client,
         partition_id: &PartitionId,
@@ -296,7 +297,7 @@ impl StorageBackend for PostgresStorage {
             let meta_val = tuple
                 .metadata
                 .as_ref()
-                .map(|m| serde_json::to_value(m))
+                .map(serde_json::to_value)
                 .transpose()
                 .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 
@@ -345,9 +346,9 @@ impl StorageBackend for PostgresStorage {
                 let meta_val = tuple
                     .metadata
                     .as_ref()
-                    .map(|m| serde_json::to_value(m))
-                    .transpose()
-                    .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 
                 client
                     .execute(
@@ -1258,6 +1259,7 @@ impl StorageBackend for PostgresStorage {
                 let meta_val: Option<serde_json::Value> = row.get(5);
 
                 let revision = Revision::new(rev as u64);
+                #[allow(clippy::collapsible_if)]
                 if let Some(target) = to_revision {
                     if revision > target {
                         continue;
@@ -1451,7 +1453,7 @@ impl StorageBackend for PostgresStorage {
             for tuple in tuples {
                 let meta_val = tuple.metadata
                     .as_ref()
-                    .map(|m| serde_json::to_value(m))
+                    .map(serde_json::to_value)
                     .transpose()
                     .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
                 let revision_added: i64 = revision.as_u64() as i64;
@@ -1472,7 +1474,7 @@ impl StorageBackend for PostgresStorage {
                 };
                 let meta_val = event.metadata
                     .as_ref()
-                    .map(|m| serde_json::to_value(m))
+                    .map(serde_json::to_value)
                     .transpose()
                     .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
                     client
@@ -1744,6 +1746,7 @@ impl PostgresTransaction {
         Ok(Revision::new(rev as u64))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn append_event_async(
         client: &tokio_postgres::Client,
         partition_id: &PartitionId,
@@ -1831,7 +1834,7 @@ impl StorageTransaction for PostgresTransaction {
             let meta_val = tuple_clone
                 .metadata
                 .as_ref()
-                .map(|m| serde_json::to_value(m))
+                .map(serde_json::to_value)
                 .transpose()
                 .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
 

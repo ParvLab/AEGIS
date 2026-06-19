@@ -83,7 +83,7 @@ impl MysqlStorage {
                 .map(|p| format!("ssl-key={}", p));
             let params: Vec<&str> = [ssl_ca.as_deref(), ssl_cert.as_deref(), ssl_key.as_deref()]
                 .into_iter()
-                .filter_map(|x| x)
+                .flatten()
                 .collect();
             if !params.is_empty() {
                 url.push('?');
@@ -223,6 +223,7 @@ impl MysqlStorage {
         Self::current_revision_async(conn).await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn append_event_async(
         conn: &mut mysql_async::Conn,
         revision: Revision,
@@ -613,7 +614,7 @@ impl StorageBackend for MysqlStorage {
 
             let rows: Vec<(String, String, String, String, Option<String>)> = if let Some(ref r) = rel {
                 conn.exec(
-                    &format!(
+                    format!(
                         "SELECT `subject`, `relation`, `object`, `created_at`, `metadata` FROM _aegis_tuples
                          WHERE `object` = ? AND `relation` = ? AND `partition_id` = ? AND {rev_filter}"
                     ),
@@ -622,7 +623,7 @@ impl StorageBackend for MysqlStorage {
                 .await
             } else {
                 conn.exec(
-                    &format!(
+                    format!(
                         "SELECT `subject`, `relation`, `object`, `created_at`, `metadata` FROM _aegis_tuples
                          WHERE `object` = ? AND `partition_id` = ? AND {rev_filter}"
                     ),
@@ -664,7 +665,7 @@ impl StorageBackend for MysqlStorage {
 
             let rows: Vec<(String, String, String, String, Option<String>)> = if let Some(ref r) = rel {
                 conn.exec(
-                    &format!(
+                    format!(
                         "SELECT `subject`, `relation`, `object`, `created_at`, `metadata` FROM _aegis_tuples
                          WHERE `subject` = ? AND `relation` = ? AND `partition_id` = ? AND {rev_filter}"
                     ),
@@ -673,7 +674,7 @@ impl StorageBackend for MysqlStorage {
                 .await
             } else {
                 conn.exec(
-                    &format!(
+                    format!(
                         "SELECT `subject`, `relation`, `object`, `created_at`, `metadata` FROM _aegis_tuples
                          WHERE `subject` = ? AND `partition_id` = ? AND {rev_filter}"
                     ),
@@ -895,6 +896,7 @@ impl StorageBackend for MysqlStorage {
             ));
 
             let params = mysql_async::Params::Positional(values);
+            #[allow(clippy::type_complexity)]
             let rows: Vec<(i64, String, String, String, String, String, Option<String>, Option<String>)> = conn
                 .exec(&sql, params)
                 .await
@@ -1054,6 +1056,7 @@ impl StorageBackend for MysqlStorage {
 
             for (rev, action, subject, relation, object, metadata) in &rows {
                 let revision = Revision::new(*rev as u64);
+                #[allow(clippy::collapsible_if)]
                 if let Some(target) = to_revision {
                     if revision > target {
                         continue;
@@ -1161,6 +1164,7 @@ impl StorageBackend for MysqlStorage {
         let _ = partition_id;
         self.runtime.block_on(async {
             let mut conn = self.get_conn().await?;
+            #[allow(clippy::type_complexity)]
             let rows: Vec<(i64, i64, String, String, String, String, Option<String>, String, Option<String>, String, String)> = conn
                 .exec(
                     "SELECT `event_id`, `revision`, `action`, `subject`, `relation`, `object`, `metadata`, `timestamp`, `identity`, `previous_hash`, `event_hash`
@@ -1499,6 +1503,7 @@ impl MysqlTransaction {
         Ok(Revision::new(rev as u64))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn append_event_async(
         conn: &mut mysql_async::Conn,
         revision: Revision,
@@ -1680,7 +1685,7 @@ impl StorageTransaction for MysqlTransaction {
         let mutex = self.conn_ref()?;
         self.block_on(async {
             let mut conn = mutex.lock().await;
-            conn.exec_drop(&format!("SAVEPOINT \"{}\"", name_owned), ())
+            conn.exec_drop(format!("SAVEPOINT \"{}\"", name_owned), ())
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             Ok(())
@@ -1693,7 +1698,7 @@ impl StorageTransaction for MysqlTransaction {
         let mutex = self.conn_ref()?;
         self.block_on(async {
             let mut conn = mutex.lock().await;
-            conn.exec_drop(&format!("ROLLBACK TO SAVEPOINT \"{}\"", name_owned), ())
+            conn.exec_drop(format!("ROLLBACK TO SAVEPOINT \"{}\"", name_owned), ())
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             Ok(())
@@ -1706,7 +1711,7 @@ impl StorageTransaction for MysqlTransaction {
         let mutex = self.conn_ref()?;
         self.block_on(async {
             let mut conn = mutex.lock().await;
-            conn.exec_drop(&format!("RELEASE SAVEPOINT \"{}\"", name_owned), ())
+            conn.exec_drop(format!("RELEASE SAVEPOINT \"{}\"", name_owned), ())
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             Ok(())

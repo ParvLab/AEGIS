@@ -912,6 +912,7 @@ impl GraphEngine {
         let resource_type = resource_type_name(resource.as_str());
         let resolved = {
             let schema = self.schema.read().unwrap();
+            #[allow(clippy::let_and_return)]
             let result = match policy::resolve_permission(&schema, &resource_type, permission) {
                 Some(r) => r,
                 None => {

@@ -968,16 +968,19 @@ impl StorageBackend for RocksDbStorage {
                 let rel = parts[2];
                 let subj = parts[3];
 
+                #[allow(clippy::collapsible_if)]
                 if let Some(ref ot) = filter.object_type {
                     if !obj.starts_with(&format!("{ot}:")) {
                         continue;
                     }
                 }
+                #[allow(clippy::collapsible_if)]
                 if let Some(ref r) = filter.relation {
                     if rel != r.as_str() {
                         continue;
                     }
                 }
+                #[allow(clippy::collapsible_if)]
                 if let Some(ref st) = filter.subject_type {
                     if !subj.starts_with(&format!("{st}:")) {
                         continue;
@@ -1243,6 +1246,7 @@ impl StorageBackend for RocksDbStorage {
                 }
 
                 let event_obj = event["object"].as_str().unwrap_or("").to_string();
+                #[allow(clippy::collapsible_if)]
                 if let Some(obj) = object {
                     if event_obj != obj.as_str() {
                         continue;
@@ -1369,6 +1373,7 @@ impl StorageBackend for RocksDbStorage {
             }
             if let Ok(event) = serde_json::from_slice::<serde_json::Value>(&value) {
                 let ts_str = event["timestamp"].as_str().unwrap_or("");
+                #[allow(clippy::collapsible_if)]
                 if let Ok(ts) = ts_str.parse::<DateTime<Utc>>() {
                     if ts < cutoff {
                         to_delete.push(key.to_vec());
@@ -1469,6 +1474,7 @@ impl StorageBackend for RocksDbStorage {
                 let relation = event["relation"].as_str().unwrap_or("");
                 let object = event["object"].as_str().unwrap_or("");
                 let revision = Revision::new(rev);
+                #[allow(clippy::collapsible_if)]
                 if let Some(target) = to_revision {
                     if revision > target {
                         continue;
@@ -1752,6 +1758,7 @@ impl StorageBackend for RocksDbStorage {
         while iter.valid() {
             if let (Some(key), Some(value)) = (iter.key(), iter.value()) {
                 let key_str = String::from_utf8_lossy(key);
+                #[allow(clippy::collapsible_if)]
                 if key_str.parse::<u32>().is_ok() {
                     if let Ok(pv) = serde_json::from_slice::<PolicyVersion>(value) {
                         versions.push(pv);
