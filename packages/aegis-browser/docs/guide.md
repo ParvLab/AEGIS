@@ -3,7 +3,7 @@
 ## Install
 
 ```bash
-npm install @aegis/browser
+npm install @aegis-v/browser
 ```
 
 Or use directly via CDN/ESM import from the WASM package.
@@ -11,8 +11,8 @@ Or use directly via CDN/ESM import from the WASM package.
 ## Quick Start
 
 ```typescript
-import init, * as wasm from '@aegis/browser/pkg/aegis_browser.js';
-import { AegisEngine } from '@aegis/browser';
+import init, * as wasm from '@aegis-v/browser/pkg/aegis_browser.js';
+import { AegisEngine } from '@aegis-v/browser';
 
 // 1. Initialize WASM runtime
 await init();
@@ -48,7 +48,7 @@ wasm.import_json(json);
 ## Using the TypeScript SDK
 
 ```typescript
-import { AegisEngine } from '@aegis/browser';
+import { AegisEngine } from '@aegis-v/browser';
 
 const engine = new AegisEngine({ useWorker: true });
 await engine.init(schema);

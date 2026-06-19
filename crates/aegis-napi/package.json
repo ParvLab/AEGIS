@@ -1,5 +1,5 @@
 {
-  "name": "@aegis-auth/engine",
+  "name": "@aegis-v/engine",
   "version": "0.3.0",
   "description": "Aegis authorization engine — native Node.js bindings",
   "main": "index.js",

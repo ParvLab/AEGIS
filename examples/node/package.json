@@ -8,6 +8,6 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@aegis-auth/engine": "file:../../crates/aegis-napi"
+    "@aegis-v/engine": "file:../../crates/aegis-napi"
   }
 }

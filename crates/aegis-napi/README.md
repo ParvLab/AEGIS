@@ -1,17 +1,17 @@
-# @aegis-auth/engine
+# @aegis-v/engine
 
 Aegis embedded authorization engine for Node.js.
 
 ## Install
 
 ```bash
-npm install @aegis-auth/engine
+npm install @aegis-v/engine
 ```
 
 ## Usage
 
 ```javascript
-const { Engine } = require('@aegis-auth/engine');
+const { Engine } = require('@aegis-v/engine');
 
 const engine = new Engine('aegis.db', `
 namespace: app

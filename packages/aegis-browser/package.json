@@ -1,5 +1,5 @@
 {
-  "name": "@aegis/browser",
+  "name": "@aegis-v/browser",
   "version": "0.1.0",
   "description": "Aegis authorization engine for browser — check, write, delete permissions with full offline support",
   "main": "dist/index.js",

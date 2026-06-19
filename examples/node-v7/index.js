@@ -1,4 +1,4 @@
-const { initialize } = require("@aegis-auth/engine");
+const { initialize } = require("@aegis-v/engine");
 const path = require("path");
 const fs = require("fs");
 

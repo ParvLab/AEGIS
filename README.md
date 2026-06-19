@@ -8,8 +8,8 @@ Single-process, zero external servers, multi-language.
 [![CI — macOS](https://img.shields.io/github/actions/workflow/status/aegis-auth/aegis/ci.yml?branch=main&label=macOS&logo=apple)](https://github.com/aegis-auth/aegis/actions)
 [![Rust](https://img.shields.io/badge/rust_MSRV-1.96-dea584?logo=rust)](https://github.com/aegis-auth/aegis)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
-[![npm — @aegis-auth/engine](https://img.shields.io/npm/v/@aegis-auth/engine?label=%40aegis-auth%2Fengine&logo=npm)](https://www.npmjs.com/package/@aegis-auth/engine)
-[![npm — @aegis/browser](https://img.shields.io/npm/v/@aegis/browser?label=%40aegis%2Fbrowser&logo=npm)](https://www.npmjs.com/package/@aegis/browser)
+[![npm — @aegis-v/engine](https://img.shields.io/npm/v/@aegis-v/engine?label=%40aegis-auth%2Fengine&logo=npm)](https://www.npmjs.com/package/@aegis-v/engine)
+[![npm — @aegis-v/browser](https://img.shields.io/npm/v/@aegis-v/browser?label=%40aegis%2Fbrowser&logo=npm)](https://www.npmjs.com/package/@aegis-v/browser)
 [![PyPI — aegis-auth](https://img.shields.io/pypi/v/aegis-auth?label=aegis-auth&logo=pypi)](https://pypi.org/project/aegis-auth/)
 [![Go Reference](https://img.shields.io/badge/go-reference-00ADD8?logo=go)](https://pkg.go.dev/github.com/aegis-auth/aegis-go)
 
@@ -227,11 +227,11 @@ Aegis is a **relationship-based access control (ReBAC)** engine inspired by Goog
 
 | Language | Package | Directory | Bindings | Methods |
 |----------|---------|-----------|----------|---------|
-| Node.js | `@aegis-auth/engine` | `crates/aegis-napi/` | NAPI-RS (native) | 40+ |
+| Node.js | `@aegis-v/engine` | `crates/aegis-napi/` | NAPI-RS (native) | 40+ |
 | Python | `aegis-auth` | `crates/aegis-pyo3/` | PyO3 (native) | 30+ |
 | Go | `aegis-go` | `crates/aegis-go/` | CGo (C FFI) | 27 |
 | C | `aegis_ffi.h` | `crates/aegis-ffi/` | C FFI (cdylib) | 27 |
-| Browser | `@aegis/browser` | `packages/aegis-browser/` | WASM (wasm-pack) | 10 |
+| Browser | `@aegis-v/browser` | `packages/aegis-browser/` | WASM (wasm-pack) | 10 |
 | Rust | `aegis-core` | `crates/aegis-core/` | Native (direct) | Full API |
 
 ---
@@ -241,11 +241,11 @@ Aegis is a **relationship-based access control (ReBAC)** engine inspired by Goog
 ### Node.js
 
 ```bash
-npm install @aegis-auth/engine
+npm install @aegis-v/engine
 ```
 
 ```js
-const { Engine } = require('@aegis-auth/engine');
+const { Engine } = require('@aegis-v/engine');
 
 const engine = new Engine('aegis.db', `
 types:
@@ -356,11 +356,11 @@ Build: link against `libaegis_ffi.so` / `aegis_ffi.dll` / `libaegis_ffi.dylib`.
 ### Browser / WASM
 
 ```bash
-npm install @aegis/browser
+npm install @aegis-v/browser
 ```
 
 ```typescript
-import { createEngine } from '@aegis/browser';
+import { createEngine } from '@aegis-v/browser';
 
 const engine = await createEngine({
   schema: `
