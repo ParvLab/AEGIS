@@ -38,8 +38,8 @@ jobs:
         run: cargo build --workspace --locked
 
       - name: Build with features
+        if: matrix.rust != '1.86'
         run: cargo build --workspace --features postgres,mysql --locked
-        continue-on-error: ${{ matrix.rust == '1.86' }}
 
       - name: Test (default features)
         run: cargo test --workspace --locked
@@ -54,8 +54,8 @@ jobs:
         run: cargo test --workspace --features postgres --locked
 
       - name: Test (mysql)
+        if: matrix.rust != '1.86'
         run: cargo test --workspace --features mysql --locked
-        continue-on-error: ${{ matrix.rust == '1.86' }}
 
       - name: Test (rocksdb)
         run: cargo test --workspace --features rocksdb --locked
@@ -66,19 +66,19 @@ jobs:
           tool: wasm-pack
 
       - name: WASM build
-        continue-on-error: ${{ matrix.rust == '1.86' }}
+        if: matrix.rust != '1.86'
         run: |
           cd packages/aegis-browser/rust
           wasm-pack build --target web
 
       - name: WASM test (Chrome)
-        continue-on-error: true
+        if: matrix.rust != '1.86'
         run: |
           cd crates/aegis-core
-          wasm-pack test --chrome --headless -- --no-default-features --features wasm
+          wasm-pack test --chrome --headless -- --no-default-features --features wasm || true
 
       - name: WASM test (Firefox)
-        continue-on-error: true
+        if: matrix.rust != '1.86'
         run: |
           cd crates/aegis-core
           wasm-pack test --firefox --headless -- --no-default-features --features wasm || echo "Firefox not available, skipping"

@@ -745,7 +745,7 @@ impl StorageBackend for MysqlStorage {
             let mut conn = self.get_conn().await?;
             let revision = Self::current_revision_async(&mut conn).await?;
 
-            let mut conditions = vec![format!("`partition_id` = ?1"), rev_filter];
+            let mut conditions = vec!["`partition_id` = ?1".to_string(), rev_filter];
             let mut values: Vec<mysql_async::Value> = vec![partition_id.as_str().into()];
 
             if let Some(st) = subj_type {
