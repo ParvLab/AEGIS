@@ -133,6 +133,7 @@ fn js_to_tuple(val: &JsValue) -> AegisResult<RelationshipTuple> {
     Ok(t)
 }
 
+#[allow(dead_code)]
 fn event_to_js(e: &AuditEntry, previous_hash: Option<&str>, event_hash: Option<&str>) -> JsValue {
     let obj = Object::new();
     set_num(&obj, "revision", e.revision.as_u64() as f64);
@@ -191,6 +192,7 @@ fn js_to_event(val: &JsValue) -> AegisResult<AuditEntry> {
     })
 }
 
+#[allow(dead_code)]
 fn js_event_hash(val: &JsValue) -> (Option<String>, Option<String>) {
     (get_str(val, "previous_hash"), get_str(val, "event_hash"))
 }
