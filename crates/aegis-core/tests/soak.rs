@@ -1,9 +1,9 @@
 #![cfg(feature = "sqlite")]
 use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
-use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
 use aegis_core::storage::TupleFilter;
+use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::types::*;
 use std::time::Instant;
 
@@ -36,8 +36,8 @@ fn test_soak_no_memory_leak() {
     let start = Instant::now();
 
     for i in 0..iterations {
-        let subject = SubjectId::new(&format!("user:soak{}", i)).unwrap();
-        let resource = ResourceId::new(&format!("repo:soak{}", i)).unwrap();
+        let subject = SubjectId::new(format!("user:soak{}", i)).unwrap();
+        let resource = ResourceId::new(format!("repo:soak{}", i)).unwrap();
 
         // Write
         engine
@@ -99,8 +99,8 @@ fn test_throughput_target() {
 
     // Pre-seed tuples
     for i in 0..100 {
-        let subject = SubjectId::new(&format!("user:t{}", i)).unwrap();
-        let resource = ResourceId::new(&format!("repo:t{}", i)).unwrap();
+        let subject = SubjectId::new(format!("user:t{}", i)).unwrap();
+        let resource = ResourceId::new(format!("repo:t{}", i)).unwrap();
         engine
             .write(&RelationshipTuple::new(
                 subject,

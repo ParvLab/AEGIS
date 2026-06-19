@@ -1,12 +1,10 @@
 #![cfg(feature = "sqlite")]
 use aegis_core::engine::GraphEngine;
-use aegis_core::engine::{acl, condition, rbac};
 use aegis_core::engine::condition::ConditionEvalContext;
+use aegis_core::engine::{acl, condition, rbac};
 use aegis_core::schema::parse_schema;
 use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
-use aegis_core::types::{
-    PartitionId, Relation, RelationshipTuple, ResourceId, Schema, SubjectId,
-};
+use aegis_core::types::{PartitionId, Relation, RelationshipTuple, ResourceId, Schema, SubjectId};
 use std::collections::HashMap;
 
 fn make_schema_v2() -> Schema {
@@ -100,7 +98,8 @@ fn v2_m1_rbac_assign_check_unassign() {
     let token = rbac::assign_role(&engine, &alice, "owner", &repo).unwrap();
     assert!(token.revision.as_u64() > 0);
 
-    let result = rbac::check_role(&engine, &PartitionId::default(), &alice, "owner", &repo).unwrap();
+    let result =
+        rbac::check_role(&engine, &PartitionId::default(), &alice, "owner", &repo).unwrap();
     assert!(result.allowed);
 
     let roles = rbac::get_roles(&engine, &alice, &repo).unwrap();
@@ -108,7 +107,8 @@ fn v2_m1_rbac_assign_check_unassign() {
     assert!(roles.contains(&"owner".to_string()));
 
     rbac::unassign_role(&engine, &alice, "owner", &repo).unwrap();
-    let result = rbac::check_role(&engine, &PartitionId::default(), &alice, "owner", &repo).unwrap();
+    let result =
+        rbac::check_role(&engine, &PartitionId::default(), &alice, "owner", &repo).unwrap();
     assert!(!result.allowed);
 
     let roles = rbac::get_roles(&engine, &alice, &repo).unwrap();
@@ -154,7 +154,8 @@ fn v2_m1_rbac_role_does_not_imply_different_resource() {
 
     rbac::assign_role(&engine, &alice, "owner", &repo_a).unwrap();
 
-    let result = rbac::check_role(&engine, &PartitionId::default(), &alice, "owner", &repo_b).unwrap();
+    let result =
+        rbac::check_role(&engine, &PartitionId::default(), &alice, "owner", &repo_b).unwrap();
     assert!(!result.allowed);
 }
 
@@ -192,9 +193,7 @@ fn v2_m2_acl_grant_resolves_permission_to_relation() {
 
     acl::grant(&engine, &alice, "read", &repo).unwrap();
 
-    let tuples = engine
-        .list_by_object(&repo, None, None)
-        .unwrap();
+    let tuples = engine.list_by_object(&repo, None, None).unwrap();
     assert_eq!(tuples.len(), 1);
     assert_eq!(tuples[0].relation.as_str(), "viewer");
 }
@@ -316,7 +315,10 @@ fn v2_m4_tuple_future_expiry_still_works() {
     engine.write(&tuple).unwrap();
 
     let result = engine.check(&alice, "read", &repo, None).unwrap();
-    assert!(result.allowed, "future-expiry tuple should still grant access");
+    assert!(
+        result.allowed,
+        "future-expiry tuple should still grant access"
+    );
 }
 
 #[test]
@@ -336,7 +338,10 @@ fn v2_m5_abac_condition_with_context_integration() {
     let result = engine
         .check_with_context(&alice, "view", &doc, None, ctx)
         .unwrap();
-    assert!(result.allowed, "matching context (role eq admin) should allow");
+    assert!(
+        result.allowed,
+        "matching context (role eq admin) should allow"
+    );
 
     let mut ctx = condition::ConditionEvalContext::default();
     ctx.resource_meta
@@ -380,15 +385,23 @@ types:
     rbac::assign_role(&engine, &alice, "reader", &doc).unwrap();
 
     let mut ctx = condition::ConditionEvalContext::default();
-    ctx.subject_meta.insert("role".to_string(), "admin".to_string());
-    ctx.resource_meta.insert("region".to_string(), "us-east".to_string());
-    let result = engine.check_with_context(&alice, "view", &doc, None, ctx).unwrap();
+    ctx.subject_meta
+        .insert("role".to_string(), "admin".to_string());
+    ctx.resource_meta
+        .insert("region".to_string(), "us-east".to_string());
+    let result = engine
+        .check_with_context(&alice, "view", &doc, None, ctx)
+        .unwrap();
     assert!(result.allowed, "AND: both match should allow");
 
     let mut ctx = condition::ConditionEvalContext::default();
-    ctx.subject_meta.insert("role".to_string(), "admin".to_string());
-    ctx.resource_meta.insert("region".to_string(), "eu-west".to_string());
-    let result = engine.check_with_context(&alice, "view", &doc, None, ctx).unwrap();
+    ctx.subject_meta
+        .insert("role".to_string(), "admin".to_string());
+    ctx.resource_meta
+        .insert("region".to_string(), "eu-west".to_string());
+    let result = engine
+        .check_with_context(&alice, "view", &doc, None, ctx)
+        .unwrap();
     assert!(!result.allowed, "AND: one fails should deny");
 }
 
@@ -414,13 +427,19 @@ types:
     rbac::assign_role(&engine, &alice, "reader", &doc).unwrap();
 
     let mut ctx = condition::ConditionEvalContext::default();
-    ctx.resource_meta.insert("region".to_string(), "us-east".to_string());
-    let result = engine.check_with_context(&alice, "view", &doc, None, ctx).unwrap();
+    ctx.resource_meta
+        .insert("region".to_string(), "us-east".to_string());
+    let result = engine
+        .check_with_context(&alice, "view", &doc, None, ctx)
+        .unwrap();
     assert!(result.allowed, "NOT restricted should allow us-east");
 
     let mut ctx = condition::ConditionEvalContext::default();
-    ctx.resource_meta.insert("region".to_string(), "restricted".to_string());
-    let result = engine.check_with_context(&alice, "view", &doc, None, ctx).unwrap();
+    ctx.resource_meta
+        .insert("region".to_string(), "restricted".to_string());
+    let result = engine
+        .check_with_context(&alice, "view", &doc, None, ctx)
+        .unwrap();
     assert!(!result.allowed, "NOT restricted should deny restricted");
 }
 
@@ -436,7 +455,10 @@ fn v2_m6_effect_deny_on_permission() {
     assert!(view.allowed, "view permission should still allow");
 
     let blocked = engine.check(&alice, "blocked", &secret, None).unwrap();
-    assert!(!blocked.allowed, "blocked permission with Deny effect should deny");
+    assert!(
+        !blocked.allowed,
+        "blocked permission with Deny effect should deny"
+    );
 }
 
 #[test]
@@ -544,9 +566,7 @@ fn v2_m9_explain_shows_deny_path() {
     rbac::assign_role(&engine, &alice, "owner", &repo).unwrap();
     rbac::assign_role(&engine, &alice, "banned", &repo).unwrap();
 
-    let explain = engine
-        .explain(&alice, "read", &repo, None)
-        .unwrap();
+    let explain = engine.explain(&alice, "read", &repo, None).unwrap();
     assert!(!explain.allowed);
 }
 
@@ -572,7 +592,8 @@ fn v2_m10_abac_dry_run_with_context() {
     rbac::assign_role(&engine, &alice, "reader", &doc).unwrap();
 
     let mut ctx = condition::ConditionEvalContext::default();
-    ctx.subject_meta.insert("role".to_string(), "admin".to_string());
+    ctx.subject_meta
+        .insert("role".to_string(), "admin".to_string());
     let result = engine
         .check_dry_run_with_context(&alice, "view", &doc, None, ctx)
         .unwrap();
@@ -580,7 +601,6 @@ fn v2_m10_abac_dry_run_with_context() {
 }
 
 /// ── V2.5 Role hierarchy ──────────────────────────────────────────────────────
-
 fn make_schema_role_hierarchy() -> Schema {
     let yaml = r#"
 schemaVersion: 2
@@ -680,9 +700,18 @@ fn v2_5_role_hierarchy_get_roles_includes_inherited() {
     rbac::assign_role(&engine, &dave, "admin", &repo).unwrap();
 
     let roles = rbac::get_roles(&engine, &dave, &repo).unwrap();
-    assert!(roles.contains(&"admin".to_string()), "should have admin role");
-    assert!(roles.contains(&"editor".to_string()), "should have editor role (inherited)");
-    assert!(roles.contains(&"viewer".to_string()), "should have viewer role (inherited)");
+    assert!(
+        roles.contains(&"admin".to_string()),
+        "should have admin role"
+    );
+    assert!(
+        roles.contains(&"editor".to_string()),
+        "should have editor role (inherited)"
+    );
+    assert!(
+        roles.contains(&"viewer".to_string()),
+        "should have viewer role (inherited)"
+    );
 }
 
 #[test]
@@ -697,7 +726,10 @@ fn v2_5_role_hierarchy_check_role_resolves_inheritance() {
     // check_role for "viewer" should return true (editor inherits from viewer,
     // so editor IS considered a viewer too)
     let r = rbac::check_role(&engine, &PartitionId::default(), &eve, "viewer", &repo).unwrap();
-    assert!(r.allowed, "editor should be recognized as having viewer role via inheritance");
+    assert!(
+        r.allowed,
+        "editor should be recognized as having viewer role via inheritance"
+    );
 
     // check_role for "admin" should return false (editor does NOT inherit from admin)
     let r = rbac::check_role(&engine, &PartitionId::default(), &eve, "admin", &repo).unwrap();
@@ -705,7 +737,6 @@ fn v2_5_role_hierarchy_check_role_resolves_inheritance() {
 }
 
 /// ── V2.5 Subject-set resolution ──────────────────────────────────────────────
-
 fn make_schema_subject_set() -> Schema {
     let yaml = r#"
 schemaVersion: 2
@@ -752,12 +783,18 @@ fn v2_5_subject_set_direct_resolution() {
 
     // user:alice should be able to edit repo:fluxbus via subject-set resolution
     let result = engine.check(&alice, "edit", &repo, None).unwrap();
-    assert!(result.allowed, "alice should inherit editor via subject-set membership");
+    assert!(
+        result.allowed,
+        "alice should inherit editor via subject-set membership"
+    );
 
     // A non-member should NOT get access
     let bob = SubjectId::new("user:bob").unwrap();
     let result2 = engine.check(&bob, "edit", &repo, None).unwrap();
-    assert!(!result2.allowed, "bob should not have editor (not a member of team:eng)");
+    assert!(
+        !result2.allowed,
+        "bob should not have editor (not a member of team:eng)"
+    );
 }
 
 #[test]
@@ -799,7 +836,10 @@ fn v2_5_subject_set_non_member_denied() {
 
     // alice is NOT a member of team:eng, so should be denied
     let result = engine.check(&alice, "edit", &repo, None).unwrap();
-    assert!(!result.allowed, "alice is in team:sre, not team:eng — should be denied");
+    assert!(
+        !result.allowed,
+        "alice is in team:sre, not team:eng — should be denied"
+    );
 }
 
 #[test]
@@ -819,7 +859,10 @@ fn v2_5_conditional_tuple_denied_without_context() {
 
     // Without context, condition cannot be evaluated → tuple is skipped
     let result = engine.check(&alice, "read", &repo, None).unwrap();
-    assert!(!result.allowed, "conditional tuple should be denied without context");
+    assert!(
+        !result.allowed,
+        "conditional tuple should be denied without context"
+    );
 }
 
 #[test]
@@ -844,8 +887,13 @@ fn v2_5_conditional_tuple_allowed_with_matching_context() {
         ..Default::default()
     };
 
-    let result = engine.check_with_context(&alice, "read", &repo, None, ctx).unwrap();
-    assert!(result.allowed, "conditional tuple should be allowed with matching context");
+    let result = engine
+        .check_with_context(&alice, "read", &repo, None, ctx)
+        .unwrap();
+    assert!(
+        result.allowed,
+        "conditional tuple should be allowed with matching context"
+    );
 }
 
 #[test]
@@ -870,8 +918,13 @@ fn v2_5_conditional_tuple_denied_with_non_matching_context() {
         ..Default::default()
     };
 
-    let result = engine.check_with_context(&alice, "read", &repo, None, ctx).unwrap();
-    assert!(!result.allowed, "conditional tuple should be denied with non-matching context");
+    let result = engine
+        .check_with_context(&alice, "read", &repo, None, ctx)
+        .unwrap();
+    assert!(
+        !result.allowed,
+        "conditional tuple should be denied with non-matching context"
+    );
 }
 
 #[test]
@@ -890,7 +943,10 @@ fn v2_5_conditional_tuple_unconditional_tuples_still_work() {
         .unwrap();
 
     let result = engine.check(&alice, "read", &repo, None).unwrap();
-    assert!(result.allowed, "unconditional tuple should still work without context");
+    assert!(
+        result.allowed,
+        "unconditional tuple should still work without context"
+    );
 }
 
 #[test]
@@ -922,8 +978,11 @@ fn v2_5_conditional_tuple_with_expiry() {
         ..Default::default()
     };
 
-    let result = engine.check_with_context(&alice, "read", &repo, None, ctx).unwrap();
-    assert!(!result.allowed, "expired conditional tuple should be denied even with matching context");
+    let result = engine
+        .check_with_context(&alice, "read", &repo, None, ctx)
+        .unwrap();
+    assert!(
+        !result.allowed,
+        "expired conditional tuple should be denied even with matching context"
+    );
 }
-
-

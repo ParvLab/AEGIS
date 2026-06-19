@@ -73,11 +73,7 @@ pub fn assign_role(
     role: &str,
     resource: &ResourceId,
 ) -> AegisResult<RevisionToken> {
-    let tuple = RelationshipTuple::new(
-        subject.clone(),
-        Relation::new(role)?,
-        resource.clone(),
-    );
+    let tuple = RelationshipTuple::new(subject.clone(), Relation::new(role)?, resource.clone());
     engine.write(&tuple)
 }
 
@@ -122,9 +118,16 @@ pub fn check_role(
                 // Check if subject has the child role relation directly.
                 // Use list_by_subject to check for a direct tuple match,
                 // since engine.check would resolve it as a permission (not what we want).
-                let tuples = engine.list_by_subject(subject, Some(&Relation::new(child_role_name).unwrap()), None)?;
+                let tuples = engine.list_by_subject(
+                    subject,
+                    Some(&Relation::new(child_role_name).unwrap()),
+                    None,
+                )?;
                 if tuples.iter().any(|t| t.object == *resource) {
-                    let rev = engine.storage().current_revision(partition_id).unwrap_or(Revision::ZERO);
+                    let rev = engine
+                        .storage()
+                        .current_revision(partition_id)
+                        .unwrap_or(Revision::ZERO);
                     return Ok(CheckResult {
                         allowed: true,
                         revision: rev,
@@ -163,7 +166,12 @@ pub fn get_roles(
     if let Some(type_def) = schema.types.get(&resource_type) {
         // For each direct role, add its parent roles (reverse inheritance)
         for direct_role in &direct_roles {
-            add_inherited_roles(direct_role, &type_def.roles, &mut all_roles, &mut HashSet::new());
+            add_inherited_roles(
+                direct_role,
+                &type_def.roles,
+                &mut all_roles,
+                &mut HashSet::new(),
+            );
         }
     }
 

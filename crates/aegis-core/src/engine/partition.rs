@@ -1,7 +1,7 @@
 //! Partition management for isolated authorization graphs.
 
-use crate::error::AegisResult;
 use crate::engine::ratelimit::{RateLimitConfig, RateLimitOp, TokenBucketRateLimiter};
+use crate::error::AegisResult;
 use crate::types::PartitionId;
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -16,6 +16,12 @@ struct PartitionState {
     rate_limiter: TokenBucketRateLimiter,
 }
 
+impl Default for PartitionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PartitionManager {
     pub fn new() -> Self {
         Self {
@@ -28,26 +34,35 @@ impl PartitionManager {
 
     pub fn get_or_create(&self, partition_id: &PartitionId) -> AegisResult<PartitionHandle> {
         let key = partition_id.to_string();
-        let mut map = self.partitions.lock().map_err(|_| {
-            crate::error::AegisError::Internal("partition lock poisoned".into())
-        })?;
+        let mut map = self
+            .partitions
+            .lock()
+            .map_err(|_| crate::error::AegisError::Internal("partition lock poisoned".into()))?;
         if !map.contains_key(&key) {
-            map.insert(key.clone(), PartitionState {
-                rate_limiter: TokenBucketRateLimiter::new(RateLimitConfig::default()),
-            });
+            map.insert(
+                key.clone(),
+                PartitionState {
+                    rate_limiter: TokenBucketRateLimiter::new(RateLimitConfig::default()),
+                },
+            );
         }
-        Ok(PartitionHandle { partition_id: partition_id.clone() })
+        Ok(PartitionHandle {
+            partition_id: partition_id.clone(),
+        })
     }
 
     pub fn check_rate_limit(&self, partition_id: &PartitionId) -> AegisResult<()> {
         let key = partition_id.to_string();
+        #[allow(clippy::collapsible_if)]
         if let Ok(map) = self.partitions.lock() {
             if let Some(state) = map.get(&key) {
                 return state.rate_limiter.check(&key, RateLimitOp::Check);
             }
         }
         // If no partition-specific state, use default
-        self.default_partition.rate_limiter.check(&key, RateLimitOp::Check)
+        self.default_partition
+            .rate_limiter
+            .check(&key, RateLimitOp::Check)
     }
 }
 

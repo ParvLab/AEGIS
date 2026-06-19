@@ -4,20 +4,20 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use js_sys::{Array, Map, Object, Reflect};
-use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    IdbDatabase, IdbObjectStore, IdbOpenDbRequest, IdbRequest,
-    IdbTransaction, IdbTransactionMode, IdbVersionChangeEvent,
+    IdbDatabase, IdbObjectStore, IdbOpenDbRequest, IdbRequest, IdbTransaction, IdbTransactionMode,
+    IdbVersionChangeEvent,
 };
 
 use crate::error::{AegisError, AegisResult};
 use crate::storage::async_traits::{
     AsyncStorageBackend, AsyncStorageTransaction, StorageCapabilities,
 };
-use crate::storage::traits::{IntegrityReport, StorageMeta, TupleFilter};
 use crate::storage::traits::compute_event_hash;
+use crate::storage::traits::{IntegrityReport, StorageMeta, TupleFilter};
 use crate::types::{
     AuditEntry, ConsistencyMode, PaginatedTuples, PaginationParams, PartitionId, Relation,
     RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
@@ -52,11 +52,15 @@ fn set_val(obj: &Object, key: &str, val: &JsValue) {
 }
 
 fn get_str(val: &JsValue, key: &str) -> Option<String> {
-    Reflect::get(val, &JsValue::from_str(key)).ok().and_then(|v| v.as_string())
+    Reflect::get(val, &JsValue::from_str(key))
+        .ok()
+        .and_then(|v| v.as_string())
 }
 
 fn get_num(val: &JsValue, key: &str) -> Option<f64> {
-    Reflect::get(val, &JsValue::from_str(key)).ok().and_then(|v| v.as_f64())
+    Reflect::get(val, &JsValue::from_str(key))
+        .ok()
+        .and_then(|v| v.as_f64())
 }
 
 fn map_js(m: &HashMap<String, String>) -> JsValue {
@@ -69,7 +73,9 @@ fn map_js(m: &HashMap<String, String>) -> JsValue {
 
 fn map_rust(val: &JsValue) -> HashMap<String, String> {
     let mut m = HashMap::new();
-    let Some(js_map) = val.dyn_ref::<Map>() else { return m };
+    let Some(js_map) = val.dyn_ref::<Map>() else {
+        return m;
+    };
     js_map.for_each(&mut |v, k| {
         if let (Some(kk), Some(vv)) = (k.as_string(), v.as_string()) {
             m.insert(kk, vv);
@@ -127,10 +133,14 @@ fn js_to_tuple(val: &JsValue) -> AegisResult<RelationshipTuple> {
     Ok(t)
 }
 
+#[allow(dead_code)]
 fn event_to_js(e: &AuditEntry, previous_hash: Option<&str>, event_hash: Option<&str>) -> JsValue {
     let obj = Object::new();
     set_num(&obj, "revision", e.revision.as_u64() as f64);
-    let action = match e.action { TupleMutation::Add => "add", TupleMutation::Remove => "remove" };
+    let action = match e.action {
+        TupleMutation::Add => "add",
+        TupleMutation::Remove => "remove",
+    };
     set_str(&obj, "action", action);
     set_str(&obj, "subject", &e.subject);
     set_str(&obj, "relation", &e.relation);
@@ -160,10 +170,14 @@ fn js_to_event(val: &JsValue) -> AegisResult<AuditEntry> {
     let subject = get_str(val, "subject").unwrap_or_default();
     let relation = get_str(val, "relation").unwrap_or_default();
     let object = get_str(val, "object").unwrap_or_default();
-    let ts = get_str(val, "timestamp").unwrap_or_default()
-        .parse::<DateTime<Utc>>().unwrap_or_else(|_| Utc::now());
-    let metadata = Reflect::get(val, &JsValue::from_str("metadata")).ok()
-        .map(|v| map_rust(&v)).filter(|m| !m.is_empty());
+    let ts = get_str(val, "timestamp")
+        .unwrap_or_default()
+        .parse::<DateTime<Utc>>()
+        .unwrap_or_else(|_| Utc::now());
+    let metadata = Reflect::get(val, &JsValue::from_str("metadata"))
+        .ok()
+        .map(|v| map_rust(&v))
+        .filter(|m| !m.is_empty());
     let identity = get_str(val, "identity");
 
     Ok(AuditEntry {
@@ -178,15 +192,22 @@ fn js_to_event(val: &JsValue) -> AegisResult<AuditEntry> {
     })
 }
 
+#[allow(dead_code)]
 fn js_event_hash(val: &JsValue) -> (Option<String>, Option<String>) {
     (get_str(val, "previous_hash"), get_str(val, "event_hash"))
 }
 
 fn event_obj_from_fields(
-    revision: f64, action: &str,
-    subject: &str, relation: &str, object: &str,
-    timestamp: &str, metadata: Option<&str>, identity: Option<&str>,
-    previous_hash: &str, event_hash: &str,
+    revision: f64,
+    action: &str,
+    subject: &str,
+    relation: &str,
+    object: &str,
+    timestamp: &str,
+    metadata: Option<&str>,
+    identity: Option<&str>,
+    previous_hash: &str,
+    event_hash: &str,
 ) -> JsValue {
     let obj = Object::new();
     set_num(&obj, "revision", revision);
@@ -195,18 +216,27 @@ fn event_obj_from_fields(
     set_str(&obj, "relation", relation);
     set_str(&obj, "object", object);
     set_str(&obj, "timestamp", timestamp);
-    if let Some(m) = metadata { set_str(&obj, "metadata", m); }
-    if let Some(id) = identity { set_str(&obj, "identity", id); }
+    if let Some(m) = metadata {
+        set_str(&obj, "metadata", m);
+    }
+    if let Some(id) = identity {
+        set_str(&obj, "identity", id);
+    }
     set_str(&obj, "previous_hash", previous_hash);
     set_str(&obj, "event_hash", event_hash);
     obj.into()
 }
 
 async fn last_event_hash_s(txn: &IdbTransaction, store_name: &str) -> AegisResult<String> {
-    let store = txn.object_store(store_name)
+    let store = txn
+        .object_store(store_name)
         .map_err(|e| aegis_err(&format!("store {}: {:?}", store_name, e)))?;
-    let req = store.get_all().map_err(|e| aegis_err(&format!("get_all: {:?}", e)))?;
-    let val = req_future(req).await.map_err(|e| aegis_err(&format!("get_all rej: {:?}", e)))?;
+    let req = store
+        .get_all()
+        .map_err(|e| aegis_err(&format!("get_all: {:?}", e)))?;
+    let val = req_future(req)
+        .await
+        .map_err(|e| aegis_err(&format!("get_all rej: {:?}", e)))?;
     let arr: js_sys::Array = val.into();
     let mut best_rev = -1.0;
     let mut best_hash = String::new();
@@ -228,13 +258,23 @@ fn req_future(req: IdbRequest) -> JsFuture {
         let success_req = req.clone();
         let error_req = req.clone();
         let onsuccess = Closure::once_into_js(move || {
-            resolve.call1(&JsValue::null(), &success_req.result().ok().unwrap_or(JsValue::null())).ok();
+            resolve
+                .call1(
+                    &JsValue::null(),
+                    &success_req.result().ok().unwrap_or(JsValue::null()),
+                )
+                .ok();
         });
         let onerror = Closure::once_into_js(move || {
-            let msg = error_req.error().ok().flatten()
+            let msg = error_req
+                .error()
+                .ok()
+                .flatten()
                 .map(|d: web_sys::DomException| d.message())
                 .unwrap_or_else(|| "IndexedDB error".to_string());
-            reject.call1(&JsValue::null(), &JsValue::from_str(&msg)).ok();
+            reject
+                .call1(&JsValue::null(), &JsValue::from_str(&msg))
+                .ok();
         });
         req.set_onsuccess(Some(onsuccess.unchecked_ref()));
         req.set_onerror(Some(onerror.unchecked_ref()));
@@ -275,18 +315,29 @@ async fn open_db(name: &str, version: u32) -> AegisResult<IdbDatabase> {
     open_req.set_onupgradeneeded(Some(upgrade.as_ref().unchecked_ref()));
     upgrade.forget();
 
-    let val = req_future(open_req.into()).await
+    let val = req_future(open_req.into())
+        .await
         .map_err(|e| aegis_err(&format!("open rejected: {:?}", e)))?;
     Ok(val.into())
 }
 
-fn store<'a>(db: &'a IdbDatabase, name: &str, mode: IdbTransactionMode) -> AegisResult<IdbObjectStore> {
-    let txn = db.transaction_with_str_and_mode(name, mode)
+fn store<'a>(
+    db: &'a IdbDatabase,
+    name: &str,
+    mode: IdbTransactionMode,
+) -> AegisResult<IdbObjectStore> {
+    let txn = db
+        .transaction_with_str_and_mode(name, mode)
         .map_err(|e| aegis_err(&format!("txn: {:?}", e)))?;
-    txn.object_store(name).map_err(|e| aegis_err(&format!("store {}: {:?}", name, e)))
+    txn.object_store(name)
+        .map_err(|e| aegis_err(&format!("store {}: {:?}", name, e)))
 }
 
-fn multi_store_txn<'a>(db: &'a IdbDatabase, names: &[&str], mode: IdbTransactionMode) -> AegisResult<IdbTransaction> {
+fn multi_store_txn<'a>(
+    db: &'a IdbDatabase,
+    names: &[&str],
+    mode: IdbTransactionMode,
+) -> AegisResult<IdbTransaction> {
     let arr = js_sys::Array::new();
     for name in names {
         arr.push(&JsValue::from_str(name));
@@ -295,58 +346,95 @@ fn multi_store_txn<'a>(db: &'a IdbDatabase, names: &[&str], mode: IdbTransaction
         .map_err(|e| aegis_err(&format!("txn: {:?}", e)))
 }
 
-async fn put_s_in_txn(txn: &IdbTransaction, store_name: &str, key: &JsValue, val: &JsValue) -> AegisResult<()> {
-    let store = txn.object_store(store_name)
+async fn put_s_in_txn(
+    txn: &IdbTransaction,
+    store_name: &str,
+    key: &JsValue,
+    val: &JsValue,
+) -> AegisResult<()> {
+    let store = txn
+        .object_store(store_name)
         .map_err(|e| aegis_err(&format!("store {}: {:?}", store_name, e)))?;
-    let req = store.put_with_key(val, key)
+    let req = store
+        .put_with_key(val, key)
         .map_err(|e| aegis_err(&format!("put: {:?}", e)))?;
-    req_future(req).await.map_err(|e| aegis_err(&format!("put rej: {:?}", e)))?;
+    req_future(req)
+        .await
+        .map_err(|e| aegis_err(&format!("put rej: {:?}", e)))?;
     Ok(())
 }
 
 async fn del_s_in_txn(txn: &IdbTransaction, store_name: &str, key: &JsValue) -> AegisResult<()> {
-    let store = txn.object_store(store_name)
+    let store = txn
+        .object_store(store_name)
         .map_err(|e| aegis_err(&format!("store {}: {:?}", store_name, e)))?;
-    let req = store.delete(key).map_err(|e| aegis_err(&format!("del: {:?}", e)))?;
-    req_future(req).await.map_err(|e| aegis_err(&format!("del rej: {:?}", e)))?;
+    let req = store
+        .delete(key)
+        .map_err(|e| aegis_err(&format!("del: {:?}", e)))?;
+    req_future(req)
+        .await
+        .map_err(|e| aegis_err(&format!("del rej: {:?}", e)))?;
     Ok(())
 }
 
 async fn put_s(store: &IdbObjectStore, key: &JsValue, val: &JsValue) -> AegisResult<()> {
-    let req = store.put_with_key(val, key)
+    let req = store
+        .put_with_key(val, key)
         .map_err(|e| aegis_err(&format!("put: {:?}", e)))?;
-    req_future(req).await.map_err(|e| aegis_err(&format!("put rej: {:?}", e)))?;
+    req_future(req)
+        .await
+        .map_err(|e| aegis_err(&format!("put rej: {:?}", e)))?;
     Ok(())
 }
 
 async fn get_s(store: &IdbObjectStore, key: &JsValue) -> AegisResult<Option<JsValue>> {
-    let req = store.get(key).map_err(|e| aegis_err(&format!("get: {:?}", e)))?;
-    let val = req_future(req).await.map_err(|e| aegis_err(&format!("get rej: {:?}", e)))?;
+    let req = store
+        .get(key)
+        .map_err(|e| aegis_err(&format!("get: {:?}", e)))?;
+    let val = req_future(req)
+        .await
+        .map_err(|e| aegis_err(&format!("get rej: {:?}", e)))?;
     Ok((!val.is_null() && !val.is_undefined()).then_some(val))
 }
 
 async fn del_s(store: &IdbObjectStore, key: &JsValue) -> AegisResult<()> {
-    let req = store.delete(key).map_err(|e| aegis_err(&format!("del: {:?}", e)))?;
-    req_future(req).await.map_err(|e| aegis_err(&format!("del rej: {:?}", e)))?;
+    let req = store
+        .delete(key)
+        .map_err(|e| aegis_err(&format!("del: {:?}", e)))?;
+    req_future(req)
+        .await
+        .map_err(|e| aegis_err(&format!("del rej: {:?}", e)))?;
     Ok(())
 }
 
 async fn all_s(store: &IdbObjectStore) -> AegisResult<Vec<JsValue>> {
-    let req = store.get_all().map_err(|e| aegis_err(&format!("all: {:?}", e)))?;
-    let val = req_future(req).await.map_err(|e| aegis_err(&format!("all rej: {:?}", e)))?;
+    let req = store
+        .get_all()
+        .map_err(|e| aegis_err(&format!("all: {:?}", e)))?;
+    let val = req_future(req)
+        .await
+        .map_err(|e| aegis_err(&format!("all rej: {:?}", e)))?;
     let arr: Array = val.into();
     let mut out = Vec::with_capacity(arr.length() as usize);
-    for i in 0..arr.length() { out.push(arr.get(i)); }
+    for i in 0..arr.length() {
+        out.push(arr.get(i));
+    }
     Ok(out)
 }
 
 async fn all_keys_s(store: &IdbObjectStore) -> AegisResult<Vec<String>> {
-    let req = store.get_all_keys().map_err(|e| aegis_err(&format!("keys: {:?}", e)))?;
-    let val = req_future(req).await.map_err(|e| aegis_err(&format!("keys rej: {:?}", e)))?;
+    let req = store
+        .get_all_keys()
+        .map_err(|e| aegis_err(&format!("keys: {:?}", e)))?;
+    let val = req_future(req)
+        .await
+        .map_err(|e| aegis_err(&format!("keys rej: {:?}", e)))?;
     let arr: Array = val.into();
     let mut out = Vec::with_capacity(arr.length() as usize);
     for i in 0..arr.length() {
-        if let Some(s) = arr.get(i).as_string() { out.push(s); }
+        if let Some(s) = arr.get(i).as_string() {
+            out.push(s);
+        }
     }
     Ok(out)
 }
@@ -360,7 +448,9 @@ pub struct IndexedDbStorage {
 }
 
 impl IndexedDbStorage {
-    pub fn new() -> Self { Self::with_name(DB_NAME) }
+    pub fn new() -> Self {
+        Self::with_name(DB_NAME)
+    }
 
     pub fn with_name(name: &str) -> Self {
         Self {
@@ -373,7 +463,8 @@ impl IndexedDbStorage {
     }
 
     fn db(&self) -> AegisResult<IdbDatabase> {
-        self.db.lock()
+        self.db
+            .lock()
             .map_err(|e| aegis_err(&format!("lock: {}", e)))?
             .clone()
             .ok_or_else(|| aegis_err("IndexedDB not initialized"))
@@ -404,9 +495,18 @@ impl AsyncStorageBackend for IndexedDbStorage {
             }
         };
 
-        *self.current_rev.lock().map_err(|e| aegis_err(&format!("lock: {}", e)))? = rev.as_u64();
-        *self.db.lock().map_err(|e| aegis_err(&format!("lock: {}", e)))? = Some(db);
-        *self.schema_ver.lock().map_err(|e| aegis_err(&format!("lock: {}", e)))? = schema_ver;
+        *self
+            .current_rev
+            .lock()
+            .map_err(|e| aegis_err(&format!("lock: {}", e)))? = rev.as_u64();
+        *self
+            .db
+            .lock()
+            .map_err(|e| aegis_err(&format!("lock: {}", e)))? = Some(db);
+        *self
+            .schema_ver
+            .lock()
+            .map_err(|e| aegis_err(&format!("lock: {}", e)))? = schema_ver;
 
         Ok(StorageMeta {
             schema_version: schema_ver,
@@ -416,184 +516,389 @@ impl AsyncStorageBackend for IndexedDbStorage {
         })
     }
 
-    async fn write_tuple(&self, pid: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<Revision> {
+    async fn write_tuple(
+        &self,
+        pid: &PartitionId,
+        tuple: &RelationshipTuple,
+    ) -> AegisResult<Revision> {
         let db = self.db()?;
-        let txn = multi_store_txn(&db, &[STORE_TUPLES, STORE_EVENTS, STORE_REVISION], IdbTransactionMode::Readwrite)?;
+        let txn = multi_store_txn(
+            &db,
+            &[STORE_TUPLES, STORE_EVENTS, STORE_REVISION],
+            IdbTransactionMode::Readwrite,
+        )?;
 
         let cur = {
-            let mut rev = self.current_rev.lock().map_err(|e| aegis_err(&format!("lock: {}", e)))?;
+            let mut rev = self
+                .current_rev
+                .lock()
+                .map_err(|e| aegis_err(&format!("lock: {}", e)))?;
             *rev += 1;
             *rev
         };
         let rev = Revision::new(cur);
 
-        put_s_in_txn(&txn, STORE_REVISION, &rev_key(), &JsValue::from_f64(rev.as_u64() as f64)).await?;
-        put_s_in_txn(&txn, STORE_TUPLES, &JsValue::from_str(&pkey(pid, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str())), &tuple_to_js(tuple)).await?;
+        put_s_in_txn(
+            &txn,
+            STORE_REVISION,
+            &rev_key(),
+            &JsValue::from_f64(rev.as_u64() as f64),
+        )
+        .await?;
+        put_s_in_txn(
+            &txn,
+            STORE_TUPLES,
+            &JsValue::from_str(&pkey(
+                pid,
+                tuple.subject.as_str(),
+                tuple.relation.as_str(),
+                tuple.object.as_str(),
+            )),
+            &tuple_to_js(tuple),
+        )
+        .await?;
 
         let actor = self.actor.lock().ok().and_then(|g| g.clone());
         let action = "add";
         let now_rfc = Utc::now().to_rfc3339();
         let last_hash = last_event_hash_s(&txn, STORE_EVENTS).await?;
         let event_hash = compute_event_hash(
-            &last_hash, rev.as_u64() as i64, action,
-            tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(),
-            pid.as_str(), None, &now_rfc, actor.as_deref(),
+            &last_hash,
+            rev.as_u64() as i64,
+            action,
+            tuple.subject.as_str(),
+            tuple.relation.as_str(),
+            tuple.object.as_str(),
+            pid.as_str(),
+            None,
+            &now_rfc,
+            actor.as_deref(),
         );
         let event_obj = event_obj_from_fields(
-            rev.as_u64() as f64, action,
-            tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(),
-            &now_rfc, None, actor.as_deref(),
-            &last_hash, &event_hash,
+            rev.as_u64() as f64,
+            action,
+            tuple.subject.as_str(),
+            tuple.relation.as_str(),
+            tuple.object.as_str(),
+            &now_rfc,
+            None,
+            actor.as_deref(),
+            &last_hash,
+            &event_hash,
         );
-        put_s_in_txn(&txn, STORE_EVENTS, &JsValue::from_str(&ekey(pid, rev)), &event_obj).await?;
+        put_s_in_txn(
+            &txn,
+            STORE_EVENTS,
+            &JsValue::from_str(&ekey(pid, rev)),
+            &event_obj,
+        )
+        .await?;
 
         drop(txn);
         Ok(rev)
     }
 
-    async fn write_tuples_batch(&self, pid: &PartitionId, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
+    async fn write_tuples_batch(
+        &self,
+        pid: &PartitionId,
+        tuples: &[RelationshipTuple],
+    ) -> AegisResult<Revision> {
         let mut last = Revision::ZERO;
-        for t in tuples { last = self.write_tuple(pid, t).await?; }
+        for t in tuples {
+            last = self.write_tuple(pid, t).await?;
+        }
         Ok(last)
     }
 
     async fn delete_tuple(&self, pid: &PartitionId, key: &TupleKey) -> AegisResult<Revision> {
         let db = self.db()?;
-        let txn = multi_store_txn(&db, &[STORE_TUPLES, STORE_EVENTS, STORE_REVISION], IdbTransactionMode::Readwrite)?;
+        let txn = multi_store_txn(
+            &db,
+            &[STORE_TUPLES, STORE_EVENTS, STORE_REVISION],
+            IdbTransactionMode::Readwrite,
+        )?;
 
         let cur = {
-            let mut rev = self.current_rev.lock().map_err(|e| aegis_err(&format!("lock: {}", e)))?;
+            let mut rev = self
+                .current_rev
+                .lock()
+                .map_err(|e| aegis_err(&format!("lock: {}", e)))?;
             *rev += 1;
             *rev
         };
         let rev = Revision::new(cur);
 
-        put_s_in_txn(&txn, STORE_REVISION, &rev_key(), &JsValue::from_f64(rev.as_u64() as f64)).await?;
-        del_s_in_txn(&txn, STORE_TUPLES, &JsValue::from_str(&pkey(pid, key.subject.as_str(), key.relation.as_str(), key.object.as_str()))).await?;
+        put_s_in_txn(
+            &txn,
+            STORE_REVISION,
+            &rev_key(),
+            &JsValue::from_f64(rev.as_u64() as f64),
+        )
+        .await?;
+        del_s_in_txn(
+            &txn,
+            STORE_TUPLES,
+            &JsValue::from_str(&pkey(
+                pid,
+                key.subject.as_str(),
+                key.relation.as_str(),
+                key.object.as_str(),
+            )),
+        )
+        .await?;
 
         let actor = self.actor.lock().ok().and_then(|g| g.clone());
         let action = "remove";
         let now_rfc = Utc::now().to_rfc3339();
         let last_hash = last_event_hash_s(&txn, STORE_EVENTS).await?;
         let event_hash = compute_event_hash(
-            &last_hash, rev.as_u64() as i64, action,
-            key.subject.as_str(), key.relation.as_str(), key.object.as_str(),
-            pid.as_str(), None, &now_rfc, actor.as_deref(),
+            &last_hash,
+            rev.as_u64() as i64,
+            action,
+            key.subject.as_str(),
+            key.relation.as_str(),
+            key.object.as_str(),
+            pid.as_str(),
+            None,
+            &now_rfc,
+            actor.as_deref(),
         );
         let event_obj = event_obj_from_fields(
-            rev.as_u64() as f64, action,
-            key.subject.as_str(), key.relation.as_str(), key.object.as_str(),
-            &now_rfc, None, actor.as_deref(),
-            &last_hash, &event_hash,
+            rev.as_u64() as f64,
+            action,
+            key.subject.as_str(),
+            key.relation.as_str(),
+            key.object.as_str(),
+            &now_rfc,
+            None,
+            actor.as_deref(),
+            &last_hash,
+            &event_hash,
         );
-        put_s_in_txn(&txn, STORE_EVENTS, &JsValue::from_str(&ekey(pid, rev)), &event_obj).await?;
+        put_s_in_txn(
+            &txn,
+            STORE_EVENTS,
+            &JsValue::from_str(&ekey(pid, rev)),
+            &event_obj,
+        )
+        .await?;
         drop(txn);
         Ok(rev)
     }
 
-    async fn delete_subject(&self, pid: &PartitionId, subject: &SubjectId) -> AegisResult<Revision> {
+    async fn delete_subject(
+        &self,
+        pid: &PartitionId,
+        subject: &SubjectId,
+    ) -> AegisResult<Revision> {
         let prefix = format!("{}:{}:", pid.as_str(), subject.as_str());
         let tuples = self.scan_prefix(pid, &prefix).await?;
         let mut last = Revision::ZERO;
         for t in tuples {
-            last = self.delete_tuple(pid, &TupleKey { subject: t.subject, relation: t.relation, object: t.object }).await?;
+            last = self
+                .delete_tuple(
+                    pid,
+                    &TupleKey {
+                        subject: t.subject,
+                        relation: t.relation,
+                        object: t.object,
+                    },
+                )
+                .await?;
         }
-        if last == Revision::ZERO { last = self.current_revision(pid).await?; }
+        if last == Revision::ZERO {
+            last = self.current_revision(pid).await?;
+        }
         Ok(last)
     }
 
     async fn delete_object(&self, pid: &PartitionId, object: &ResourceId) -> AegisResult<Revision> {
-        let tuples = self.list_by_object(pid, object, None, &ConsistencyMode::MinimizeLatency).await?;
+        let tuples = self
+            .list_by_object(pid, object, None, &ConsistencyMode::MinimizeLatency)
+            .await?;
         let mut last = Revision::ZERO;
         for t in tuples {
-            last = self.delete_tuple(pid, &TupleKey { subject: t.subject, relation: t.relation, object: t.object }).await?;
+            last = self
+                .delete_tuple(
+                    pid,
+                    &TupleKey {
+                        subject: t.subject,
+                        relation: t.relation,
+                        object: t.object,
+                    },
+                )
+                .await?;
         }
-        if last == Revision::ZERO { last = self.current_revision(pid).await?; }
+        if last == Revision::ZERO {
+            last = self.current_revision(pid).await?;
+        }
         Ok(last)
     }
 
     async fn has_tuple(&self, pid: &PartitionId, key: &TupleKey) -> AegisResult<bool> {
         let s = store(&self.db()?, STORE_TUPLES, IdbTransactionMode::Readonly)?;
-        Ok(get_s(&s, &JsValue::from_str(&pkey(pid, key.subject.as_str(), key.relation.as_str(), key.object.as_str()))).await?.is_some())
+        Ok(get_s(
+            &s,
+            &JsValue::from_str(&pkey(
+                pid,
+                key.subject.as_str(),
+                key.relation.as_str(),
+                key.object.as_str(),
+            )),
+        )
+        .await?
+        .is_some())
     }
 
-    async fn read_tuple(&self, pid: &PartitionId, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>> {
+    async fn read_tuple(
+        &self,
+        pid: &PartitionId,
+        key: &TupleKey,
+    ) -> AegisResult<Option<RelationshipTuple>> {
         let s = store(&self.db()?, STORE_TUPLES, IdbTransactionMode::Readonly)?;
-        match get_s(&s, &JsValue::from_str(&pkey(pid, key.subject.as_str(), key.relation.as_str(), key.object.as_str()))).await? {
+        match get_s(
+            &s,
+            &JsValue::from_str(&pkey(
+                pid,
+                key.subject.as_str(),
+                key.relation.as_str(),
+                key.object.as_str(),
+            )),
+        )
+        .await?
+        {
             Some(v) => Ok(Some(js_to_tuple(&v)?)),
             None => Ok(None),
         }
     }
 
-    async fn list_by_object(&self, _pid: &PartitionId, object: &ResourceId, relation: Option<&Relation>, _consistency: &ConsistencyMode) -> AegisResult<Vec<RelationshipTuple>> {
+    async fn list_by_object(
+        &self,
+        _pid: &PartitionId,
+        object: &ResourceId,
+        relation: Option<&Relation>,
+        _consistency: &ConsistencyMode,
+    ) -> AegisResult<Vec<RelationshipTuple>> {
         let s = store(&self.db()?, STORE_TUPLES, IdbTransactionMode::Readonly)?;
         let all = all_s(&s).await?;
         let mut out = Vec::new();
         for v in all {
             let t = js_to_tuple(&v)?;
-            if t.object == *object && relation.map_or(true, |r| t.relation == *r) { out.push(t); }
+            if t.object == *object && relation.map_or(true, |r| t.relation == *r) {
+                out.push(t);
+            }
         }
         Ok(out)
     }
 
-    async fn list_by_subject(&self, _pid: &PartitionId, subject: &SubjectId, relation: Option<&Relation>, _consistency: &ConsistencyMode) -> AegisResult<Vec<RelationshipTuple>> {
+    async fn list_by_subject(
+        &self,
+        _pid: &PartitionId,
+        subject: &SubjectId,
+        relation: Option<&Relation>,
+        _consistency: &ConsistencyMode,
+    ) -> AegisResult<Vec<RelationshipTuple>> {
         let s = store(&self.db()?, STORE_TUPLES, IdbTransactionMode::Readonly)?;
         let all = all_s(&s).await?;
         let mut out = Vec::new();
         for v in all {
             let t = js_to_tuple(&v)?;
-            if t.subject == *subject && relation.map_or(true, |r| t.relation == *r) { out.push(t); }
+            if t.subject == *subject && relation.map_or(true, |r| t.relation == *r) {
+                out.push(t);
+            }
         }
         Ok(out)
     }
 
-    async fn list_by_relation(&self, _pid: &PartitionId, object: &ResourceId, relation: &Relation) -> AegisResult<Vec<RelationshipTuple>> {
+    async fn list_by_relation(
+        &self,
+        _pid: &PartitionId,
+        object: &ResourceId,
+        relation: &Relation,
+    ) -> AegisResult<Vec<RelationshipTuple>> {
         let s = store(&self.db()?, STORE_TUPLES, IdbTransactionMode::Readonly)?;
         let all = all_s(&s).await?;
         let mut out = Vec::new();
         for v in all {
             let t = js_to_tuple(&v)?;
-            if t.object == *object && t.relation == *relation { out.push(t); }
+            if t.object == *object && t.relation == *relation {
+                out.push(t);
+            }
         }
         Ok(out)
     }
 
-    async fn query_tuples(&self, pid: &PartitionId, filter: &TupleFilter, pagination: &PaginationParams, _consistency: &ConsistencyMode) -> AegisResult<PaginatedTuples> {
+    async fn query_tuples(
+        &self,
+        pid: &PartitionId,
+        filter: &TupleFilter,
+        pagination: &PaginationParams,
+        _consistency: &ConsistencyMode,
+    ) -> AegisResult<PaginatedTuples> {
         let s = store(&self.db()?, STORE_TUPLES, IdbTransactionMode::Readonly)?;
         let all = all_s(&s).await?;
         let mut filtered: Vec<RelationshipTuple> = Vec::new();
         for v in all {
             let t = js_to_tuple(&v)?;
-            if filter.subject_type.as_ref().map_or(true, |st| t.subject.as_str().starts_with(st.trim_end_matches('#')))
-                && filter.relation.as_ref().map_or(true, |r| t.relation == *r)
-                && filter.object_type.as_ref().map_or(true, |ot| t.object.as_str().starts_with(ot))
-            { filtered.push(t); }
+            if filter.subject_type.as_ref().map_or(true, |st| {
+                t.subject.as_str().starts_with(st.trim_end_matches('#'))
+            }) && filter.relation.as_ref().map_or(true, |r| t.relation == *r)
+                && filter
+                    .object_type
+                    .as_ref()
+                    .map_or(true, |ot| t.object.as_str().starts_with(ot))
+            {
+                filtered.push(t);
+            }
         }
         let total = filtered.len();
-        let offset = pagination.cursor.as_ref().map(|c| c.offset as usize).unwrap_or(0);
+        let offset = pagination
+            .cursor
+            .as_ref()
+            .map(|c| c.offset as usize)
+            .unwrap_or(0);
         let limit = pagination.limit as usize;
         let has_more = offset + limit < total;
         filtered = filtered.into_iter().skip(offset).take(limit).collect();
         let revision = self.current_revision(pid).await?;
         Ok(PaginatedTuples {
             tuples: filtered,
-            next_cursor: has_more.then_some(crate::types::PaginationCursor { offset: (offset + limit) as u64, revision }),
+            next_cursor: has_more.then_some(crate::types::PaginationCursor {
+                offset: (offset + limit) as u64,
+                revision,
+            }),
             revision,
         })
     }
 
     async fn current_revision(&self, _pid: &PartitionId) -> AegisResult<Revision> {
-        Ok(Revision::new(*self.current_rev.lock().map_err(|e| aegis_err(&format!("lock: {}", e)))?))
+        Ok(Revision::new(
+            *self
+                .current_rev
+                .lock()
+                .map_err(|e| aegis_err(&format!("lock: {}", e)))?,
+        ))
     }
 
     async fn read_schema_version(&self) -> AegisResult<u32> {
-        Ok(*self.schema_ver.lock().map_err(|e| aegis_err(&format!("lock: {}", e)))?)
+        Ok(*self
+            .schema_ver
+            .lock()
+            .map_err(|e| aegis_err(&format!("lock: {}", e)))?)
     }
 
     async fn write_schema_version(&self, version: u32) -> AegisResult<()> {
         let s = store(&self.db()?, STORE_SCHEMA, IdbTransactionMode::Readwrite)?;
-        put_s(&s, &JsValue::from_str("version"), &JsValue::from_f64(version as f64)).await?;
-        *self.schema_ver.lock().map_err(|e| aegis_err(&format!("lock: {}", e)))? = version;
+        put_s(
+            &s,
+            &JsValue::from_str("version"),
+            &JsValue::from_f64(version as f64),
+        )
+        .await?;
+        *self
+            .schema_ver
+            .lock()
+            .map_err(|e| aegis_err(&format!("lock: {}", e)))? = version;
         Ok(())
     }
 
@@ -602,9 +907,15 @@ impl AsyncStorageBackend for IndexedDbStorage {
         Ok(RevisionToken::new(rev, uuid::Uuid::new_v4()))
     }
 
-    async fn begin_transaction(&self, _pid: &PartitionId) -> AegisResult<Box<dyn AsyncStorageTransaction>> {
+    async fn begin_transaction(
+        &self,
+        _pid: &PartitionId,
+    ) -> AegisResult<Box<dyn AsyncStorageTransaction>> {
         let db = self.db()?;
-        let rev = *self.current_rev.lock().map_err(|e| aegis_err(&format!("lock: {}", e)))?;
+        let rev = *self
+            .current_rev
+            .lock()
+            .map_err(|e| aegis_err(&format!("lock: {}", e)))?;
         let actor = self.actor.lock().ok().and_then(|g| g.clone());
         Ok(Box::new(IndexedDbTransaction {
             db,
@@ -614,7 +925,14 @@ impl AsyncStorageBackend for IndexedDbStorage {
         }))
     }
 
-    async fn query_audit(&self, _pid: &PartitionId, object: Option<&ResourceId>, from: Option<Revision>, to: Option<Revision>, _p: &PaginationParams) -> AegisResult<Vec<AuditEntry>> {
+    async fn query_audit(
+        &self,
+        _pid: &PartitionId,
+        object: Option<&ResourceId>,
+        from: Option<Revision>,
+        to: Option<Revision>,
+        _p: &PaginationParams,
+    ) -> AegisResult<Vec<AuditEntry>> {
         let s = store(&self.db()?, STORE_EVENTS, IdbTransactionMode::Readonly)?;
         let all = all_s(&s).await?;
         let mut out: Vec<AuditEntry> = Vec::new();
@@ -623,7 +941,9 @@ impl AsyncStorageBackend for IndexedDbStorage {
             if object.map_or(true, |o| e.object == o.as_str())
                 && from.map_or(true, |f| e.revision >= f)
                 && to.map_or(true, |t| e.revision <= t)
-            { out.push(e); }
+            {
+                out.push(e);
+            }
         }
         out.sort_by_key(|e| e.revision);
         Ok(out)
@@ -640,7 +960,11 @@ impl AsyncStorageBackend for IndexedDbStorage {
         })
     }
 
-    async fn delete_events_before(&self, pid: &PartitionId, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+    async fn delete_events_before(
+        &self,
+        pid: &PartitionId,
+        cutoff: DateTime<Utc>,
+    ) -> AegisResult<usize> {
         let s = store(&self.db()?, STORE_EVENTS, IdbTransactionMode::Readwrite)?;
         let all = all_s(&s).await?;
         let mut n = 0;
@@ -654,15 +978,33 @@ impl AsyncStorageBackend for IndexedDbStorage {
         Ok(n)
     }
 
-    async fn compact_events(&self, _pid: &PartitionId) -> AegisResult<usize> { Ok(0) }
-    async fn delete_soft_deleted_tuples_before(&self, _pid: &PartitionId, _cutoff: DateTime<Utc>) -> AegisResult<usize> { Ok(0) }
+    async fn compact_events(&self, _pid: &PartitionId) -> AegisResult<usize> {
+        Ok(0)
+    }
+    async fn delete_soft_deleted_tuples_before(
+        &self,
+        _pid: &PartitionId,
+        _cutoff: DateTime<Utc>,
+    ) -> AegisResult<usize> {
+        Ok(0)
+    }
 
-    async fn recover_from_events(&self, pid: &PartitionId, to_rev: Option<Revision>) -> AegisResult<Revision> {
-        let events = self.query_audit(pid, None, None, to_rev, &PaginationParams::default()).await?;
+    async fn recover_from_events(
+        &self,
+        pid: &PartitionId,
+        to_rev: Option<Revision>,
+    ) -> AegisResult<Revision> {
+        let events = self
+            .query_audit(pid, None, None, to_rev, &PaginationParams::default())
+            .await?;
         let s = store(&self.db()?, STORE_TUPLES, IdbTransactionMode::Readwrite)?;
         let all = all_keys_s(&s).await?;
         let prefix = format!("{}:", pid.as_str());
-        for k in all { if k.starts_with(&prefix) { del_s(&s, &JsValue::from_str(&k)).await?; } }
+        for k in all {
+            if k.starts_with(&prefix) {
+                del_s(&s, &JsValue::from_str(&k)).await?;
+            }
+        }
         let mut last = Revision::ZERO;
         for e in &events {
             match e.action {
@@ -672,10 +1014,19 @@ impl AsyncStorageBackend for IndexedDbStorage {
                         Relation::new(&e.relation).map_err(|e| AegisError::Validation(e))?,
                         ResourceId::new(&e.object).map_err(|e| AegisError::Validation(e))?,
                     );
-                    put_s(&s, &JsValue::from_str(&pkey(pid, &e.subject, &e.relation, &e.object)), &tuple_to_js(&t)).await?;
+                    put_s(
+                        &s,
+                        &JsValue::from_str(&pkey(pid, &e.subject, &e.relation, &e.object)),
+                        &tuple_to_js(&t),
+                    )
+                    .await?;
                 }
                 TupleMutation::Remove => {
-                    del_s(&s, &JsValue::from_str(&pkey(pid, &e.subject, &e.relation, &e.object))).await?;
+                    del_s(
+                        &s,
+                        &JsValue::from_str(&pkey(pid, &e.subject, &e.relation, &e.object)),
+                    )
+                    .await?;
                 }
             }
             last = e.revision;
@@ -683,31 +1034,70 @@ impl AsyncStorageBackend for IndexedDbStorage {
         Ok(last)
     }
 
-    async fn restore_backup(&self, pid: &PartitionId, tuples: &[RelationshipTuple], events: &[AuditEntry], revision: Revision) -> AegisResult<()> {
+    async fn restore_backup(
+        &self,
+        pid: &PartitionId,
+        tuples: &[RelationshipTuple],
+        events: &[AuditEntry],
+        revision: Revision,
+    ) -> AegisResult<()> {
         let _ = self.recover_from_events(pid, None).await?;
         let s = store(&self.db()?, STORE_TUPLES, IdbTransactionMode::Readwrite)?;
-        for t in tuples { put_s(&s, &JsValue::from_str(&pkey(pid, t.subject.as_str(), t.relation.as_str(), t.object.as_str())), &tuple_to_js(t)).await?; }
+        for t in tuples {
+            put_s(
+                &s,
+                &JsValue::from_str(&pkey(
+                    pid,
+                    t.subject.as_str(),
+                    t.relation.as_str(),
+                    t.object.as_str(),
+                )),
+                &tuple_to_js(t),
+            )
+            .await?;
+        }
         let se = store(&self.db()?, STORE_EVENTS, IdbTransactionMode::Readwrite)?;
         let mut last_hash = String::new();
         for e in events {
-            let action_str = match e.action { TupleMutation::Add => "add", TupleMutation::Remove => "remove" };
+            let action_str = match e.action {
+                TupleMutation::Add => "add",
+                TupleMutation::Remove => "remove",
+            };
             let ts = e.timestamp.to_rfc3339();
             let event_hash = compute_event_hash(
-                &last_hash, e.revision.as_u64() as i64, action_str,
-                &e.subject, &e.relation, &e.object,
-                pid.as_str(), None, &ts, e.identity.as_deref(),
+                &last_hash,
+                e.revision.as_u64() as i64,
+                action_str,
+                &e.subject,
+                &e.relation,
+                &e.object,
+                pid.as_str(),
+                None,
+                &ts,
+                e.identity.as_deref(),
             );
             let event_obj = event_obj_from_fields(
-                e.revision.as_u64() as f64, action_str,
-                &e.subject, &e.relation, &e.object,
-                &ts, None, e.identity.as_deref(),
-                &last_hash, &event_hash,
+                e.revision.as_u64() as f64,
+                action_str,
+                &e.subject,
+                &e.relation,
+                &e.object,
+                &ts,
+                None,
+                e.identity.as_deref(),
+                &last_hash,
+                &event_hash,
             );
             put_s(&se, &JsValue::from_str(&ekey(pid, e.revision)), &event_obj).await?;
             last_hash = event_hash;
         }
         let sr = store(&self.db()?, STORE_REVISION, IdbTransactionMode::Readwrite)?;
-        put_s(&sr, &rev_key(), &JsValue::from_f64(revision.as_u64() as f64)).await?;
+        put_s(
+            &sr,
+            &rev_key(),
+            &JsValue::from_f64(revision.as_u64() as f64),
+        )
+        .await?;
         Ok(())
     }
 
@@ -719,22 +1109,45 @@ impl AsyncStorageBackend for IndexedDbStorage {
     }
 
     async fn close(&self) -> AegisResult<()> {
-        if let Ok(mut g) = self.db.lock() { *g = None; }
+        if let Ok(mut g) = self.db.lock() {
+            *g = None;
+        }
         Ok(())
     }
 
-    async fn save_policy_draft(&self, draft: &crate::engine::policy_lifecycle::PolicyDraft) -> AegisResult<()> {
-        let s = store(&self.db()?, STORE_POLICY_DRAFTS, IdbTransactionMode::Readwrite)?;
-        let json = serde_json::to_string(draft).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
-        put_s(&s, &JsValue::from_str(&draft.id.to_string()), &JsValue::from_str(&json)).await
+    async fn save_policy_draft(
+        &self,
+        draft: &crate::engine::policy_lifecycle::PolicyDraft,
+    ) -> AegisResult<()> {
+        let s = store(
+            &self.db()?,
+            STORE_POLICY_DRAFTS,
+            IdbTransactionMode::Readwrite,
+        )?;
+        let json =
+            serde_json::to_string(draft).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
+        put_s(
+            &s,
+            &JsValue::from_str(&draft.id.to_string()),
+            &JsValue::from_str(&json),
+        )
+        .await
     }
 
-    async fn load_policy_draft(&self, id: &str) -> AegisResult<Option<crate::engine::policy_lifecycle::PolicyDraft>> {
-        let s = store(&self.db()?, STORE_POLICY_DRAFTS, IdbTransactionMode::Readonly)?;
+    async fn load_policy_draft(
+        &self,
+        id: &str,
+    ) -> AegisResult<Option<crate::engine::policy_lifecycle::PolicyDraft>> {
+        let s = store(
+            &self.db()?,
+            STORE_POLICY_DRAFTS,
+            IdbTransactionMode::Readonly,
+        )?;
         match get_s(&s, &JsValue::from_str(id)).await? {
             Some(v) => {
                 let json = v.as_string().ok_or_else(|| aegis_err("expected string"))?;
-                let draft = serde_json::from_str(&json).map_err(|e| aegis_err(&format!("deserialize: {}", e)))?;
+                let draft = serde_json::from_str(&json)
+                    .map_err(|e| aegis_err(&format!("deserialize: {}", e)))?;
                 Ok(Some(draft))
             }
             None => Ok(None),
@@ -742,7 +1155,11 @@ impl AsyncStorageBackend for IndexedDbStorage {
     }
 
     async fn delete_policy_draft(&self, id: &str) -> AegisResult<bool> {
-        let s = store(&self.db()?, STORE_POLICY_DRAFTS, IdbTransactionMode::Readwrite)?;
+        let s = store(
+            &self.db()?,
+            STORE_POLICY_DRAFTS,
+            IdbTransactionMode::Readwrite,
+        )?;
         let exists = get_s(&s, &JsValue::from_str(id)).await?.is_some();
         if exists {
             del_s(&s, &JsValue::from_str(id)).await?;
@@ -752,14 +1169,31 @@ impl AsyncStorageBackend for IndexedDbStorage {
         }
     }
 
-    async fn save_analysis_schedule(&self, schedule: &crate::engine::scheduler::AnalysisSchedule) -> AegisResult<()> {
-        let s = store(&self.db()?, STORE_ANALYSIS_SCHEDULES, IdbTransactionMode::Readwrite)?;
-        let json = serde_json::to_string(schedule).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
-        put_s(&s, &JsValue::from_str(&schedule.id.to_string()), &JsValue::from_str(&json)).await
+    async fn save_analysis_schedule(
+        &self,
+        schedule: &crate::engine::scheduler::AnalysisSchedule,
+    ) -> AegisResult<()> {
+        let s = store(
+            &self.db()?,
+            STORE_ANALYSIS_SCHEDULES,
+            IdbTransactionMode::Readwrite,
+        )?;
+        let json =
+            serde_json::to_string(schedule).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
+        put_s(
+            &s,
+            &JsValue::from_str(&schedule.id.to_string()),
+            &JsValue::from_str(&json),
+        )
+        .await
     }
 
     async fn delete_analysis_schedule(&self, id: &str) -> AegisResult<bool> {
-        let s = store(&self.db()?, STORE_ANALYSIS_SCHEDULES, IdbTransactionMode::Readwrite)?;
+        let s = store(
+            &self.db()?,
+            STORE_ANALYSIS_SCHEDULES,
+            IdbTransactionMode::Readwrite,
+        )?;
         let exists = get_s(&s, &JsValue::from_str(id)).await?.is_some();
         if exists {
             del_s(&s, &JsValue::from_str(id)).await?;
@@ -769,16 +1203,42 @@ impl AsyncStorageBackend for IndexedDbStorage {
         }
     }
 
-    async fn save_analysis_run(&self, run: &crate::engine::scheduler::AnalysisRun) -> AegisResult<()> {
-        let s = store(&self.db()?, STORE_ANALYSIS_RUNS, IdbTransactionMode::Readwrite)?;
-        let json = serde_json::to_string(run).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
-        put_s(&s, &JsValue::from_str(&run.id.to_string()), &JsValue::from_str(&json)).await
+    async fn save_analysis_run(
+        &self,
+        run: &crate::engine::scheduler::AnalysisRun,
+    ) -> AegisResult<()> {
+        let s = store(
+            &self.db()?,
+            STORE_ANALYSIS_RUNS,
+            IdbTransactionMode::Readwrite,
+        )?;
+        let json =
+            serde_json::to_string(run).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
+        put_s(
+            &s,
+            &JsValue::from_str(&run.id.to_string()),
+            &JsValue::from_str(&json),
+        )
+        .await
     }
 
-    async fn save_enforcement_event(&self, event: &crate::engine::enforcement_history::EnforcementEvent) -> AegisResult<()> {
-        let s = store(&self.db()?, STORE_ENFORCEMENT_EVENTS, IdbTransactionMode::Readwrite)?;
-        let json = serde_json::to_string(event).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
-        put_s(&s, &JsValue::from_str(&event.id.to_string()), &JsValue::from_str(&json)).await
+    async fn save_enforcement_event(
+        &self,
+        event: &crate::engine::enforcement_history::EnforcementEvent,
+    ) -> AegisResult<()> {
+        let s = store(
+            &self.db()?,
+            STORE_ENFORCEMENT_EVENTS,
+            IdbTransactionMode::Readwrite,
+        )?;
+        let json =
+            serde_json::to_string(event).map_err(|e| aegis_err(&format!("serialize: {}", e)))?;
+        put_s(
+            &s,
+            &JsValue::from_str(&event.id.to_string()),
+            &JsValue::from_str(&json),
+        )
+        .await
     }
 
     async fn verify_audit_chain(&self, pid: &PartitionId) -> AegisResult<Option<String>> {
@@ -801,7 +1261,8 @@ impl AsyncStorageBackend for IndexedDbStorage {
             let revision = get_num(val, "revision").unwrap_or(0.0) as i64;
             let timestamp = get_str(val, "timestamp").unwrap_or_default();
             let identity = get_str(val, "identity");
-            let metadata = Reflect::get(val, &JsValue::from_str("metadata")).ok()
+            let metadata = Reflect::get(val, &JsValue::from_str("metadata"))
+                .ok()
                 .and_then(|v| v.as_string());
             let stored_prev_hash = get_str(val, "previous_hash").unwrap_or_default();
             let stored_event_hash = get_str(val, "event_hash").unwrap_or_default();
@@ -814,8 +1275,16 @@ impl AsyncStorageBackend for IndexedDbStorage {
             }
 
             let expected = compute_event_hash(
-                &last_event_hash, revision, &action, &subject, &relation, &object,
-                pid.as_str(), metadata.as_deref(), &timestamp, identity.as_deref(),
+                &last_event_hash,
+                revision,
+                &action,
+                &subject,
+                &relation,
+                &object,
+                pid.as_str(),
+                metadata.as_deref(),
+                &timestamp,
+                identity.as_deref(),
             );
 
             if !stored_event_hash.is_empty() && expected != stored_event_hash {
@@ -836,14 +1305,25 @@ impl AsyncStorageBackend for IndexedDbStorage {
 }
 
 impl IndexedDbStorage {
-    async fn scan_prefix(&self, pid: &PartitionId, prefix: &str) -> AegisResult<Vec<RelationshipTuple>> {
+    async fn scan_prefix(
+        &self,
+        pid: &PartitionId,
+        prefix: &str,
+    ) -> AegisResult<Vec<RelationshipTuple>> {
         let s = store(&self.db()?, STORE_TUPLES, IdbTransactionMode::Readonly)?;
         let all = all_s(&s).await?;
         let mut out = Vec::new();
         for v in all {
             let t = js_to_tuple(&v)?;
-            let k = pkey(pid, t.subject.as_str(), t.relation.as_str(), t.object.as_str());
-            if k.starts_with(prefix) { out.push(t); }
+            let k = pkey(
+                pid,
+                t.subject.as_str(),
+                t.relation.as_str(),
+                t.object.as_str(),
+            );
+            if k.starts_with(prefix) {
+                out.push(t);
+            }
         }
         Ok(out)
     }
@@ -858,20 +1338,36 @@ struct IndexedDbTransaction {
 
 #[async_trait(?Send)]
 impl AsyncStorageTransaction for IndexedDbTransaction {
-    async fn write(&mut self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<()> {
-        self.pending.push((partition_id.clone(), TupleMutation::Add, tuple.clone()));
+    async fn write(
+        &mut self,
+        partition_id: &PartitionId,
+        tuple: &RelationshipTuple,
+    ) -> AegisResult<()> {
+        self.pending
+            .push((partition_id.clone(), TupleMutation::Add, tuple.clone()));
         Ok(())
     }
 
     async fn delete(&mut self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<()> {
-        let tuple = RelationshipTuple::new(key.subject.clone(), key.relation.clone(), key.object.clone());
-        self.pending.push((partition_id.clone(), TupleMutation::Remove, tuple));
+        let tuple = RelationshipTuple::new(
+            key.subject.clone(),
+            key.relation.clone(),
+            key.object.clone(),
+        );
+        self.pending
+            .push((partition_id.clone(), TupleMutation::Remove, tuple));
         Ok(())
     }
 
-    async fn savepoint(&self, _name: &str) -> AegisResult<()> { Ok(()) }
-    async fn rollback_to_savepoint(&self, _name: &str) -> AegisResult<()> { Ok(()) }
-    async fn release_savepoint(&self, _name: &str) -> AegisResult<()> { Ok(()) }
+    async fn savepoint(&self, _name: &str) -> AegisResult<()> {
+        Ok(())
+    }
+    async fn rollback_to_savepoint(&self, _name: &str) -> AegisResult<()> {
+        Ok(())
+    }
+    async fn release_savepoint(&self, _name: &str) -> AegisResult<()> {
+        Ok(())
+    }
 
     async fn set_actor_identity(&mut self, identity: Option<String>) -> Option<String> {
         let prev = self.actor.clone();
@@ -880,18 +1376,39 @@ impl AsyncStorageTransaction for IndexedDbTransaction {
     }
 
     async fn commit(self: Box<Self>) -> AegisResult<Revision> {
-        let txn = multi_store_txn(&self.db, &[STORE_TUPLES, STORE_EVENTS, STORE_REVISION], IdbTransactionMode::Readwrite)?;
+        let txn = multi_store_txn(
+            &self.db,
+            &[STORE_TUPLES, STORE_EVENTS, STORE_REVISION],
+            IdbTransactionMode::Readwrite,
+        )?;
         let mut rev = self.rev;
         let mut last_hash = last_event_hash_s(&txn, STORE_EVENTS).await?;
 
         for (pid, action, tuple) in &self.pending {
             rev += 1;
-            put_s_in_txn(&txn, STORE_REVISION, &rev_key(), &JsValue::from_f64(rev as f64)).await?;
+            put_s_in_txn(
+                &txn,
+                STORE_REVISION,
+                &rev_key(),
+                &JsValue::from_f64(rev as f64),
+            )
+            .await?;
 
-            let key = pkey(pid, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str());
+            let key = pkey(
+                pid,
+                tuple.subject.as_str(),
+                tuple.relation.as_str(),
+                tuple.object.as_str(),
+            );
             match action {
                 TupleMutation::Add => {
-                    put_s_in_txn(&txn, STORE_TUPLES, &JsValue::from_str(&key), &tuple_to_js(tuple)).await?;
+                    put_s_in_txn(
+                        &txn,
+                        STORE_TUPLES,
+                        &JsValue::from_str(&key),
+                        &tuple_to_js(tuple),
+                    )
+                    .await?;
                 }
                 TupleMutation::Remove => {
                     del_s_in_txn(&txn, STORE_TUPLES, &JsValue::from_str(&key)).await?;
@@ -899,27 +1416,53 @@ impl AsyncStorageTransaction for IndexedDbTransaction {
             }
 
             let ekey_val = ekey(pid, Revision::new(rev));
-            let action_str = match action { TupleMutation::Add => "add", TupleMutation::Remove => "remove" };
+            let action_str = match action {
+                TupleMutation::Add => "add",
+                TupleMutation::Remove => "remove",
+            };
             let now_rfc = Utc::now().to_rfc3339();
             let actor = self.actor.clone();
             let event_hash = compute_event_hash(
-                &last_hash, rev as i64, action_str,
-                tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(),
-                pid.as_str(), None, &now_rfc, actor.as_deref(),
+                &last_hash,
+                rev as i64,
+                action_str,
+                tuple.subject.as_str(),
+                tuple.relation.as_str(),
+                tuple.object.as_str(),
+                pid.as_str(),
+                None,
+                &now_rfc,
+                actor.as_deref(),
             );
             let event_obj = event_obj_from_fields(
-                rev as f64, action_str,
-                tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(),
-                &now_rfc, None, actor.as_deref(),
-                &last_hash, &event_hash,
+                rev as f64,
+                action_str,
+                tuple.subject.as_str(),
+                tuple.relation.as_str(),
+                tuple.object.as_str(),
+                &now_rfc,
+                None,
+                actor.as_deref(),
+                &last_hash,
+                &event_hash,
             );
-            put_s_in_txn(&txn, STORE_EVENTS, &JsValue::from_str(&ekey_val), &event_obj).await?;
+            put_s_in_txn(
+                &txn,
+                STORE_EVENTS,
+                &JsValue::from_str(&ekey_val),
+                &event_obj,
+            )
+            .await?;
             last_hash = event_hash;
         }
 
         drop(txn);
 
-        if rev > self.rev { Ok(Revision::new(rev)) } else { Ok(Revision::ZERO) }
+        if rev > self.rev {
+            Ok(Revision::new(rev))
+        } else {
+            Ok(Revision::ZERO)
+        }
     }
 
     async fn rollback(self: Box<Self>) -> AegisResult<()> {
@@ -944,15 +1487,18 @@ mod wasm_tests {
     #[wasm_bindgen_test]
     async fn test_initialize_creates_stores() {
         let (storage, _pid) = setup().await;
-        let meta = storage.db().and_then(|db| {
-            let _ = db;
-            Ok(crate::storage::traits::StorageMeta {
-                schema_version: 1,
-                current_revision: Revision::ZERO,
-                backend_type: crate::storage::traits::BackendType::IndexedDB,
-                healthy: true,
+        let meta = storage
+            .db()
+            .and_then(|db| {
+                let _ = db;
+                Ok(crate::storage::traits::StorageMeta {
+                    schema_version: 1,
+                    current_revision: Revision::ZERO,
+                    backend_type: crate::storage::traits::BackendType::IndexedDB,
+                    healthy: true,
+                })
             })
-        }).unwrap();
+            .unwrap();
         assert!(meta.healthy);
         assert_eq!(meta.schema_version, 1);
     }
@@ -1017,7 +1563,12 @@ mod wasm_tests {
         storage.write_tuple(&pid, &t2).await.unwrap();
 
         let results = storage
-            .list_by_object(&pid, &ResourceId::new("repo:x").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+            .list_by_object(
+                &pid,
+                &ResourceId::new("repo:x").unwrap(),
+                None,
+                &ConsistencyMode::MinimizeLatency,
+            )
             .await
             .unwrap();
         assert_eq!(results.len(), 2);
@@ -1084,7 +1635,12 @@ mod wasm_tests {
             .unwrap();
 
         let results = storage
-            .list_by_object(&pid, &ResourceId::new("repo:del").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+            .list_by_object(
+                &pid,
+                &ResourceId::new("repo:del").unwrap(),
+                None,
+                &ConsistencyMode::MinimizeLatency,
+            )
             .await
             .unwrap();
         assert_eq!(results.len(), 0);
@@ -1187,13 +1743,21 @@ mod wasm_tests {
         let avg = elapsed / 100.0;
         let p95 = avg; // simplified for inline test
 
-        web_sys::console::log_1(&format!(
-            "BENCH check_latency: avg={:.3}ms p95={:.3}ms (target <5ms) {}",
-            avg, p95,
-            if p95 < 5.0 { "PASS" } else { "FAIL" }
-        ).into());
+        web_sys::console::log_1(
+            &format!(
+                "BENCH check_latency: avg={:.3}ms p95={:.3}ms (target <5ms) {}",
+                avg,
+                p95,
+                if p95 < 5.0 { "PASS" } else { "FAIL" }
+            )
+            .into(),
+        );
 
-        assert!(p95 < 50.0, "p95 check latency ({:.3}ms) exceeds 50ms threshold", p95);
+        assert!(
+            p95 < 50.0,
+            "p95 check latency ({:.3}ms) exceeds 50ms threshold",
+            p95
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1213,10 +1777,13 @@ mod wasm_tests {
         let elapsed = now_ms() - start;
         let throughput = (n as f64) / (elapsed / 1000.0);
 
-        web_sys::console::log_1(&format!(
-            "BENCH write_throughput: {} writes in {:.0}ms = {:.0} writes/sec",
-            n, elapsed, throughput
-        ).into());
+        web_sys::console::log_1(
+            &format!(
+                "BENCH write_throughput: {} writes in {:.0}ms = {:.0} writes/sec",
+                n, elapsed, throughput
+            )
+            .into(),
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1227,17 +1794,21 @@ mod wasm_tests {
         let start = now_ms();
         for _ in 0..50 {
             let _ = storage
-                .list_by_object(&pid, &ResourceId::new("doc:report").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_object(
+                    &pid,
+                    &ResourceId::new("doc:report").unwrap(),
+                    None,
+                    &ConsistencyMode::MinimizeLatency,
+                )
                 .await
                 .unwrap();
         }
         let elapsed = now_ms() - start;
         let avg = elapsed / 50.0;
 
-        web_sys::console::log_1(&format!(
-            "BENCH list_by_object: avg={:.3}ms (1000 tuples)",
-            avg
-        ).into());
+        web_sys::console::log_1(
+            &format!("BENCH list_by_object: avg={:.3}ms (1000 tuples)", avg).into(),
+        );
     }
 
     #[wasm_bindgen_test]
@@ -1280,7 +1851,10 @@ mod wasm_tests {
             assert!(rev > Revision::ZERO, "revision must survive page reload");
 
             // Clean up
-            storage.delete_object(&pid, &ResourceId::new("doc:persist").unwrap()).await.unwrap();
+            storage
+                .delete_object(&pid, &ResourceId::new("doc:persist").unwrap())
+                .await
+                .unwrap();
         }
     }
 
@@ -1307,31 +1881,64 @@ mod wasm_tests {
 
         // Export
         let all = storage
-            .query_tuples(&pid, &TupleFilter::default(), &PaginationParams { cursor: None, limit: 100 }, &ConsistencyMode::MinimizeLatency)
+            .query_tuples(
+                &pid,
+                &TupleFilter::default(),
+                &PaginationParams {
+                    cursor: None,
+                    limit: 100,
+                },
+                &ConsistencyMode::MinimizeLatency,
+            )
             .await
             .unwrap();
         let exported = all.tuples;
 
         // Delete all then verify empty
         for t in &exported {
-            storage.delete_tuple(&pid, &TupleKey {
-                subject: t.subject.clone(),
-                relation: t.relation.clone(),
-                object: t.object.clone(),
-            }).await.unwrap();
+            storage
+                .delete_tuple(
+                    &pid,
+                    &TupleKey {
+                        subject: t.subject.clone(),
+                        relation: t.relation.clone(),
+                        object: t.object.clone(),
+                    },
+                )
+                .await
+                .unwrap();
         }
         let after_del = storage
-            .query_tuples(&pid, &TupleFilter::default(), &PaginationParams { cursor: None, limit: 100 }, &ConsistencyMode::MinimizeLatency)
+            .query_tuples(
+                &pid,
+                &TupleFilter::default(),
+                &PaginationParams {
+                    cursor: None,
+                    limit: 100,
+                },
+                &ConsistencyMode::MinimizeLatency,
+            )
             .await
             .unwrap();
-        assert!(after_del.tuples.is_empty(), "all tuples should be deleted before import");
+        assert!(
+            after_del.tuples.is_empty(),
+            "all tuples should be deleted before import"
+        );
 
         // Re-import via write_tuples_batch
         storage.write_tuples_batch(&pid, &exported).await.unwrap();
 
         // Verify
         let after_import = storage
-            .query_tuples(&pid, &TupleFilter::default(), &PaginationParams { cursor: None, limit: 100 }, &ConsistencyMode::MinimizeLatency)
+            .query_tuples(
+                &pid,
+                &TupleFilter::default(),
+                &PaginationParams {
+                    cursor: None,
+                    limit: 100,
+                },
+                &ConsistencyMode::MinimizeLatency,
+            )
             .await
             .unwrap();
         assert_eq!(
@@ -1341,8 +1948,11 @@ mod wasm_tests {
         );
         for t in &after_import.tuples {
             assert!(
-                exported.iter().any(|e| e.subject == t.subject && e.relation == t.relation && e.object == t.object),
-                "imported tuple must match exported: {:?}", t
+                exported.iter().any(|e| e.subject == t.subject
+                    && e.relation == t.relation
+                    && e.object == t.object),
+                "imported tuple must match exported: {:?}",
+                t
             );
         }
     }
@@ -1366,7 +1976,15 @@ mod wasm_tests {
 
         let start = now_ms();
         let _all = storage
-            .query_tuples(&pid, &TupleFilter::default(), &PaginationParams { cursor: None, limit: n as u64 }, &ConsistencyMode::MinimizeLatency)
+            .query_tuples(
+                &pid,
+                &TupleFilter::default(),
+                &PaginationParams {
+                    cursor: None,
+                    limit: n as u64,
+                },
+                &ConsistencyMode::MinimizeLatency,
+            )
             .await
             .unwrap();
         let elapsed = now_ms() - start;

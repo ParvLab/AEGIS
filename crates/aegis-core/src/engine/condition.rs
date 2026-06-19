@@ -25,10 +25,7 @@ pub enum ConditionOp {
 
 #[derive(Debug, Clone)]
 pub enum ConditionExpr {
-    Leaf {
-        attr: String,
-        op: ConditionOp,
-    },
+    Leaf { attr: String, op: ConditionOp },
     And(Vec<ConditionExpr>),
     Or(Vec<ConditionExpr>),
     Not(Box<ConditionExpr>),
@@ -44,9 +41,10 @@ pub fn parse_condition(expr: &str) -> AegisResult<ConditionExpr> {
             let inner_expr = parse_condition(&inner[1..inner.len() - 1])?;
             return Ok(ConditionExpr::Not(Box::new(inner_expr)));
         }
-        return Err(crate::error::AegisError::SchemaValidation(
-            format!("NOT condition must be parenthesized: {:?}", expr),
-        ));
+        return Err(crate::error::AegisError::SchemaValidation(format!(
+            "NOT condition must be parenthesized: {:?}",
+            expr
+        )));
     }
 
     // Composite: (expr1) AND (expr2) or (expr1) OR (expr2)
@@ -85,7 +83,10 @@ pub fn parse_condition(expr: &str) -> AegisResult<ConditionExpr> {
             let left_str = trimmed[1..close].trim();
             let offset = if op_type == Some("OR") { 4 } else { 5 };
             let right_str = trimmed[pos + offset..].trim();
-            let right_str = right_str.strip_prefix('(').and_then(|s| s.strip_suffix(')')).unwrap_or(right_str);
+            let right_str = right_str
+                .strip_prefix('(')
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or(right_str);
             let left = parse_condition(left_str)?;
             let right = parse_condition(right_str)?;
             return match op_type {
@@ -99,9 +100,10 @@ pub fn parse_condition(expr: &str) -> AegisResult<ConditionExpr> {
     // Leaf condition: "attr op value"
     let parts: Vec<&str> = trimmed.splitn(2, char::is_whitespace).collect();
     if parts.len() < 2 {
-        return Err(crate::error::AegisError::SchemaValidation(
-            format!("invalid condition expression: {:?}", expr),
-        ));
+        return Err(crate::error::AegisError::SchemaValidation(format!(
+            "invalid condition expression: {:?}",
+            expr
+        )));
     }
     let attr = parts[0].to_string();
     let rest = parts[1].trim().to_string();
@@ -169,9 +171,10 @@ pub fn parse_condition(expr: &str) -> AegisResult<ConditionExpr> {
             op: ConditionOp::DayOfWeek(items),
         })
     } else {
-        Err(crate::error::AegisError::SchemaValidation(
-            format!("unknown condition operator in: {:?}", expr),
-        ))
+        Err(crate::error::AegisError::SchemaValidation(format!(
+            "unknown condition operator in: {:?}",
+            expr
+        )))
     }
 }
 
@@ -183,28 +186,28 @@ fn evaluate_leaf(attr: &str, op: &ConditionOp, ctx: &ConditionEvalContext) -> bo
         .or_else(|| ctx.env.get(attr));
 
     match op {
-        ConditionOp::Eq(expected) => value.map_or(false, |v| v == expected),
-        ConditionOp::Neq(expected) => value.map_or(true, |v| v != expected),
-        ConditionOp::In(items) => value.map_or(false, |v| items.contains(v)),
+        ConditionOp::Eq(expected) => value == Some(expected),
+        ConditionOp::Neq(expected) => value != Some(expected),
+        ConditionOp::In(items) => value.is_some_and(|v| items.contains(v)),
         ConditionOp::Exists => value.is_some(),
         ConditionOp::NotExists => value.is_none(),
         ConditionOp::Gt(expected) => value
             .and_then(|v| v.parse::<f64>().ok())
             .zip(expected.parse::<f64>().ok())
-            .map_or(false, |(v, e)| v > e),
+            .is_some_and(|(v, e)| v > e),
         ConditionOp::Lt(expected) => value
             .and_then(|v| v.parse::<f64>().ok())
             .zip(expected.parse::<f64>().ok())
-            .map_or(false, |(v, e)| v < e),
+            .is_some_and(|(v, e)| v < e),
         ConditionOp::Before(time_str) => {
             let now = Utc::now();
             let parsed = parse_time(time_str);
-            parsed.map_or(false, |t| now < t)
+            parsed.is_some_and(|t| now < t)
         }
         ConditionOp::After(time_str) => {
             let now = Utc::now();
             let parsed = parse_time(time_str);
-            parsed.map_or(false, |t| now > t)
+            parsed.is_some_and(|t| now > t)
         }
         ConditionOp::DayOfWeek(days) => {
             let now = Utc::now();

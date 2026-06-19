@@ -13,8 +13,8 @@ use crate::storage::traits::{
     TupleFilter,
 };
 use crate::types::{
-    AuditEntry, PaginatedTuples, PaginationParams, PartitionId, Relation,
-    RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
+    AuditEntry, PaginatedTuples, PaginationParams, PartitionId, Relation, RelationshipTuple,
+    ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
 };
 
 type TupleMap = HashMap<(String, String, String), RelationshipTuple>;
@@ -35,6 +35,12 @@ struct Inner {
 
 pub struct InMemoryStorage {
     inner: Arc<Mutex<Inner>>,
+}
+
+impl Default for InMemoryStorage {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl InMemoryStorage {
@@ -61,7 +67,14 @@ impl InMemoryStorage {
         Revision::new(inner.revision)
     }
 
-    fn append_event(inner: &mut Inner, action: TupleMutation, subject: &str, relation: &str, object: &str, revision: Revision) {
+    fn append_event(
+        inner: &mut Inner,
+        action: TupleMutation,
+        subject: &str,
+        relation: &str,
+        object: &str,
+        revision: Revision,
+    ) {
         let identity = inner.actor_identity.clone();
         let event = AuditEntry {
             revision,
@@ -79,7 +92,10 @@ impl InMemoryStorage {
 
 impl StorageBackend for InMemoryStorage {
     fn initialize(&mut self) -> AegisResult<StorageMeta> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         inner.revision = 0;
         inner.schema_version = 1;
         inner.tuples.clear();
@@ -92,8 +108,15 @@ impl StorageBackend for InMemoryStorage {
         })
     }
 
-    fn write_tuple(&self, _partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<Revision> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+    fn write_tuple(
+        &self,
+        _partition_id: &PartitionId,
+        tuple: &RelationshipTuple,
+    ) -> AegisResult<Revision> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let key = (
             tuple.subject.as_str().to_string(),
             tuple.relation.as_str().to_string(),
@@ -101,12 +124,26 @@ impl StorageBackend for InMemoryStorage {
         );
         let revision = Self::bump_revision(&mut inner);
         inner.tuples.insert(key, tuple.clone());
-        Self::append_event(&mut inner, TupleMutation::Add, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(), revision);
+        Self::append_event(
+            &mut inner,
+            TupleMutation::Add,
+            tuple.subject.as_str(),
+            tuple.relation.as_str(),
+            tuple.object.as_str(),
+            revision,
+        );
         Ok(revision)
     }
 
-    fn write_tuples_batch(&self, _partition_id: &PartitionId, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+    fn write_tuples_batch(
+        &self,
+        _partition_id: &PartitionId,
+        tuples: &[RelationshipTuple],
+    ) -> AegisResult<Revision> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let mut revision = Revision::ZERO;
         for tuple in tuples {
             let key = (
@@ -116,13 +153,23 @@ impl StorageBackend for InMemoryStorage {
             );
             revision = Self::bump_revision(&mut inner);
             inner.tuples.insert(key, tuple.clone());
-            Self::append_event(&mut inner, TupleMutation::Add, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(), revision);
+            Self::append_event(
+                &mut inner,
+                TupleMutation::Add,
+                tuple.subject.as_str(),
+                tuple.relation.as_str(),
+                tuple.object.as_str(),
+                revision,
+            );
         }
         Ok(revision)
     }
 
     fn delete_tuple(&self, _partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Revision> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let k = (
             key.subject.as_str().to_string(),
             key.relation.as_str().to_string(),
@@ -130,13 +177,29 @@ impl StorageBackend for InMemoryStorage {
         );
         let revision = Self::bump_revision(&mut inner);
         inner.tuples.remove(&k);
-        Self::append_event(&mut inner, TupleMutation::Remove, key.subject.as_str(), key.relation.as_str(), key.object.as_str(), revision);
+        Self::append_event(
+            &mut inner,
+            TupleMutation::Remove,
+            key.subject.as_str(),
+            key.relation.as_str(),
+            key.object.as_str(),
+            revision,
+        );
         Ok(revision)
     }
 
-    fn delete_subject(&self, _partition_id: &PartitionId, subject: &SubjectId) -> AegisResult<Revision> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let subjects: Vec<(String, String, String)> = inner.tuples.keys()
+    fn delete_subject(
+        &self,
+        _partition_id: &PartitionId,
+        subject: &SubjectId,
+    ) -> AegisResult<Revision> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let subjects: Vec<(String, String, String)> = inner
+            .tuples
+            .keys()
             .filter(|k| k.0 == subject.as_str())
             .cloned()
             .collect();
@@ -144,7 +207,14 @@ impl StorageBackend for InMemoryStorage {
         for k in subjects {
             revision = Self::bump_revision(&mut inner);
             if let Some(tuple) = inner.tuples.remove(&k) {
-                Self::append_event(&mut inner, TupleMutation::Remove, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(), revision);
+                Self::append_event(
+                    &mut inner,
+                    TupleMutation::Remove,
+                    tuple.subject.as_str(),
+                    tuple.relation.as_str(),
+                    tuple.object.as_str(),
+                    revision,
+                );
             }
         }
         if revision == Revision::ZERO {
@@ -153,9 +223,18 @@ impl StorageBackend for InMemoryStorage {
         Ok(revision)
     }
 
-    fn delete_object(&self, _partition_id: &PartitionId, object: &ResourceId) -> AegisResult<Revision> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let objects: Vec<(String, String, String)> = inner.tuples.keys()
+    fn delete_object(
+        &self,
+        _partition_id: &PartitionId,
+        object: &ResourceId,
+    ) -> AegisResult<Revision> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let objects: Vec<(String, String, String)> = inner
+            .tuples
+            .keys()
             .filter(|k| k.2 == object.as_str())
             .cloned()
             .collect();
@@ -163,7 +242,14 @@ impl StorageBackend for InMemoryStorage {
         for k in objects {
             revision = Self::bump_revision(&mut inner);
             if let Some(tuple) = inner.tuples.remove(&k) {
-                Self::append_event(&mut inner, TupleMutation::Remove, tuple.subject.as_str(), tuple.relation.as_str(), tuple.object.as_str(), revision);
+                Self::append_event(
+                    &mut inner,
+                    TupleMutation::Remove,
+                    tuple.subject.as_str(),
+                    tuple.relation.as_str(),
+                    tuple.object.as_str(),
+                    revision,
+                );
             }
         }
         if revision == Revision::ZERO {
@@ -173,7 +259,10 @@ impl StorageBackend for InMemoryStorage {
     }
 
     fn has_tuple(&self, _partition_id: &PartitionId, key: &TupleKey) -> AegisResult<bool> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let k = (
             key.subject.as_str().to_string(),
             key.relation.as_str().to_string(),
@@ -182,8 +271,15 @@ impl StorageBackend for InMemoryStorage {
         Ok(inner.tuples.contains_key(&k))
     }
 
-    fn read_tuple(&self, _partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+    fn read_tuple(
+        &self,
+        _partition_id: &PartitionId,
+        key: &TupleKey,
+    ) -> AegisResult<Option<RelationshipTuple>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let k = (
             key.subject.as_str().to_string(),
             key.relation.as_str().to_string(),
@@ -199,10 +295,15 @@ impl StorageBackend for InMemoryStorage {
         relation: Option<&Relation>,
         _consistency: &crate::types::ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let result: Vec<RelationshipTuple> = inner.tuples.values()
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let result: Vec<RelationshipTuple> = inner
+            .tuples
+            .values()
             .filter(|t| t.object == *object)
-            .filter(|t| relation.map_or(true, |r| t.relation == *r))
+            .filter(|t| relation.is_none_or(|r| t.relation == *r))
             .cloned()
             .collect();
         Ok(result)
@@ -215,10 +316,15 @@ impl StorageBackend for InMemoryStorage {
         relation: Option<&Relation>,
         _consistency: &crate::types::ConsistencyMode,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let result: Vec<RelationshipTuple> = inner.tuples.values()
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let result: Vec<RelationshipTuple> = inner
+            .tuples
+            .values()
             .filter(|t| t.subject == *subject)
-            .filter(|t| relation.map_or(true, |r| t.relation == *r))
+            .filter(|t| relation.is_none_or(|r| t.relation == *r))
             .cloned()
             .collect();
         Ok(result)
@@ -230,8 +336,13 @@ impl StorageBackend for InMemoryStorage {
         object: &ResourceId,
         relation: &Relation,
     ) -> AegisResult<Vec<RelationshipTuple>> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let result: Vec<RelationshipTuple> = inner.tuples.values()
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let result: Vec<RelationshipTuple> = inner
+            .tuples
+            .values()
             .filter(|t| t.object == *object && t.relation == *relation)
             .cloned()
             .collect();
@@ -245,19 +356,27 @@ impl StorageBackend for InMemoryStorage {
         pagination: &PaginationParams,
         _consistency: &crate::types::ConsistencyMode,
     ) -> AegisResult<PaginatedTuples> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let mut result: Vec<RelationshipTuple> = inner.tuples.values()
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut result: Vec<RelationshipTuple> = inner
+            .tuples
+            .values()
             .filter(|t| {
+                #[allow(clippy::collapsible_if)]
                 if let Some(ref st) = filter.subject_type {
                     if !t.subject.as_str().starts_with(st.trim_end_matches('#')) {
                         return false;
                     }
                 }
+                #[allow(clippy::collapsible_if)]
                 if let Some(ref rel) = filter.relation {
                     if t.relation != *rel {
                         return false;
                     }
                 }
+                #[allow(clippy::collapsible_if)]
                 if let Some(ref ot) = filter.object_type {
                     if !t.object.as_str().starts_with(ot) {
                         return false;
@@ -269,7 +388,11 @@ impl StorageBackend for InMemoryStorage {
             .collect();
 
         let total = result.len();
-        let offset = pagination.cursor.as_ref().map(|c| c.offset as usize).unwrap_or(0);
+        let offset = pagination
+            .cursor
+            .as_ref()
+            .map(|c| c.offset as usize)
+            .unwrap_or(0);
         let limit = pagination.limit as usize;
         let has_more = offset + limit < total;
         result = result.into_iter().skip(offset).take(limit).collect();
@@ -291,27 +414,45 @@ impl StorageBackend for InMemoryStorage {
     }
 
     fn current_revision(&self, _partition_id: &PartitionId) -> AegisResult<Revision> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         Ok(Revision::new(inner.revision))
     }
 
     fn read_schema_version(&self) -> AegisResult<u32> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         Ok(inner.schema_version)
     }
 
     fn write_schema_version(&self, version: u32) -> AegisResult<()> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         inner.schema_version = version;
         Ok(())
     }
 
     fn current_token(&self) -> AegisResult<RevisionToken> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        Ok(RevisionToken::new(Revision::new(inner.revision), inner.node_id))
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        Ok(RevisionToken::new(
+            Revision::new(inner.revision),
+            inner.node_id,
+        ))
     }
 
-    fn begin_transaction(&self, _partition_id: &PartitionId) -> AegisResult<Box<dyn StorageTransaction>> {
+    fn begin_transaction(
+        &self,
+        _partition_id: &PartitionId,
+    ) -> AegisResult<Box<dyn StorageTransaction>> {
         Ok(Box::new(InMemoryTransaction::new(Arc::clone(&self.inner))))
     }
 
@@ -323,11 +464,16 @@ impl StorageBackend for InMemoryStorage {
         to_revision: Option<Revision>,
         _pagination: &PaginationParams,
     ) -> AegisResult<Vec<AuditEntry>> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        let result: Vec<AuditEntry> = inner.events.iter()
-            .filter(|e| object.map_or(true, |o| e.object == o.as_str()))
-            .filter(|e| from_revision.map_or(true, |r| e.revision >= r))
-            .filter(|e| to_revision.map_or(true, |r| e.revision <= r))
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let result: Vec<AuditEntry> = inner
+            .events
+            .iter()
+            .filter(|e| object.is_none_or(|o| e.object == o.as_str()))
+            .filter(|e| from_revision.is_none_or(|r| e.revision >= r))
+            .filter(|e| to_revision.is_none_or(|r| e.revision <= r))
             .cloned()
             .collect();
         Ok(result)
@@ -348,8 +494,15 @@ impl StorageBackend for InMemoryStorage {
         })
     }
 
-    fn delete_events_before(&self, _partition_id: &PartitionId, cutoff: DateTime<Utc>) -> AegisResult<usize> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+    fn delete_events_before(
+        &self,
+        _partition_id: &PartitionId,
+        cutoff: DateTime<Utc>,
+    ) -> AegisResult<usize> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let before = inner.events.len();
         inner.events.retain(|e| e.timestamp >= cutoff);
         Ok(before - inner.events.len())
@@ -359,12 +512,23 @@ impl StorageBackend for InMemoryStorage {
         Ok(0)
     }
 
-    fn delete_soft_deleted_tuples_before(&self, _partition_id: &PartitionId, _cutoff: DateTime<Utc>) -> AegisResult<usize> {
+    fn delete_soft_deleted_tuples_before(
+        &self,
+        _partition_id: &PartitionId,
+        _cutoff: DateTime<Utc>,
+    ) -> AegisResult<usize> {
         Ok(0)
     }
 
-    fn recover_from_events(&self, _partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+    fn recover_from_events(
+        &self,
+        _partition_id: &PartitionId,
+        to_revision: Option<Revision>,
+    ) -> AegisResult<Revision> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let events: Vec<AuditEntry> = inner.events.clone();
         inner.tuples.clear();
         let mut last_revision = Revision::ZERO;
@@ -381,9 +545,9 @@ impl StorageBackend for InMemoryStorage {
             match event.action {
                 TupleMutation::Add => {
                     let tuple = RelationshipTuple::new(
-                        SubjectId::new(&event.subject).map_err(|e| AegisError::Validation(e))?,
-                        Relation::new(&event.relation).map_err(|e| AegisError::Validation(e))?,
-                        ResourceId::new(&event.object).map_err(|e| AegisError::Validation(e))?,
+                        SubjectId::new(&event.subject).map_err(AegisError::Validation)?,
+                        Relation::new(&event.relation).map_err(AegisError::Validation)?,
+                        ResourceId::new(&event.object).map_err(AegisError::Validation)?,
                     );
                     inner.tuples.insert(key, tuple);
                 }
@@ -403,7 +567,10 @@ impl StorageBackend for InMemoryStorage {
         events: &[AuditEntry],
         revision: Revision,
     ) -> AegisResult<()> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         inner.tuples.clear();
         inner.events.clear();
         for tuple in tuples {
@@ -435,58 +602,97 @@ impl StorageBackend for InMemoryStorage {
     }
 
     fn list_policy_versions(&self) -> AegisResult<Vec<PolicyVersion>> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let mut versions: Vec<PolicyVersion> = inner.policy_versions.values().cloned().collect();
         versions.sort_by_key(|v| v.version);
         Ok(versions)
     }
 
     fn save_policy_version(&self, version: &PolicyVersion) -> AegisResult<()> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        inner.policy_versions.insert(version.version, version.clone());
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        inner
+            .policy_versions
+            .insert(version.version, version.clone());
         Ok(())
     }
 
     fn load_policy_version(&self, version: u32) -> AegisResult<Option<String>> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        Ok(inner.policy_versions.get(&version).map(|v| v.schema.clone()))
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        Ok(inner
+            .policy_versions
+            .get(&version)
+            .map(|v| v.schema.clone()))
     }
 
     fn save_policy_draft(&self, draft: &PolicyDraft) -> AegisResult<()> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        inner.policy_drafts.insert(draft.id.to_string(), draft.clone());
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        inner
+            .policy_drafts
+            .insert(draft.id.to_string(), draft.clone());
         Ok(())
     }
 
     fn load_policy_draft(&self, id: &str) -> AegisResult<Option<PolicyDraft>> {
-        let inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         Ok(inner.policy_drafts.get(id).cloned())
     }
 
     fn delete_policy_draft(&self, id: &str) -> AegisResult<bool> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         Ok(inner.policy_drafts.remove(id).is_some())
     }
 
     fn save_analysis_schedule(&self, schedule: &AnalysisSchedule) -> AegisResult<()> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
-        inner.analysis_schedules.insert(schedule.id.to_string(), schedule.clone());
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        inner
+            .analysis_schedules
+            .insert(schedule.id.to_string(), schedule.clone());
         Ok(())
     }
 
     fn delete_analysis_schedule(&self, id: &str) -> AegisResult<bool> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         Ok(inner.analysis_schedules.remove(id).is_some())
     }
 
     fn save_analysis_run(&self, run: &AnalysisRun) -> AegisResult<()> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         inner.analysis_runs.push(run.clone());
         Ok(())
     }
 
     fn save_enforcement_event(&self, event: &EnforcementEvent) -> AegisResult<()> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         inner.enforcement_events.push(event.clone());
         Ok(())
     }
@@ -508,7 +714,8 @@ impl InMemoryTransaction {
 
 impl StorageTransaction for InMemoryTransaction {
     fn write(&mut self, _partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<()> {
-        self.pending_tuples.push((TupleMutation::Add, tuple.clone()));
+        self.pending_tuples
+            .push((TupleMutation::Add, tuple.clone()));
         Ok(())
     }
 
@@ -542,7 +749,10 @@ impl StorageTransaction for InMemoryTransaction {
     }
 
     fn commit(self: Box<Self>) -> AegisResult<Revision> {
-        let mut inner = self.inner.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let mut revision = Revision::ZERO;
         for (action, tuple) in &self.pending_tuples {
             let key = (
@@ -667,10 +877,24 @@ mod tests {
         s.write_tuple(&pid, &t2).unwrap();
         s.write_tuple(&pid, &t3).unwrap();
 
-        let by_obj = s.list_by_object(&pid, &ResourceId::new("repo:x").unwrap(), None, &crate::types::ConsistencyMode::MinimizeLatency).unwrap();
+        let by_obj = s
+            .list_by_object(
+                &pid,
+                &ResourceId::new("repo:x").unwrap(),
+                None,
+                &crate::types::ConsistencyMode::MinimizeLatency,
+            )
+            .unwrap();
         assert_eq!(by_obj.len(), 2);
 
-        let by_subj = s.list_by_subject(&pid, &SubjectId::new("user:a").unwrap(), None, &crate::types::ConsistencyMode::MinimizeLatency).unwrap();
+        let by_subj = s
+            .list_by_subject(
+                &pid,
+                &SubjectId::new("user:a").unwrap(),
+                None,
+                &crate::types::ConsistencyMode::MinimizeLatency,
+            )
+            .unwrap();
         assert_eq!(by_subj.len(), 2);
     }
 
@@ -738,7 +962,9 @@ mod tests {
         };
         s.delete_tuple(&pid, &key).unwrap();
 
-        let events = s.query_audit(&pid, None, None, None, &PaginationParams::default()).unwrap();
+        let events = s
+            .query_audit(&pid, None, None, None, &PaginationParams::default())
+            .unwrap();
         assert_eq!(events.len(), 2);
 
         assert_eq!(events[0].action, TupleMutation::Add);

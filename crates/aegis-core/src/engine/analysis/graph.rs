@@ -1,10 +1,10 @@
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Instant;
 use crate::engine::GraphEngine;
 use crate::error::AegisResult;
 use crate::storage::{StorageBackend, TupleFilter};
 use crate::types::analysis::*;
 use crate::types::*;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Instant;
 
 impl GraphEngine {
     /// Find all subjects reachable from a resource through the authorization graph.
@@ -20,6 +20,7 @@ impl GraphEngine {
     ) -> AegisResult<ReachabilityReport> {
         // Cache check
         let cache_key = format!("reach:{}:{}:{}", resource.as_str(), max_depth, max_nodes);
+        #[allow(clippy::collapsible_if)]
         if let Some(ttl) = cache_ttl_ms {
             if let Some(cached) = self.get_cached_analysis(&cache_key, ttl) {
                 return Ok(cached);
@@ -112,7 +113,10 @@ impl GraphEngine {
             .query_tuples(
                 &pid,
                 &TupleFilter::default(),
-                &PaginationParams { cursor: None, limit: 1_000_000 },
+                &PaginationParams {
+                    cursor: None,
+                    limit: 1_000_000,
+                },
                 &ConsistencyMode::MinimizeLatency,
             )
             .map_err(|e| crate::error::AegisError::Internal(e.to_string()))?;
@@ -122,10 +126,14 @@ impl GraphEngine {
         for t in &all.tuples {
             let resource_type = t.object.as_str().split(':').next().unwrap_or("");
             let type_def = schema.types.get(resource_type);
-            let relation_valid = type_def.map_or(false, |td| {
+            let relation_valid = type_def.is_some_and(|td| {
                 td.relations.contains_key(t.relation.as_str())
                     || td.permissions.contains_key(t.relation.as_str())
-                    || td.deny.iter().any(|d| d.relations.iter().any(|r| r.as_str() == t.relation.as_str()))
+                    || td.deny.iter().any(|d| {
+                        d.relations
+                            .iter()
+                            .any(|r| r.as_str() == t.relation.as_str())
+                    })
             });
 
             if !relation_valid {
@@ -150,7 +158,10 @@ impl GraphEngine {
             .query_tuples(
                 &pid,
                 &TupleFilter::default(),
-                &PaginationParams { cursor: None, limit: 1_000_000 },
+                &PaginationParams {
+                    cursor: None,
+                    limit: 1_000_000,
+                },
                 &ConsistencyMode::MinimizeLatency,
             )
             .map_err(|e| crate::error::AegisError::Internal(e.to_string()))?;
@@ -178,7 +189,7 @@ impl GraphEngine {
             })
             .collect();
 
-        result.sort_by(|a, b| b.resource_count.cmp(&a.resource_count));
+        result.sort_by_key(|b| std::cmp::Reverse(b.resource_count));
         Ok(result)
     }
 
@@ -200,6 +211,7 @@ impl GraphEngine {
     }
 
     fn set_cached_analysis(&self, key: &str, value: &impl serde::Serialize, ttl_ms: u64) {
+        #[allow(clippy::collapsible_if)]
         if let Ok(mut cache) = self.analysis_cache.lock() {
             if let Ok(json) = serde_json::to_string(value) {
                 cache.insert(key.to_string(), (Instant::now(), ttl_ms, json));
@@ -217,7 +229,10 @@ pub fn detect_tenant_leakage(
         .query_tuples(
             &default_pid,
             &TupleFilter::default(),
-            &PaginationParams { cursor: None, limit: 1_000_000 },
+            &PaginationParams {
+                cursor: None,
+                limit: 1_000_000,
+            },
             &ConsistencyMode::MinimizeLatency,
         )
         .map_err(|e| crate::error::AegisError::Internal(e.to_string()))?;

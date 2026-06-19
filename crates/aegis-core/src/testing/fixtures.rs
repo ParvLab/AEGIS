@@ -28,9 +28,9 @@ pub fn load_fixture_yaml(yaml: &str) -> AegisResult<TestFixture> {
 
     let mut tuples = Vec::with_capacity(raw.tuples.len());
     for rt in raw.tuples {
-        let subject = SubjectId::new(&rt.subject).map_err(|e| AegisError::Validation(e))?;
-        let relation = Relation::new(&rt.relation).map_err(|e| AegisError::Validation(e))?;
-        let object = ResourceId::new(&rt.object).map_err(|e| AegisError::Validation(e))?;
+        let subject = SubjectId::new(&rt.subject).map_err(AegisError::Validation)?;
+        let relation = Relation::new(&rt.relation).map_err(AegisError::Validation)?;
+        let object = ResourceId::new(&rt.object).map_err(AegisError::Validation)?;
         tuples.push((subject, relation, object));
     }
 

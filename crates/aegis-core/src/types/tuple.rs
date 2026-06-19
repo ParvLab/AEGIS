@@ -145,7 +145,11 @@ const MAX_TUPLE_SERIALIZED_SIZE: usize = 65_536; // 64 KiB
 
 /// Validate that a tuple's subject, relation, and object are all well-formed.
 /// Returns `Ok(())` if all three pass validation, or the first `ValidationError` encountered.
-pub fn validate_tuple(subject: &str, relation: &str, object: &str) -> Result<(), crate::types::ValidationError> {
+pub fn validate_tuple(
+    subject: &str,
+    relation: &str,
+    object: &str,
+) -> Result<(), crate::types::ValidationError> {
     SubjectId::new(subject).map(|_| ())?;
     Relation::new(relation).map(|_| ())?;
     ResourceId::new(object).map(|_| ())?;

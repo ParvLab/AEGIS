@@ -14,24 +14,23 @@ pub fn grant(
 ) -> AegisResult<RevisionToken> {
     let resource_type = resource_type_name(resource.as_str());
     let schema = engine.schema();
-    let rels = schema.relations_for_permission(&resource_type, permission)
-        .ok_or_else(|| AegisError::SchemaValidation(
-            format!("permission '{permission}' not found for type '{resource_type}'")
-        ))?
+    let rels = schema
+        .relations_for_permission(&resource_type, permission)
+        .ok_or_else(|| {
+            AegisError::SchemaValidation(format!(
+                "permission '{permission}' not found for type '{resource_type}'"
+            ))
+        })?
         .clone();
     drop(schema);
 
     if rels.is_empty() {
-        return Err(AegisError::SchemaValidation(
-            format!("permission '{permission}' has no granting relations")
-        ));
+        return Err(AegisError::SchemaValidation(format!(
+            "permission '{permission}' has no granting relations"
+        )));
     }
 
-    let tuple = RelationshipTuple::new(
-        subject.clone(),
-        Relation::new(&rels[0])?,
-        resource.clone(),
-    );
+    let tuple = RelationshipTuple::new(subject.clone(), Relation::new(&rels[0])?, resource.clone());
     engine.write(&tuple)
 }
 
@@ -44,17 +43,20 @@ pub fn revoke(
 ) -> AegisResult<RevisionToken> {
     let resource_type = resource_type_name(resource.as_str());
     let schema = engine.schema();
-    let rels = schema.relations_for_permission(&resource_type, permission)
-        .ok_or_else(|| AegisError::SchemaValidation(
-            format!("permission '{permission}' not found for type '{resource_type}'")
-        ))?
+    let rels = schema
+        .relations_for_permission(&resource_type, permission)
+        .ok_or_else(|| {
+            AegisError::SchemaValidation(format!(
+                "permission '{permission}' not found for type '{resource_type}'"
+            ))
+        })?
         .clone();
     drop(schema);
 
     if rels.is_empty() {
-        return Err(AegisError::SchemaValidation(
-            format!("permission '{permission}' has no granting relations")
-        ));
+        return Err(AegisError::SchemaValidation(format!(
+            "permission '{permission}' has no granting relations"
+        )));
     }
 
     let key = TupleKey {
@@ -96,19 +98,19 @@ pub struct SerializedAclCollection {
 }
 
 /// Export all ACL entries for a given resource as JSON.
-pub fn serialize_acls(
-    engine: &GraphEngine,
-    resource: &ResourceId,
-) -> AegisResult<String> {
+pub fn serialize_acls(engine: &GraphEngine, resource: &ResourceId) -> AegisResult<String> {
     let tuples = engine.list_by_object(resource, None, None)?;
     let schema = engine.schema();
-    let entries: Vec<SerializedAclEntry> = tuples.iter().map(|t| SerializedAclEntry {
-        subject: t.subject.to_string(),
-        relation: t.relation.to_string(),
-        object: t.object.to_string(),
-        metadata: t.metadata.clone(),
-        condition: t.condition.clone(),
-    }).collect();
+    let entries: Vec<SerializedAclEntry> = tuples
+        .iter()
+        .map(|t| SerializedAclEntry {
+            subject: t.subject.to_string(),
+            relation: t.relation.to_string(),
+            object: t.object.to_string(),
+            metadata: t.metadata.clone(),
+            condition: t.condition.clone(),
+        })
+        .collect();
     let collection = SerializedAclCollection {
         schema_version: schema.schema_version,
         namespace: schema.namespace.clone(),
@@ -121,30 +123,26 @@ pub fn serialize_acls(
 
 /// Import ACL entries from JSON, writing each entry as a relationship tuple.
 /// Returns a list of revision tokens, one per successful write.
-pub fn deserialize_acls(
-    engine: &GraphEngine,
-    json: &str,
-) -> AegisResult<Vec<RevisionToken>> {
-    let collection: SerializedAclCollection = serde_json::from_str(json)
-        .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
+pub fn deserialize_acls(engine: &GraphEngine, json: &str) -> AegisResult<Vec<RevisionToken>> {
+    let collection: SerializedAclCollection =
+        serde_json::from_str(json).map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
     let mut tokens = Vec::new();
     for entry in &collection.entries {
-        let subject = SubjectId::new(&entry.subject)
-            .map_err(|e| AegisError::Validation(e))?;
-        let relation = Relation::new(&entry.relation)
-            .map_err(|e| AegisError::Validation(e))?;
-        let object = ResourceId::new(&entry.object)
-            .map_err(|e| AegisError::Validation(e))?;
+        let subject = SubjectId::new(&entry.subject).map_err(AegisError::Validation)?;
+        let relation = Relation::new(&entry.relation).map_err(AegisError::Validation)?;
+        let object = ResourceId::new(&entry.object).map_err(AegisError::Validation)?;
 
         let tuple = match (&entry.metadata, &entry.condition) {
             (Some(meta), Some(cond)) => {
-                let mut t = RelationshipTuple::with_condition(subject, relation, object, cond.clone());
+                let mut t =
+                    RelationshipTuple::with_condition(subject, relation, object, cond.clone());
                 t.metadata = Some(meta.clone());
                 t
             }
-            (Some(meta), None) => RelationshipTuple::with_metadata(
-                subject, relation, object, meta.clone(),
-            ).map_err(|e| AegisError::MetadataValidation(e.to_string()))?,
+            (Some(meta), None) => {
+                RelationshipTuple::with_metadata(subject, relation, object, meta.clone())
+                    .map_err(|e| AegisError::MetadataValidation(e.to_string()))?
+            }
             (None, Some(cond)) => {
                 RelationshipTuple::with_condition(subject, relation, object, cond.clone())
             }
@@ -158,9 +156,9 @@ pub fn deserialize_acls(
 #[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
+    use crate::storage::StorageBackend;
     #[cfg(feature = "sqlite")]
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
-    use crate::storage::StorageBackend;
     use crate::types::schema::*;
 
     fn make_engine() -> GraphEngine {
@@ -170,16 +168,38 @@ mod tests {
             types: {
                 let mut types = std::collections::HashMap::new();
                 let mut relations = std::collections::HashMap::new();
-                relations.insert("owner".to_string(), RelationDef { inherit_from: vec![], description: None });
-                relations.insert("viewer".to_string(), RelationDef { inherit_from: vec![], description: None });
+                relations.insert(
+                    "owner".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
+                relations.insert(
+                    "viewer".to_string(),
+                    RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
                 let mut permissions = std::collections::HashMap::new();
-                permissions.insert("read".to_string(), PermissionDef {
-                    union_of: vec!["viewer".to_string(), "owner".to_string()],
-                    condition: None,
-                    description: None,
-                    ..Default::default()
-                });
-                types.insert("repo".to_string(), TypeDef { relations, permissions, ..Default::default() });
+                permissions.insert(
+                    "read".to_string(),
+                    PermissionDef {
+                        union_of: vec!["viewer".to_string(), "owner".to_string()],
+                        condition: None,
+                        description: None,
+                        ..Default::default()
+                    },
+                );
+                types.insert(
+                    "repo".to_string(),
+                    TypeDef {
+                        relations,
+                        permissions,
+                        ..Default::default()
+                    },
+                );
                 types
             },
         };
@@ -193,7 +213,13 @@ mod tests {
         let engine = make_engine();
         let alice = SubjectId::new("user:alice").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
-        engine.write(&RelationshipTuple::new(alice.clone(), Relation::new("owner").unwrap(), repo.clone())).unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                alice.clone(),
+                Relation::new("owner").unwrap(),
+                repo.clone(),
+            ))
+            .unwrap();
 
         let json = serialize_acls(&engine, &repo).unwrap();
         assert!(json.contains("user:alice"));
@@ -208,10 +234,14 @@ mod tests {
         let engine = make_engine();
         let alice = SubjectId::new("user:alice").unwrap();
         let repo = ResourceId::new("repo:fluxbus").unwrap();
-        engine.write(&RelationshipTuple::with_condition(
-            alice.clone(), Relation::new("viewer").unwrap(), repo.clone(),
-            "role eq admin".to_string(),
-        )).unwrap();
+        engine
+            .write(&RelationshipTuple::with_condition(
+                alice.clone(),
+                Relation::new("viewer").unwrap(),
+                repo.clone(),
+                "role eq admin".to_string(),
+            ))
+            .unwrap();
 
         let json = serialize_acls(&engine, &repo).unwrap();
         assert!(json.contains("role eq admin"));
@@ -219,7 +249,11 @@ mod tests {
         let _tokens = deserialize_acls(&engine, &json).unwrap();
         // Verify written tuple has condition
         let tuples = engine.list_by_object(&repo, None, None).unwrap();
-        assert!(tuples.iter().any(|t| t.condition.as_deref() == Some("role eq admin")));
+        assert!(
+            tuples
+                .iter()
+                .any(|t| t.condition.as_deref() == Some("role eq admin"))
+        );
     }
 
     #[test]

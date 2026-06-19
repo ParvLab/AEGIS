@@ -69,9 +69,10 @@ impl SchemaWatcher {
             let existing = engine.schema();
             let report = crate::engine::migration::check_compatibility(&existing, &new_schema);
             if !report.compatible {
-                return Err(crate::error::AegisError::SchemaValidation(
-                    format!("incompatible schema change: {}", report.breaking.join(", ")),
-                ));
+                return Err(crate::error::AegisError::SchemaValidation(format!(
+                    "incompatible schema change: {}",
+                    report.breaking.join(", ")
+                )));
             }
         }
 

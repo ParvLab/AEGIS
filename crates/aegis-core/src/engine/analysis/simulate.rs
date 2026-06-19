@@ -24,7 +24,9 @@ impl GraphEngine {
             let key = format!("{}:{}:{}", q.subject, q.permission, q.resource);
             let subject = SubjectId::new(&q.subject)?;
             let resource = ResourceId::new(&q.resource)?;
-            let allowed = self.check(&subject, &q.permission, &resource, None)?.allowed;
+            let allowed = self
+                .check(&subject, &q.permission, &resource, None)?
+                .allowed;
             before_results.insert(key, allowed);
         }
 
@@ -32,10 +34,10 @@ impl GraphEngine {
         let overlay = InMemoryOverlay::new(self.storage.as_ref());
 
         for t in add {
-            let _ = overlay.write_tuple_internal(&pid, t);
+            overlay.write_tuple_internal(&pid, t);
         }
         for k in remove {
-            let _ = overlay.delete_tuple_internal(&pid, k);
+            overlay.delete_tuple_internal(&pid, k);
         }
 
         // Evaluate checks against modified state
@@ -59,9 +61,17 @@ impl GraphEngine {
             };
 
             match (before, after) {
-                (true, false) => { lost += 1; flips.push(flip); }
-                (false, true) => { gained += 1; flips.push(flip); }
-                _ => { unchanged += 1; }
+                (true, false) => {
+                    lost += 1;
+                    flips.push(flip);
+                }
+                (false, true) => {
+                    gained += 1;
+                    flips.push(flip);
+                }
+                _ => {
+                    unchanged += 1;
+                }
             }
         }
 

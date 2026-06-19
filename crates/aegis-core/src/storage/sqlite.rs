@@ -7,13 +7,14 @@ use crate::storage::traits::{
     TupleFilter,
 };
 use crate::types::{
-    AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId, Relation,
-    RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey, TupleMutation,
+    AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationCursor,
+    PaginationParams, PartitionId, Relation, RelationshipTuple, ResourceId, Revision,
+    RevisionToken, SubjectId, TupleKey, TupleMutation,
 };
 use chrono::{DateTime, Utc};
 use r2d2::Pool;
 use r2d2_sqlite::SqliteConnectionManager;
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use serde_json;
 use std::collections::HashMap;
 use uuid::Uuid;
@@ -40,8 +41,7 @@ const TUPLES_TABLE: &str = "
         revision_removed INTEGER DEFAULT NULL
     )";
 
-const TUPLES_ACTIVE_IDX: &str =
-    "CREATE UNIQUE INDEX IF NOT EXISTS idx_tuples_active ON _aegis_tuples(subject, relation, object) WHERE revision_removed IS NULL";
+const TUPLES_ACTIVE_IDX: &str = "CREATE UNIQUE INDEX IF NOT EXISTS idx_tuples_active ON _aegis_tuples(subject, relation, object) WHERE revision_removed IS NULL";
 const TUPLES_OBJECT_IDX: &str =
     "CREATE INDEX IF NOT EXISTS idx_tuples_object ON _aegis_tuples(object)";
 const TUPLES_SUBJECT_IDX: &str =
@@ -180,7 +180,10 @@ struct SqliteConnectionConfigurator {
 
 impl r2d2::CustomizeConnection<Connection, rusqlite::Error> for SqliteConnectionConfigurator {
     fn on_acquire(&self, conn: &mut Connection) -> Result<(), rusqlite::Error> {
-        conn.execute_batch(&format!("PRAGMA busy_timeout = {};", self.config.busy_timeout_ms))?;
+        conn.execute_batch(&format!(
+            "PRAGMA busy_timeout = {};",
+            self.config.busy_timeout_ms
+        ))?;
         if self.config.wal_mode {
             conn.execute_batch("PRAGMA journal_mode = WAL;")?;
         }
@@ -214,7 +217,9 @@ impl SqliteStorage {
             SqliteConnectionManager::file(&config.path)
         };
 
-        let customizer = SqliteConnectionConfigurator { config: config.clone() };
+        let customizer = SqliteConnectionConfigurator {
+            config: config.clone(),
+        };
         let pool = Pool::builder()
             .max_size(config.max_readers + 1) // +1 for potential write connection
             .connection_customizer(Box::new(customizer))
@@ -274,8 +279,12 @@ impl SqliteStorage {
         let _ = conn.execute_batch("ALTER TABLE _aegis_tuples ADD COLUMN valid_until TEXT");
         let _ = conn.execute_batch("ALTER TABLE _aegis_tuples ADD COLUMN condition TEXT");
         // V3: Add audit hash columns (no-op if columns already exist)
-        let _ = conn.execute_batch("ALTER TABLE _aegis_events ADD COLUMN previous_hash TEXT NOT NULL DEFAULT ''");
-        let _ = conn.execute_batch("ALTER TABLE _aegis_events ADD COLUMN event_hash TEXT NOT NULL DEFAULT ''");
+        let _ = conn.execute_batch(
+            "ALTER TABLE _aegis_events ADD COLUMN previous_hash TEXT NOT NULL DEFAULT ''",
+        );
+        let _ = conn.execute_batch(
+            "ALTER TABLE _aegis_events ADD COLUMN event_hash TEXT NOT NULL DEFAULT ''",
+        );
         Ok(())
     }
 
@@ -367,6 +376,7 @@ impl SqliteStorage {
     }
 
     /// Append an event to the event log, computing hash-chained integrity fields.
+    #[allow(clippy::too_many_arguments)]
     fn append_event(
         conn: &Connection,
         revision: Revision,
@@ -437,7 +447,7 @@ impl SqliteStorage {
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
         let rows = stmt
-                .query_map(params![target_revision], |row| {
+            .query_map(params![target_revision], |row| {
                 let subject_str: String = row.get(0)?;
                 let relation_str: String = row.get(1)?;
                 let object_str: String = row.get(2)?;
@@ -452,7 +462,8 @@ impl SqliteStorage {
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                 let object = ResourceId::new(&object_str)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
+                let created_at: DateTime<Utc> =
+                    created_at_str.parse().unwrap_or_else(|_| Utc::now());
                 let metadata = metadata_json
                     .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
                 let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
@@ -529,7 +540,11 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn write_tuple(&self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<Revision> {
+    fn write_tuple(
+        &self,
+        partition_id: &PartitionId,
+        tuple: &RelationshipTuple,
+    ) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             let revision = Self::bump_revision(conn)?;
             let metadata_json = tuple
@@ -588,7 +603,11 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn write_tuples_batch(&self, partition_id: &PartitionId, tuples: &[RelationshipTuple]) -> AegisResult<Revision> {
+    fn write_tuples_batch(
+        &self,
+        partition_id: &PartitionId,
+        tuples: &[RelationshipTuple],
+    ) -> AegisResult<Revision> {
         if tuples.is_empty() {
             return self.current_revision(partition_id);
         }
@@ -702,7 +721,11 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn delete_subject(&self, partition_id: &PartitionId, subject: &SubjectId) -> AegisResult<Revision> {
+    fn delete_subject(
+        &self,
+        partition_id: &PartitionId,
+        subject: &SubjectId,
+    ) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             let revision = Self::bump_revision(conn)?;
 
@@ -726,7 +749,11 @@ impl StorageBackend for SqliteStorage {
             conn.execute(
                 "UPDATE _aegis_tuples SET revision_removed = ?1
                  WHERE subject = ?2 AND partition_id = ?3 AND revision_removed IS NULL",
-                params![revision.as_u64() as i64, subject.as_str(), partition_id.as_str()],
+                params![
+                    revision.as_u64() as i64,
+                    subject.as_str(),
+                    partition_id.as_str()
+                ],
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
@@ -749,7 +776,11 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn delete_object(&self, partition_id: &PartitionId, object: &ResourceId) -> AegisResult<Revision> {
+    fn delete_object(
+        &self,
+        partition_id: &PartitionId,
+        object: &ResourceId,
+    ) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             let revision = Self::bump_revision(conn)?;
 
@@ -773,7 +804,11 @@ impl StorageBackend for SqliteStorage {
             conn.execute(
                 "UPDATE _aegis_tuples SET revision_removed = ?1
                  WHERE object = ?2 AND partition_id = ?3 AND revision_removed IS NULL",
-                params![revision.as_u64() as i64, object.as_str(), partition_id.as_str()],
+                params![
+                    revision.as_u64() as i64,
+                    object.as_str(),
+                    partition_id.as_str()
+                ],
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
@@ -809,7 +844,11 @@ impl StorageBackend for SqliteStorage {
         Ok(count > 0)
     }
 
-    fn read_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>> {
+    fn read_tuple(
+        &self,
+        partition_id: &PartitionId,
+        key: &TupleKey,
+    ) -> AegisResult<Option<RelationshipTuple>> {
         let conn = self.conn()?;
         let mut stmt = conn
             .prepare(
@@ -819,40 +858,45 @@ impl StorageBackend for SqliteStorage {
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
-        let result = stmt
-            .query_row(
-                params![key.subject.as_str(), key.relation.as_str(), key.object.as_str(), partition_id.as_str()],
-                |row| {
-                    let subject_str: String = row.get(0)?;
-                    let relation_str: String = row.get(1)?;
-                    let object_str: String = row.get(2)?;
-                    let created_at_str: String = row.get(3)?;
-                    let metadata_json: Option<String> = row.get(4)?;
-                    let valid_until_str: Option<String> = row.get(5)?;
-                    let condition_str: Option<String> = row.get(6)?;
+        let result = stmt.query_row(
+            params![
+                key.subject.as_str(),
+                key.relation.as_str(),
+                key.object.as_str(),
+                partition_id.as_str()
+            ],
+            |row| {
+                let subject_str: String = row.get(0)?;
+                let relation_str: String = row.get(1)?;
+                let object_str: String = row.get(2)?;
+                let created_at_str: String = row.get(3)?;
+                let metadata_json: Option<String> = row.get(4)?;
+                let valid_until_str: Option<String> = row.get(5)?;
+                let condition_str: Option<String> = row.get(6)?;
 
-                    let subject = SubjectId::new(&subject_str)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    let relation = Relation::new(&relation_str)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    let object = ResourceId::new(&object_str)
-                        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
-                    let metadata = metadata_json
-                        .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
-                    let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
+                let subject = SubjectId::new(&subject_str)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let relation = Relation::new(&relation_str)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let object = ResourceId::new(&object_str)
+                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+                let created_at: DateTime<Utc> =
+                    created_at_str.parse().unwrap_or_else(|_| Utc::now());
+                let metadata = metadata_json
+                    .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
+                let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
-                    Ok(RelationshipTuple {
-                        subject,
-                        relation,
-                        object,
-                        created_at,
-                        metadata,
-                        valid_until,
-                        condition: condition_str,
-                    })
-                },
-            );
+                Ok(RelationshipTuple {
+                    subject,
+                    relation,
+                    object,
+                    created_at,
+                    metadata,
+                    valid_until,
+                    condition: condition_str,
+                })
+            },
+        );
 
         match result {
             Ok(tuple) => Ok(Some(tuple)),
@@ -878,11 +922,15 @@ impl StorageBackend for SqliteStorage {
         let revision_filter = match consistency {
             ConsistencyMode::AtRevision(rev) => {
                 let r = rev.as_u64() as i64;
-                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+                format!(
+                    "revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})"
+                )
             }
             _ => "revision_removed IS NULL".to_string(),
         };
-        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(rel) = relation {
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(rel) =
+            relation
+        {
             (
                 format!(
                     "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
@@ -911,7 +959,8 @@ impl StorageBackend for SqliteStorage {
             .prepare(&sql)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query_map(params_refs.as_slice(), |row| {
                 let subject_str: String = row.get(0)?;
@@ -928,7 +977,8 @@ impl StorageBackend for SqliteStorage {
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                 let object = ResourceId::new(&object_str)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
+                let created_at: DateTime<Utc> =
+                    created_at_str.parse().unwrap_or_else(|_| Utc::now());
                 let metadata = metadata_json
                     .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
                 let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
@@ -947,9 +997,7 @@ impl StorageBackend for SqliteStorage {
 
         let mut results = Vec::new();
         for row in rows {
-            results.push(
-                row.map_err(|e| AegisError::StorageQuery(e.to_string()))?,
-            );
+            results.push(row.map_err(|e| AegisError::StorageQuery(e.to_string()))?);
         }
         Ok(results)
     }
@@ -971,11 +1019,15 @@ impl StorageBackend for SqliteStorage {
         let revision_filter = match consistency {
             ConsistencyMode::AtRevision(rev) => {
                 let r = rev.as_u64() as i64;
-                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+                format!(
+                    "revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})"
+                )
             }
             _ => "revision_removed IS NULL".to_string(),
         };
-        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(rel) = relation {
+        let (sql, params_vec): (String, Vec<Box<dyn rusqlite::types::ToSql>>) = if let Some(rel) =
+            relation
+        {
             (
                 format!(
                     "SELECT subject, relation, object, created_at, metadata, valid_until, condition FROM _aegis_tuples
@@ -1004,7 +1056,8 @@ impl StorageBackend for SqliteStorage {
             .prepare(&sql)
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
-        let params_refs: Vec<&dyn rusqlite::types::ToSql> = params_vec.iter().map(|p| p.as_ref()).collect();
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|p| p.as_ref()).collect();
         let rows = stmt
             .query_map(params_refs.as_slice(), |row| {
                 let subject_str: String = row.get(0)?;
@@ -1021,7 +1074,8 @@ impl StorageBackend for SqliteStorage {
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                 let object = ResourceId::new(&object_str)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
+                let created_at: DateTime<Utc> =
+                    created_at_str.parse().unwrap_or_else(|_| Utc::now());
                 let metadata = metadata_json
                     .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
                 let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
@@ -1040,9 +1094,7 @@ impl StorageBackend for SqliteStorage {
 
         let mut results = Vec::new();
         for row in rows {
-            results.push(
-                row.map_err(|e| AegisError::StorageQuery(e.to_string()))?,
-            );
+            results.push(row.map_err(|e| AegisError::StorageQuery(e.to_string()))?);
         }
         Ok(results)
     }
@@ -1079,7 +1131,8 @@ impl StorageBackend for SqliteStorage {
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                     let object = ResourceId::new(&object_str)
                         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                    let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
+                    let created_at: DateTime<Utc> =
+                        created_at_str.parse().unwrap_or_else(|_| Utc::now());
                     let metadata = metadata_json
                         .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
                     let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
@@ -1099,9 +1152,7 @@ impl StorageBackend for SqliteStorage {
 
         let mut results = Vec::new();
         for row in rows {
-            results.push(
-                row.map_err(|e| AegisError::StorageQuery(e.to_string()))?,
-            );
+            results.push(row.map_err(|e| AegisError::StorageQuery(e.to_string()))?);
         }
         Ok(results)
     }
@@ -1124,12 +1175,15 @@ impl StorageBackend for SqliteStorage {
         let revision_filter = match consistency {
             ConsistencyMode::AtRevision(rev) => {
                 let r = rev.as_u64() as i64;
-                format!("revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})")
+                format!(
+                    "revision_added <= {r} AND (revision_removed IS NULL OR revision_removed > {r})"
+                )
             }
             _ => "revision_removed IS NULL".to_string(),
         };
         let mut conditions = vec!["partition_id = ?1".to_string(), revision_filter];
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(partition_id.as_str().to_string())];
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
+            vec![Box::new(partition_id.as_str().to_string())];
 
         if let Some(ref st) = filter.subject_type {
             params_vec.push(Box::new(format!("{st}:%")));
@@ -1149,11 +1203,7 @@ impl StorageBackend for SqliteStorage {
         }
 
         let where_clause = conditions.join(" AND ");
-        let offset = pagination
-            .cursor
-            .as_ref()
-            .map(|c| c.offset)
-            .unwrap_or(0);
+        let offset = pagination.cursor.as_ref().map(|c| c.offset).unwrap_or(0);
         let limit = pagination.limit;
 
         let sql = format!(
@@ -1191,7 +1241,8 @@ impl StorageBackend for SqliteStorage {
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
                 let object = ResourceId::new(&object_str)
                     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                let created_at: DateTime<Utc> = created_at_str.parse().unwrap_or_else(|_| Utc::now());
+                let created_at: DateTime<Utc> =
+                    created_at_str.parse().unwrap_or_else(|_| Utc::now());
                 let metadata = metadata_json
                     .and_then(|m| serde_json::from_str::<HashMap<String, String>>(&m).ok());
                 let valid_until = valid_until_str.and_then(|s| s.parse::<DateTime<Utc>>().ok());
@@ -1264,7 +1315,10 @@ impl StorageBackend for SqliteStorage {
         Ok(RevisionToken::new(revision, self.node_id))
     }
 
-    fn begin_transaction(&self, partition_id: &PartitionId) -> AegisResult<Box<dyn StorageTransaction>> {
+    fn begin_transaction(
+        &self,
+        partition_id: &PartitionId,
+    ) -> AegisResult<Box<dyn StorageTransaction>> {
         let _ = partition_id;
         let conn = self.conn()?;
         let identity = self.actor_identity.lock().unwrap().clone();
@@ -1282,7 +1336,8 @@ impl StorageBackend for SqliteStorage {
     ) -> AegisResult<Vec<AuditEntry>> {
         let conn = self.conn()?;
         let mut conditions: Vec<String> = vec!["partition_id = ?1".to_string()];
-        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(partition_id.as_str().to_string())];
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> =
+            vec![Box::new(partition_id.as_str().to_string())];
 
         if let Some(obj) = object {
             params_vec.push(Box::new(obj.as_str().to_string()));
@@ -1303,11 +1358,7 @@ impl StorageBackend for SqliteStorage {
         } else {
             conditions.join(" AND ")
         };
-        let offset = pagination
-            .cursor
-            .as_ref()
-            .map(|c| c.offset)
-            .unwrap_or(0);
+        let offset = pagination.cursor.as_ref().map(|c| c.offset).unwrap_or(0);
         let limit = pagination.limit;
 
         let sql = format!(
@@ -1413,10 +1464,16 @@ impl StorageBackend for SqliteStorage {
             return None;
         }
         let wal_path = format!("{}-wal", self.config.path);
-        std::fs::metadata(&wal_path).ok().map(|m| m.len() as f64 / (1024.0 * 1024.0))
+        std::fs::metadata(&wal_path)
+            .ok()
+            .map(|m| m.len() as f64 / (1024.0 * 1024.0))
     }
 
-    fn delete_events_before(&self, partition_id: &PartitionId, cutoff: DateTime<Utc>) -> AegisResult<usize> {
+    fn delete_events_before(
+        &self,
+        partition_id: &PartitionId,
+        cutoff: DateTime<Utc>,
+    ) -> AegisResult<usize> {
         let conn = self.conn()?;
         let cutoff_str = cutoff.to_rfc3339();
         let count = conn
@@ -1455,6 +1512,7 @@ impl StorageBackend for SqliteStorage {
     }
 
     fn close(&self) -> AegisResult<()> {
+        #[allow(clippy::collapsible_if)]
         if self.config.wal_mode && self.config.path != ":memory:" {
             if let Ok(conn) = self.pool.get() {
                 let _ = conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
@@ -1540,7 +1598,11 @@ impl StorageBackend for SqliteStorage {
         })
     }
 
-    fn recover_from_events(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision> {
+    fn recover_from_events(
+        &self,
+        partition_id: &PartitionId,
+        to_revision: Option<Revision>,
+    ) -> AegisResult<Revision> {
         self.recover_from_events_impl(partition_id, to_revision)
     }
 
@@ -1569,14 +1631,39 @@ impl StorageBackend for SqliteStorage {
                 let identity: Option<String> = row.get(9)?;
                 let previous_hash: String = row.get(10)?;
                 let event_hash: String = row.get(11)?;
-                Ok((event_id, revision, action, subject, relation, object, pid, metadata, timestamp, identity, previous_hash, event_hash))
+                Ok((
+                    event_id,
+                    revision,
+                    action,
+                    subject,
+                    relation,
+                    object,
+                    pid,
+                    metadata,
+                    timestamp,
+                    identity,
+                    previous_hash,
+                    event_hash,
+                ))
             })
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
         let mut last_event_hash = String::new();
         for row in rows {
-            let (event_id, revision, action, subject, relation, object, pid, metadata, timestamp, identity, prev_hash, event_hash) =
-                row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            let (
+                event_id,
+                revision,
+                action,
+                subject,
+                relation,
+                object,
+                pid,
+                metadata,
+                timestamp,
+                identity,
+                prev_hash,
+                event_hash,
+            ) = row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
             if prev_hash != last_event_hash {
                 return Ok(Some(format!(
@@ -1699,51 +1786,55 @@ impl StorageBackend for SqliteStorage {
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
-        let result = stmt
-            .query_row(params![id], |row| {
-                let id_str: String = row.get(0)?;
-                let name: String = row.get(1)?;
-                let description: String = row.get(2)?;
-                let schema_json: String = row.get(3)?;
-                let base_version: i64 = row.get(4)?;
-                let status_str: String = row.get(5)?;
-                let created_at: String = row.get(6)?;
-                let updated_at: String = row.get(7)?;
-                let created_by: String = row.get(8)?;
-                let approved_by: Option<String> = row.get(9)?;
-                let rejection_reason: Option<String> = row.get(10)?;
+        let result = stmt.query_row(params![id], |row| {
+            let id_str: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let description: String = row.get(2)?;
+            let schema_json: String = row.get(3)?;
+            let base_version: i64 = row.get(4)?;
+            let status_str: String = row.get(5)?;
+            let created_at: String = row.get(6)?;
+            let updated_at: String = row.get(7)?;
+            let created_by: String = row.get(8)?;
+            let approved_by: Option<String> = row.get(9)?;
+            let rejection_reason: Option<String> = row.get(10)?;
 
-                let schema = serde_json::from_str(&schema_json)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
-                let status = match status_str.as_str() {
-                    "drafting" => crate::engine::policy_lifecycle::DraftStatus::Drafting,
-                    "under_review" => crate::engine::policy_lifecycle::DraftStatus::UnderReview,
-                    "approved" => crate::engine::policy_lifecycle::DraftStatus::Approved,
-                    "published" => crate::engine::policy_lifecycle::DraftStatus::Published,
-                    "rejected" => crate::engine::policy_lifecycle::DraftStatus::Rejected,
-                    "superseded" => crate::engine::policy_lifecycle::DraftStatus::Superseded,
-                    "archived" => crate::engine::policy_lifecycle::DraftStatus::Archived,
-                    other => return Err(rusqlite::Error::ToSqlConversionFailure(
-                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("unknown DraftStatus: {}", other)))
-                    )),
-                };
-                let id = uuid::Uuid::parse_str(&id_str)
-                    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let schema = serde_json::from_str(&schema_json)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+            let status = match status_str.as_str() {
+                "drafting" => crate::engine::policy_lifecycle::DraftStatus::Drafting,
+                "under_review" => crate::engine::policy_lifecycle::DraftStatus::UnderReview,
+                "approved" => crate::engine::policy_lifecycle::DraftStatus::Approved,
+                "published" => crate::engine::policy_lifecycle::DraftStatus::Published,
+                "rejected" => crate::engine::policy_lifecycle::DraftStatus::Rejected,
+                "superseded" => crate::engine::policy_lifecycle::DraftStatus::Superseded,
+                "archived" => crate::engine::policy_lifecycle::DraftStatus::Archived,
+                other => {
+                    return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidData,
+                            format!("unknown DraftStatus: {}", other),
+                        ),
+                    )));
+                }
+            };
+            let id = uuid::Uuid::parse_str(&id_str)
+                .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
 
-                Ok(PolicyDraft {
-                    id,
-                    name,
-                    description,
-                    schema,
-                    base_version: base_version as u32,
-                    status,
-                    created_at,
-                    updated_at,
-                    created_by,
-                    approved_by,
-                    rejection_reason,
-                })
-            });
+            Ok(PolicyDraft {
+                id,
+                name,
+                description,
+                schema,
+                base_version: base_version as u32,
+                status,
+                created_at,
+                updated_at,
+                created_by,
+                approved_by,
+                rejection_reason,
+            })
+        });
 
         match result {
             Ok(draft) => Ok(Some(draft)),
@@ -1767,8 +1858,10 @@ impl StorageBackend for SqliteStorage {
         let conn = self.conn()?;
         let queries_json = serde_json::to_string(&schedule.queries)
             .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
-        let compare_schema_json = schedule.compare_schema.as_ref()
-            .map(|s| serde_json::to_string(s))
+        let compare_schema_json = schedule
+            .compare_schema
+            .as_ref()
+            .map(serde_json::to_string)
             .transpose()
             .map_err(|e| AegisError::MetadataValidation(e.to_string()))?;
         conn.execute(
@@ -1851,7 +1944,11 @@ impl SqliteStorage {
     /// Recover the tuple graph from the event log.
     /// Replays all events in revision order to reconstruct the current state.
     /// After recovery, verifies that the final revision matches.
-    fn recover_from_events_impl(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision> {
+    fn recover_from_events_impl(
+        &self,
+        partition_id: &PartitionId,
+        to_revision: Option<Revision>,
+    ) -> AegisResult<Revision> {
         self.with_write_tx(|conn| {
             conn.execute("DELETE FROM _aegis_tuples WHERE partition_id = ?1", [partition_id.as_str()])
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1884,6 +1981,7 @@ impl SqliteStorage {
                     row.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
                 let rev = Revision::new(rev as u64);
+                #[allow(clippy::collapsible_if)]
                 if let Some(target) = to_revision {
                     if rev > target {
                         continue;
@@ -1923,7 +2021,7 @@ impl SqliteStorage {
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
             }
 
-            Ok(Self::read_revision(conn)?)
+            Self::read_revision(conn)
         })
     }
 
@@ -1993,7 +2091,7 @@ impl SqliteStorage {
             )
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
 
-            Ok(Self::read_revision(conn)?)
+            Self::read_revision(conn)
         })
     }
 
@@ -2069,7 +2167,11 @@ pub struct SqliteTransaction {
 }
 
 impl SqliteTransaction {
-    pub fn new(conn: r2d2::PooledConnection<SqliteConnectionManager>, node_id: Uuid, actor_identity: Option<String>) -> AegisResult<Self> {
+    pub fn new(
+        conn: r2d2::PooledConnection<SqliteConnectionManager>,
+        node_id: Uuid,
+        actor_identity: Option<String>,
+    ) -> AegisResult<Self> {
         conn.execute_batch("BEGIN IMMEDIATE")
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         Ok(Self {
@@ -2091,6 +2193,7 @@ impl SqliteTransaction {
         SqliteStorage::bump_revision(conn)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn append_event(
         &self,
         revision: Revision,
@@ -2102,7 +2205,17 @@ impl SqliteTransaction {
         metadata: Option<&str>,
     ) -> AegisResult<()> {
         let conn = self.conn()?;
-        SqliteStorage::append_event(conn, revision, action, subject, relation, object, partition_id, metadata, self.actor_identity.as_deref())
+        SqliteStorage::append_event(
+            conn,
+            revision,
+            action,
+            subject,
+            relation,
+            object,
+            partition_id,
+            metadata,
+            self.actor_identity.as_deref(),
+        )
     }
 }
 
@@ -2243,9 +2356,10 @@ impl StorageTransaction for SqliteTransaction {
     }
 
     fn commit(mut self: Box<Self>) -> AegisResult<Revision> {
-        let conn = self.conn.as_ref().ok_or_else(|| {
-            AegisError::Internal("transaction already consumed".into())
-        })?;
+        let conn = self
+            .conn
+            .as_ref()
+            .ok_or_else(|| AegisError::Internal("transaction already consumed".into()))?;
         let revision = SqliteStorage::read_revision(conn)?;
         conn.execute_batch("COMMIT")
             .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -2255,6 +2369,7 @@ impl StorageTransaction for SqliteTransaction {
     }
 
     fn rollback(mut self: Box<Self>) -> AegisResult<()> {
+        #[allow(clippy::collapsible_if)]
         if !self.committed {
             if let Some(conn) = self.conn.take() {
                 conn.execute_batch("ROLLBACK")
@@ -2267,6 +2382,7 @@ impl StorageTransaction for SqliteTransaction {
 
 impl Drop for SqliteTransaction {
     fn drop(&mut self) {
+        #[allow(clippy::collapsible_if)]
         if !self.committed {
             if let Some(conn) = self.conn.take() {
                 let _ = conn.execute_batch("ROLLBACK");
@@ -2316,10 +2432,14 @@ mod tests {
         let meta = store.initialize().unwrap();
         assert!(meta.healthy);
 
-        let rev = store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
+        let rev = store
+            .write_tuple(&PartitionId::default(), &test_tuple())
+            .unwrap();
         assert!(rev.as_u64() > 0);
 
-        let has = store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap();
+        let has = store
+            .has_tuple(&PartitionId::default(), &test_tuple().key())
+            .unwrap();
         assert!(has);
     }
 
@@ -2328,9 +2448,13 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
+        store
+            .write_tuple(&PartitionId::default(), &test_tuple())
+            .unwrap();
 
-        let read = store.read_tuple(&PartitionId::default(), &test_tuple().key()).unwrap();
+        let read = store
+            .read_tuple(&PartitionId::default(), &test_tuple().key())
+            .unwrap();
         assert!(read.is_some());
         let t = read.unwrap();
         assert_eq!(t.subject.as_str(), "user:123");
@@ -2343,8 +2467,15 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let r1 = store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
-        let r2 = store.write_tuple(&PartitionId::default(), &tuple("user:456", "viewer", "repo:other")).unwrap();
+        let r1 = store
+            .write_tuple(&PartitionId::default(), &test_tuple())
+            .unwrap();
+        let r2 = store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:456", "viewer", "repo:other"),
+            )
+            .unwrap();
         assert_eq!(r1.as_u64() + 1, r2.as_u64());
     }
 
@@ -2353,8 +2484,12 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
-        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap(); // same tuple again
+        store
+            .write_tuple(&PartitionId::default(), &test_tuple())
+            .unwrap();
+        store
+            .write_tuple(&PartitionId::default(), &test_tuple())
+            .unwrap(); // same tuple again
 
         let count = store
             .conn()
@@ -2375,11 +2510,23 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
-        assert!(store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
+        store
+            .write_tuple(&PartitionId::default(), &test_tuple())
+            .unwrap();
+        assert!(
+            store
+                .has_tuple(&PartitionId::default(), &test_tuple().key())
+                .unwrap()
+        );
 
-        store.delete_tuple(&PartitionId::default(), &test_tuple().key()).unwrap();
-        assert!(!store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
+        store
+            .delete_tuple(&PartitionId::default(), &test_tuple().key())
+            .unwrap();
+        assert!(
+            !store
+                .has_tuple(&PartitionId::default(), &test_tuple().key())
+                .unwrap()
+        );
     }
 
     #[test]
@@ -2389,7 +2536,10 @@ mod tests {
 
         let rev_before = store.current_revision(&PartitionId::default()).unwrap();
         let rev_after = store
-            .delete_tuple(&PartitionId::default(), &key("user:999", "editor", "repo:nonexistent"))
+            .delete_tuple(
+                &PartitionId::default(),
+                &key("user:999", "editor", "repo:nonexistent"),
+            )
             .unwrap();
         assert_eq!(rev_before, rev_after); // no bump
     }
@@ -2399,12 +2549,27 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "viewer", "repo:b")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "viewer", "repo:b"),
+            )
+            .unwrap();
 
         assert_eq!(
             store
-                .list_by_subject(&PartitionId::default(), &SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_subject(
+                    &PartitionId::default(),
+                    &SubjectId::new("user:1").unwrap(),
+                    None,
+                    &ConsistencyMode::MinimizeLatency
+                )
                 .unwrap()
                 .len(),
             2
@@ -2416,7 +2581,12 @@ mod tests {
 
         assert_eq!(
             store
-                .list_by_subject(&PartitionId::default(), &SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_subject(
+                    &PartitionId::default(),
+                    &SubjectId::new("user:1").unwrap(),
+                    None,
+                    &ConsistencyMode::MinimizeLatency
+                )
                 .unwrap()
                 .len(),
             0
@@ -2428,12 +2598,27 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:a")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:2", "viewer", "repo:a"),
+            )
+            .unwrap();
 
         assert_eq!(
             store
-                .list_by_object(&PartitionId::default(), &ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_object(
+                    &PartitionId::default(),
+                    &ResourceId::new("repo:a").unwrap(),
+                    None,
+                    &ConsistencyMode::MinimizeLatency
+                )
                 .unwrap()
                 .len(),
             2
@@ -2445,7 +2630,12 @@ mod tests {
 
         assert_eq!(
             store
-                .list_by_object(&PartitionId::default(), &ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_object(
+                    &PartitionId::default(),
+                    &ResourceId::new("repo:a").unwrap(),
+                    None,
+                    &ConsistencyMode::MinimizeLatency
+                )
                 .unwrap()
                 .len(),
             0
@@ -2459,11 +2649,26 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:a")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:2", "viewer", "repo:a"),
+            )
+            .unwrap();
 
         let results = store
-            .list_by_object(&PartitionId::default(), &ResourceId::new("repo:a").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+            .list_by_object(
+                &PartitionId::default(),
+                &ResourceId::new("repo:a").unwrap(),
+                None,
+                &ConsistencyMode::MinimizeLatency,
+            )
             .unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -2473,8 +2678,18 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:a")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:2", "viewer", "repo:a"),
+            )
+            .unwrap();
 
         let results = store
             .list_by_object(
@@ -2493,11 +2708,26 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "viewer", "repo:b")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "viewer", "repo:b"),
+            )
+            .unwrap();
 
         let results = store
-            .list_by_subject(&PartitionId::default(), &SubjectId::new("user:1").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+            .list_by_subject(
+                &PartitionId::default(),
+                &SubjectId::new("user:1").unwrap(),
+                None,
+                &ConsistencyMode::MinimizeLatency,
+            )
             .unwrap();
         assert_eq!(results.len(), 2);
     }
@@ -2507,9 +2737,24 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:2", "editor", "repo:a")).unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:3", "viewer", "repo:a")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:2", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:3", "viewer", "repo:a"),
+            )
+            .unwrap();
 
         let results = store
             .list_by_relation(
@@ -2530,11 +2775,10 @@ mod tests {
 
         for i in 0..10 {
             store
-                .write_tuple(&PartitionId::default(), &tuple(
-                    &format!("user:{i}"),
-                    "editor",
-                    "repo:fluxbus",
-                ))
+                .write_tuple(
+                    &PartitionId::default(),
+                    &tuple(&format!("user:{i}"), "editor", "repo:fluxbus"),
+                )
                 .unwrap();
         }
 
@@ -2598,15 +2842,30 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:2", "editor", "repo:a")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:2", "editor", "repo:a"),
+            )
+            .unwrap();
 
         let filter = TupleFilter {
             subject_type: Some("user".to_string()),
             ..Default::default()
         };
         let results = store
-            .query_tuples(&PartitionId::default(), &filter, &PaginationParams::default(), &ConsistencyMode::MinimizeLatency)
+            .query_tuples(
+                &PartitionId::default(),
+                &filter,
+                &PaginationParams::default(),
+                &ConsistencyMode::MinimizeLatency,
+            )
             .unwrap();
         assert_eq!(results.tuples.len(), 2);
     }
@@ -2618,13 +2877,38 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        assert_eq!(store.current_revision(&PartitionId::default()).unwrap().as_u64(), 0);
+        assert_eq!(
+            store
+                .current_revision(&PartitionId::default())
+                .unwrap()
+                .as_u64(),
+            0
+        );
 
-        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
-        assert_eq!(store.current_revision(&PartitionId::default()).unwrap().as_u64(), 1);
+        store
+            .write_tuple(&PartitionId::default(), &test_tuple())
+            .unwrap();
+        assert_eq!(
+            store
+                .current_revision(&PartitionId::default())
+                .unwrap()
+                .as_u64(),
+            1
+        );
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:456", "viewer", "repo:other")).unwrap();
-        assert_eq!(store.current_revision(&PartitionId::default()).unwrap().as_u64(), 2);
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:456", "viewer", "repo:other"),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .current_revision(&PartitionId::default())
+                .unwrap()
+                .as_u64(),
+            2
+        );
     }
 
     #[test]
@@ -2646,11 +2930,19 @@ mod tests {
 
         let mut tx = store.begin_transaction(&PartitionId::default()).unwrap();
         tx.write(&PartitionId::default(), &test_tuple()).unwrap();
-        tx.write(&PartitionId::default(), &tuple("user:456", "viewer", "repo:other")).unwrap();
+        tx.write(
+            &PartitionId::default(),
+            &tuple("user:456", "viewer", "repo:other"),
+        )
+        .unwrap();
         let rev = tx.commit().unwrap();
 
         assert!(rev.as_u64() > 0);
-        assert!(store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
+        assert!(
+            store
+                .has_tuple(&PartitionId::default(), &test_tuple().key())
+                .unwrap()
+        );
     }
 
     #[test]
@@ -2664,8 +2956,15 @@ mod tests {
         tx.write(&PartitionId::default(), &test_tuple()).unwrap();
         tx.rollback().unwrap();
 
-        assert_eq!(store.current_revision(&PartitionId::default()).unwrap(), rev_before);
-        assert!(!store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
+        assert_eq!(
+            store.current_revision(&PartitionId::default()).unwrap(),
+            rev_before
+        );
+        assert!(
+            !store
+                .has_tuple(&PartitionId::default(), &test_tuple().key())
+                .unwrap()
+        );
     }
 
     #[test]
@@ -2677,7 +2976,11 @@ mod tests {
         tx.write(&PartitionId::default(), &test_tuple()).unwrap();
 
         tx.savepoint("sp1").unwrap();
-        tx.write(&PartitionId::default(), &tuple("user:savepoint", "test", "repo:sp")).unwrap();
+        tx.write(
+            &PartitionId::default(),
+            &tuple("user:savepoint", "test", "repo:sp"),
+        )
+        .unwrap();
 
         // Savepoint tuple should exist (it was written after the savepoint)
         tx.rollback_to_savepoint("sp1").unwrap();
@@ -2687,8 +2990,19 @@ mod tests {
         assert!(rev.as_u64() > 0);
 
         // After commit: only the original tuple exists, savepoint tuple was rolled back
-        assert!(store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
-        assert!(!store.has_tuple(&PartitionId::default(), &key("user:savepoint", "test", "repo:sp")).unwrap());
+        assert!(
+            store
+                .has_tuple(&PartitionId::default(), &test_tuple().key())
+                .unwrap()
+        );
+        assert!(
+            !store
+                .has_tuple(
+                    &PartitionId::default(),
+                    &key("user:savepoint", "test", "repo:sp")
+                )
+                .unwrap()
+        );
     }
 
     #[test]
@@ -2704,7 +3018,10 @@ mod tests {
             // tx drops without commit
         }
 
-        assert_eq!(store.current_revision(&PartitionId::default()).unwrap(), rev_before);
+        assert_eq!(
+            store.current_revision(&PartitionId::default()).unwrap(),
+            rev_before
+        );
     }
 
     // ── Audit ──
@@ -2714,7 +3031,9 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
+        store
+            .write_tuple(&PartitionId::default(), &test_tuple())
+            .unwrap();
         store
             .delete_tuple(&PartitionId::default(), &test_tuple().key())
             .unwrap();
@@ -2739,10 +3058,16 @@ mod tests {
         store.initialize().unwrap();
 
         store
-            .write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a"))
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
             .unwrap();
         let r2 = store
-            .write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:a"))
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:2", "viewer", "repo:a"),
+            )
             .unwrap();
 
         let audit = store
@@ -2774,11 +3099,17 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
+        store
+            .write_tuple(&PartitionId::default(), &test_tuple())
+            .unwrap();
         store.close().unwrap();
 
         // After close, can still read (pool connections may be live)
-        assert!(store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
+        assert!(
+            store
+                .has_tuple(&PartitionId::default(), &test_tuple().key())
+                .unwrap()
+        );
     }
 
     // ── Revision Snapshots ──
@@ -2789,17 +3120,34 @@ mod tests {
         store.initialize().unwrap();
 
         // Write tuple at rev 1
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
         let rev_before_delete = store.current_revision(&PartitionId::default()).unwrap();
 
         // Delete and re-write at rev 2+
-        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:a")).unwrap();
-        store.delete_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:2", "viewer", "repo:a"),
+            )
+            .unwrap();
+        store
+            .delete_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a"))
+            .unwrap();
 
         // Read at rev 1 should see user:1 only (active at that point)
         let conn = store.conn().unwrap();
-        let at_rev1 = SqliteStorage::read_tuples_at_revision(&conn, rev_before_delete.as_u64() as i64).unwrap();
-        let subjects_at_rev1: Vec<String> = at_rev1.iter().map(|t| t.subject.as_str().to_string()).collect();
+        let at_rev1 =
+            SqliteStorage::read_tuples_at_revision(&conn, rev_before_delete.as_u64() as i64)
+                .unwrap();
+        let subjects_at_rev1: Vec<String> = at_rev1
+            .iter()
+            .map(|t| t.subject.as_str().to_string())
+            .collect();
         assert!(subjects_at_rev1.contains(&"user:1".to_string()));
         assert!(!subjects_at_rev1.contains(&"user:2".to_string()));
     }
@@ -2817,14 +3165,27 @@ mod tests {
             tuple("team:eng", "owner", "workspace:core"),
         ];
 
-        let rev = store.write_tuples_batch(&PartitionId::default(), &tuples).unwrap();
+        let rev = store
+            .write_tuples_batch(&PartitionId::default(), &tuples)
+            .unwrap();
         assert!(rev.as_u64() > 0);
 
-        assert!(store.has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a")).unwrap());
-        assert!(store.has_tuple(&PartitionId::default(), &key("user:2", "viewer", "repo:b")).unwrap());
         assert!(
             store
-                .has_tuple(&PartitionId::default(), &key("team:eng", "owner", "workspace:core"))
+                .has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a"))
+                .unwrap()
+        );
+        assert!(
+            store
+                .has_tuple(&PartitionId::default(), &key("user:2", "viewer", "repo:b"))
+                .unwrap()
+        );
+        assert!(
+            store
+                .has_tuple(
+                    &PartitionId::default(),
+                    &key("team:eng", "owner", "workspace:core")
+                )
                 .unwrap()
         );
     }
@@ -2834,7 +3195,9 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let rev = store.write_tuples_batch(&PartitionId::default(), &[]).unwrap();
+        let rev = store
+            .write_tuples_batch(&PartitionId::default(), &[])
+            .unwrap();
         assert_eq!(rev.as_u64(), 0);
     }
 
@@ -2858,7 +3221,10 @@ mod tests {
 
         store.write_tuple(&PartitionId::default(), &tuple).unwrap();
 
-        let read = store.read_tuple(&PartitionId::default(), &tuple.key()).unwrap().unwrap();
+        let read = store
+            .read_tuple(&PartitionId::default(), &tuple.key())
+            .unwrap()
+            .unwrap();
         assert_eq!(read.metadata.unwrap(), meta);
     }
 
@@ -2878,8 +3244,14 @@ mod tests {
         // In in-memory mode, WAL may not be used, but we verify no crash
         let mut store = store;
         store.initialize().unwrap();
-        store.write_tuple(&PartitionId::default(), &test_tuple()).unwrap();
-        assert!(store.has_tuple(&PartitionId::default(), &test_tuple().key()).unwrap());
+        store
+            .write_tuple(&PartitionId::default(), &test_tuple())
+            .unwrap();
+        assert!(
+            store
+                .has_tuple(&PartitionId::default(), &test_tuple().key())
+                .unwrap()
+        );
     }
 
     // ── Initialize ──
@@ -2901,15 +3273,19 @@ mod tests {
         let store = storage();
         assert!(
             store
-                .list_by_object(&PartitionId::default(), &ResourceId::new("nonexistent").unwrap(), None, &ConsistencyMode::MinimizeLatency)
+                .list_by_object(
+                    &PartitionId::default(),
+                    &ResourceId::new("nonexistent").unwrap(),
+                    None,
+                    &ConsistencyMode::MinimizeLatency
+                )
                 .unwrap()
                 .is_empty()
         );
         assert!(
-            store
+            !store
                 .has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a"))
                 .unwrap()
-                == false
         );
     }
 
@@ -2920,15 +3296,35 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:b")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:2", "viewer", "repo:b"),
+            )
+            .unwrap();
         let rev_before = store.current_revision(&PartitionId::default()).unwrap();
 
-        let recovered = store.recover_from_events(&PartitionId::default(), None).unwrap();
+        let recovered = store
+            .recover_from_events(&PartitionId::default(), None)
+            .unwrap();
         assert_eq!(recovered, rev_before);
 
-        assert!(store.has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a")).unwrap());
-        assert!(store.has_tuple(&PartitionId::default(), &key("user:2", "viewer", "repo:b")).unwrap());
+        assert!(
+            store
+                .has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a"))
+                .unwrap()
+        );
+        assert!(
+            store
+                .has_tuple(&PartitionId::default(), &key("user:2", "viewer", "repo:b"))
+                .unwrap()
+        );
     }
 
     #[test]
@@ -2936,14 +3332,32 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:2", "viewer", "repo:b")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:2", "viewer", "repo:b"),
+            )
+            .unwrap();
 
         let recovered = store.recover_to_revision(Revision::new(1)).unwrap();
         assert_eq!(recovered.as_u64(), 1);
 
-        assert!(store.has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a")).unwrap());
-        assert!(!store.has_tuple(&PartitionId::default(), &key("user:2", "viewer", "repo:b")).unwrap());
+        assert!(
+            store
+                .has_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a"))
+                .unwrap()
+        );
+        assert!(
+            !store
+                .has_tuple(&PartitionId::default(), &key("user:2", "viewer", "repo:b"))
+                .unwrap()
+        );
     }
 
     #[test]
@@ -2951,11 +3365,22 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        store.write_tuple(&PartitionId::default(), &tuple("user:1", "editor", "repo:a")).unwrap();
-        store.delete_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a")).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:1", "editor", "repo:a"),
+            )
+            .unwrap();
+        store
+            .delete_tuple(&PartitionId::default(), &key("user:1", "editor", "repo:a"))
+            .unwrap();
 
-        let before_events = store.conn().unwrap()
-            .query_row("SELECT COUNT(*) FROM _aegis_events", [], |row| row.get::<_, i64>(0))
+        let before_events = store
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM _aegis_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
             .unwrap();
 
         assert_eq!(before_events, 2);
@@ -2963,8 +3388,12 @@ mod tests {
         let removed = store.compact_events(&PartitionId::default()).unwrap();
         assert_eq!(removed, 2);
 
-        let after_events = store.conn().unwrap()
-            .query_row("SELECT COUNT(*) FROM _aegis_events", [], |row| row.get::<_, i64>(0))
+        let after_events = store
+            .conn()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM _aegis_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
             .unwrap();
         assert_eq!(after_events, 0);
     }
@@ -2974,7 +3403,9 @@ mod tests {
         let mut store = storage();
         store.initialize().unwrap();
 
-        let recovered = store.recover_from_events(&PartitionId::default(), None).unwrap();
+        let recovered = store
+            .recover_from_events(&PartitionId::default(), None)
+            .unwrap();
         assert_eq!(recovered.as_u64(), 0);
     }
 
@@ -2993,29 +3424,61 @@ mod tests {
         // Empty name
         let tx = store.begin_transaction(&PartitionId::default()).unwrap();
         let err = tx.savepoint("").unwrap_err();
-        assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::Empty)), "empty name should fail: {err}");
+        assert!(
+            matches!(
+                err,
+                AegisError::Validation(crate::types::ValidationError::Empty)
+            ),
+            "empty name should fail: {err}"
+        );
         tx.rollback().ok();
 
         // Too long name (65 chars)
         let tx = store.begin_transaction(&PartitionId::default()).unwrap();
         let long_name = "a".repeat(65);
         let err = tx.savepoint(&long_name).unwrap_err();
-        assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::TooLong { .. })), "long name should fail: {err}");
+        assert!(
+            matches!(
+                err,
+                AegisError::Validation(crate::types::ValidationError::TooLong { .. })
+            ),
+            "long name should fail: {err}"
+        );
         tx.rollback().ok();
 
         // Invalid characters (SQL injection attempt)
         let tx = store.begin_transaction(&PartitionId::default()).unwrap();
-        let err = tx.savepoint("\"; DROP TABLE _aegis_tuples; --").unwrap_err();
-        assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))), "injection attempt should fail: {err}");
+        let err = tx
+            .savepoint("\"; DROP TABLE _aegis_tuples; --")
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))
+            ),
+            "injection attempt should fail: {err}"
+        );
         tx.rollback().ok();
 
         // Same validation applies to rollback_to_savepoint and release_savepoint
         let tx = store.begin_transaction(&PartitionId::default()).unwrap();
         tx.savepoint("valid").unwrap();
         let err = tx.rollback_to_savepoint("invalid!").unwrap_err();
-        assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))), "rollback_to_savepoint should validate name: {err}");
+        assert!(
+            matches!(
+                err,
+                AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))
+            ),
+            "rollback_to_savepoint should validate name: {err}"
+        );
         let err = tx.release_savepoint("no space").unwrap_err();
-        assert!(matches!(err, AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))), "release_savepoint should validate name: {err}");
+        assert!(
+            matches!(
+                err,
+                AegisError::Validation(crate::types::ValidationError::InvalidCharacters(_))
+            ),
+            "release_savepoint should validate name: {err}"
+        );
         tx.rollback().ok();
     }
 }

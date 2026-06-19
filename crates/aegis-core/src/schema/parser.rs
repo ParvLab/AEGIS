@@ -209,6 +209,7 @@ pub fn lint_schema(schema: &Schema) -> LintResult {
 
         // Check condition syntax on permissions
         for (perm_name, perm_def) in &type_def.permissions {
+            #[allow(clippy::collapsible_if)]
             if let Some(ref cond) = perm_def.condition {
                 if let Err(e) = crate::engine::condition::parse_condition(cond) {
                     diagnostics.push(LintDiagnostic {
@@ -274,14 +275,25 @@ pub fn lint_schema(schema: &Schema) -> LintResult {
             if !has_content {
                 diagnostics.push(LintDiagnostic {
                     severity: LintSeverity::Warning,
-                    message: format!("type '{type_name}' is defined but has no relations or permissions"),
+                    message: format!(
+                        "type '{type_name}' is defined but has no relations or permissions"
+                    ),
                     location: Some(format!("types.{type_name}")),
                 });
             } else if schema.types.len() > 1 {
-                let is_referenced = schema.types.iter().filter(|(k, _)| *k != type_name).any(|(_, t)| {
-                    t.relations.values().any(|r| r.inherit_from.iter().any(|s| s == type_name))
-                        || t.permissions.values().any(|p| p.union_of.iter().any(|s| s == type_name))
-                });
+                let is_referenced =
+                    schema
+                        .types
+                        .iter()
+                        .filter(|(k, _)| *k != type_name)
+                        .any(|(_, t)| {
+                            t.relations
+                                .values()
+                                .any(|r| r.inherit_from.iter().any(|s| s == type_name))
+                                || t.permissions
+                                    .values()
+                                    .any(|p| p.union_of.iter().any(|s| s == type_name))
+                        });
                 if !is_referenced {
                     diagnostics.push(LintDiagnostic {
                         severity: LintSeverity::Warning,
@@ -292,7 +304,7 @@ pub fn lint_schema(schema: &Schema) -> LintResult {
                     });
                 }
             }
-            }
+        }
     }
 
     LintResult::with_diagnostics(diagnostics)
@@ -334,10 +346,10 @@ fn has_circular_relations(
         for rel_def in type_def.relations.values() {
             for inherit_ref in &rel_def.inherit_from {
                 // Check if the reference is a type name (not a relation pattern)
-                if types.contains_key(inherit_ref) {
-                    if has_circular_relations(inherit_ref, types, visited) {
-                        return true;
-                    }
+                if types.contains_key(inherit_ref)
+                    && has_circular_relations(inherit_ref, types, visited)
+                {
+                    return true;
                 }
             }
         }
@@ -497,14 +509,26 @@ types:
             .iter()
             .filter(|d| d.message.contains("never referenced"))
             .collect();
-        assert_eq!(orphan_warnings.len(), 1, "expected 1 orphan warning, got {}: {:?}", orphan_warnings.len(), orphan_warnings);
+        assert_eq!(
+            orphan_warnings.len(),
+            1,
+            "expected 1 orphan warning, got {}: {:?}",
+            orphan_warnings.len(),
+            orphan_warnings
+        );
         // With only one type and it has relations/permissions, no unused type warning
         let unused_types: Vec<_> = result
             .diagnostics
             .iter()
             .filter(|d| d.message.contains("never referenced"))
             .collect();
-        assert_eq!(unused_types.len(), 1, "expected 1 orphan relation warning, got {}: {:?}", unused_types.len(), unused_types);
+        assert_eq!(
+            unused_types.len(),
+            1,
+            "expected 1 orphan relation warning, got {}: {:?}",
+            unused_types.len(),
+            unused_types
+        );
     }
 
     #[test]

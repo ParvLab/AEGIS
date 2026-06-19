@@ -1,9 +1,10 @@
 use crate::error::{AegisError, AegisResult};
 use crate::storage::StorageBackend;
-use crate::types::schema::{Schema, SchemaCompatibilityReport};
 use crate::types::MigrationResult;
+use crate::types::schema::{Schema, SchemaCompatibilityReport};
 
 /// A single schema migration step.
+#[allow(clippy::type_complexity)]
 pub struct MigrationStep {
     pub version: u32,
     pub description: String,
@@ -27,6 +28,7 @@ impl MigrationRunner {
     }
 
     /// Register a migration step.
+    #[allow(clippy::type_complexity)]
     pub fn register(
         &mut self,
         version: u32,
@@ -100,7 +102,10 @@ impl MigrationRunner {
                     step.version, step.description, e
                 ))
             })?;
-            applied.push(format!("V{}: {} (rolled back)", step.version, step.description));
+            applied.push(format!(
+                "V{}: {} (rolled back)",
+                step.version, step.description
+            ));
         }
 
         Ok(MigrationResult {
@@ -153,10 +158,7 @@ pub fn register_default_migrations(runner: &mut MigrationRunner) {
 }
 
 /// Check schema compatibility between an existing and new schema.
-pub fn check_compatibility(
-    existing: &Schema,
-    new_schema: &Schema,
-) -> SchemaCompatibilityReport {
+pub fn check_compatibility(existing: &Schema, new_schema: &Schema) -> SchemaCompatibilityReport {
     let mut warnings = Vec::new();
     let mut breaking = Vec::new();
 
@@ -172,10 +174,7 @@ pub fn check_compatibility(
         if let Some(new_type) = new_schema.types.get(type_name) {
             for rel_name in type_def.relations.keys() {
                 if !new_type.relations.contains_key(rel_name) {
-                    breaking.push(format!(
-                        "removed relation '{}.{}'",
-                        type_name, rel_name
-                    ));
+                    breaking.push(format!("removed relation '{}.{}'", type_name, rel_name));
                 }
             }
         }
@@ -186,10 +185,7 @@ pub fn check_compatibility(
         if let Some(new_type) = new_schema.types.get(type_name) {
             for perm_name in type_def.permissions.keys() {
                 if !new_type.permissions.contains_key(perm_name) {
-                    warnings.push(format!(
-                        "removed permission '{}.{}'",
-                        type_name, perm_name
-                    ));
+                    warnings.push(format!("removed permission '{}.{}'", type_name, perm_name));
                 }
             }
         }
@@ -207,10 +203,7 @@ pub fn check_compatibility(
         if let Some(existing_type) = existing.types.get(type_name) {
             for rel_name in type_def.relations.keys() {
                 if !existing_type.relations.contains_key(rel_name) {
-                    warnings.push(format!(
-                        "new relation '{}.{}' added",
-                        type_name, rel_name
-                    ));
+                    warnings.push(format!("new relation '{}.{}' added", type_name, rel_name));
                 }
             }
         }
@@ -299,7 +292,11 @@ mod tests {
         repo_perms.insert(
             "read".to_string(),
             PermissionDef {
-                union_of: vec!["viewer".to_string(), "editor".to_string(), "owner".to_string()],
+                union_of: vec![
+                    "viewer".to_string(),
+                    "editor".to_string(),
+                    "owner".to_string(),
+                ],
                 condition: None,
                 description: None,
                 ..Default::default()

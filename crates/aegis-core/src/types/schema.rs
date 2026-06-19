@@ -28,16 +28,11 @@ pub struct RelationDef {
 }
 
 /// The effect of a permission or deny rule.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Effect {
+    #[default]
     Allow,
     Deny,
-}
-
-impl Default for Effect {
-    fn default() -> Self {
-        Self::Allow
-    }
 }
 
 /// Defines a computed permission from a set of relations.
@@ -357,7 +352,7 @@ mod tests {
     #[test]
     fn schema_missing_type_returns_none() {
         let s = sample_schema();
-        assert!(s.has_relation("nonexistent", "owner") == false);
+        assert!(!s.has_relation("nonexistent", "owner"));
         assert!(s.relations_for_permission("nonexistent", "read").is_none());
     }
 }

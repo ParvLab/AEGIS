@@ -1,5 +1,3 @@
-use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use crate::engine::enforcement_history::EnforcementEvent;
 use crate::engine::policy_lifecycle::PolicyDraft;
 use crate::engine::scheduler::{AnalysisRun, AnalysisSchedule};
@@ -8,6 +6,8 @@ use crate::types::{
     AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationParams, PartitionId,
     Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
 };
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Compute a deterministic SHA-256 hash for an audit event.
@@ -15,6 +15,7 @@ use sha2::{Digest, Sha256};
 /// `event_hash = sha256(previous_hash || revision(le) || action || subject || relation || object || partition_id || metadata || timestamp || identity)`
 ///
 /// The genesis event has `previous_hash = ""`.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_event_hash(
     previous_hash: &str,
     revision: i64,
@@ -29,7 +30,7 @@ pub fn compute_event_hash(
 ) -> String {
     let mut hasher = Sha256::new();
     hasher.update(previous_hash.as_bytes());
-    hasher.update(&revision.to_le_bytes());
+    hasher.update(revision.to_le_bytes());
     hasher.update(action.as_bytes());
     hasher.update(subject.as_bytes());
     hasher.update(relation.as_bytes());
@@ -61,25 +62,45 @@ pub trait StorageBackend: Send + Sync {
 
     /// Write a single relationship tuple within a partition.
     /// Returns the new revision number.
-    fn write_tuple(&self, partition_id: &PartitionId, tuple: &RelationshipTuple) -> AegisResult<Revision>;
+    fn write_tuple(
+        &self,
+        partition_id: &PartitionId,
+        tuple: &RelationshipTuple,
+    ) -> AegisResult<Revision>;
 
     /// Write multiple tuples atomically within a single transaction in a partition.
-    fn write_tuples_batch(&self, partition_id: &PartitionId, tuples: &[RelationshipTuple]) -> AegisResult<Revision>;
+    fn write_tuples_batch(
+        &self,
+        partition_id: &PartitionId,
+        tuples: &[RelationshipTuple],
+    ) -> AegisResult<Revision>;
 
     /// Delete a single relationship tuple by key within a partition.
     fn delete_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Revision>;
 
     /// Delete all tuples for a given subject within a partition.
-    fn delete_subject(&self, partition_id: &PartitionId, subject: &SubjectId) -> AegisResult<Revision>;
+    fn delete_subject(
+        &self,
+        partition_id: &PartitionId,
+        subject: &SubjectId,
+    ) -> AegisResult<Revision>;
 
     /// Delete all tuples for a given resource within a partition.
-    fn delete_object(&self, partition_id: &PartitionId, object: &ResourceId) -> AegisResult<Revision>;
+    fn delete_object(
+        &self,
+        partition_id: &PartitionId,
+        object: &ResourceId,
+    ) -> AegisResult<Revision>;
 
     /// Check if a tuple exists within a partition.
     fn has_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<bool>;
 
     /// Read a single tuple by key within a partition.
-    fn read_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Option<RelationshipTuple>>;
+    fn read_tuple(
+        &self,
+        partition_id: &PartitionId,
+        key: &TupleKey,
+    ) -> AegisResult<Option<RelationshipTuple>>;
 
     /// List all tuples for a given object within a partition.
     fn list_by_object(
@@ -124,7 +145,10 @@ pub trait StorageBackend: Send + Sync {
                 relation: relation.cloned(),
                 ..Default::default()
             },
-            &PaginationParams { cursor: None, limit: 10_000 },
+            &PaginationParams {
+                cursor: None,
+                limit: 10_000,
+            },
             _consistency,
         )?;
         Ok(all.tuples)
@@ -161,7 +185,10 @@ pub trait StorageBackend: Send + Sync {
     fn current_token(&self) -> AegisResult<RevisionToken>;
 
     /// Begin a transaction. Returns a transaction handle.
-    fn begin_transaction(&self, partition_id: &PartitionId) -> AegisResult<Box<dyn StorageTransaction>>;
+    fn begin_transaction(
+        &self,
+        partition_id: &PartitionId,
+    ) -> AegisResult<Box<dyn StorageTransaction>>;
 
     /// Query audit log for a given object (or all objects if None) within a partition.
     fn query_audit(
@@ -181,7 +208,11 @@ pub trait StorageBackend: Send + Sync {
 
     /// Delete audit events older than the given cutoff timestamp within a partition.
     /// Returns the number of deleted events.
-    fn delete_events_before(&self, partition_id: &PartitionId, _cutoff: DateTime<Utc>) -> AegisResult<usize>;
+    fn delete_events_before(
+        &self,
+        partition_id: &PartitionId,
+        _cutoff: DateTime<Utc>,
+    ) -> AegisResult<usize>;
 
     /// Compact paired add/remove events to reduce audit log size.
     /// Only meaningful for backends that track individual events (SQLite, PostgreSQL).
@@ -191,12 +222,20 @@ pub trait StorageBackend: Send + Sync {
     /// Permanently remove soft-deleted tuples whose deletion revision
     /// corresponds to a timestamp before the given cutoff within a partition.
     /// Returns the number of deleted tuples.
-    fn delete_soft_deleted_tuples_before(&self, partition_id: &PartitionId, _cutoff: DateTime<Utc>) -> AegisResult<usize>;
+    fn delete_soft_deleted_tuples_before(
+        &self,
+        partition_id: &PartitionId,
+        _cutoff: DateTime<Utc>,
+    ) -> AegisResult<usize>;
 
     /// Recover the current state by replaying all logged events within a partition.
     /// This reconstructs the tuple store from scratch using the event log,
     /// returning the latest revision seen.
-    fn recover_from_events(&self, partition_id: &PartitionId, to_revision: Option<Revision>) -> AegisResult<Revision>;
+    fn recover_from_events(
+        &self,
+        partition_id: &PartitionId,
+        to_revision: Option<Revision>,
+    ) -> AegisResult<Revision>;
 
     /// Restore tuples, events, and revision from a backup in a single transaction.
     /// Clears existing data in the partition first.
@@ -261,37 +300,51 @@ pub trait StorageBackend: Send + Sync {
 
     /// Save a policy draft to storage.
     fn save_policy_draft(&self, _draft: &PolicyDraft) -> AegisResult<()> {
-        Err(AegisError::UnsupportedStorageOperation("save_policy_draft not supported by this backend".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "save_policy_draft not supported by this backend".into(),
+        ))
     }
 
     /// Load a policy draft by ID from storage.
     fn load_policy_draft(&self, _id: &str) -> AegisResult<Option<PolicyDraft>> {
-        Err(AegisError::UnsupportedStorageOperation("load_policy_draft not supported by this backend".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "load_policy_draft not supported by this backend".into(),
+        ))
     }
 
     /// Delete a policy draft from storage.
     fn delete_policy_draft(&self, _id: &str) -> AegisResult<bool> {
-        Err(AegisError::UnsupportedStorageOperation("delete_policy_draft not supported by this backend".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "delete_policy_draft not supported by this backend".into(),
+        ))
     }
 
     /// Save an analysis schedule to storage.
     fn save_analysis_schedule(&self, _schedule: &AnalysisSchedule) -> AegisResult<()> {
-        Err(AegisError::UnsupportedStorageOperation("save_analysis_schedule not supported by this backend".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "save_analysis_schedule not supported by this backend".into(),
+        ))
     }
 
     /// Delete an analysis schedule from storage.
     fn delete_analysis_schedule(&self, _id: &str) -> AegisResult<bool> {
-        Err(AegisError::UnsupportedStorageOperation("delete_analysis_schedule not supported by this backend".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "delete_analysis_schedule not supported by this backend".into(),
+        ))
     }
 
     /// Save an analysis run to storage.
     fn save_analysis_run(&self, _run: &AnalysisRun) -> AegisResult<()> {
-        Err(AegisError::UnsupportedStorageOperation("save_analysis_run not supported by this backend".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "save_analysis_run not supported by this backend".into(),
+        ))
     }
 
     /// Save an enforcement event to storage.
     fn save_enforcement_event(&self, _event: &EnforcementEvent) -> AegisResult<()> {
-        Err(AegisError::UnsupportedStorageOperation("save_enforcement_event not supported by this backend".into()))
+        Err(AegisError::UnsupportedStorageOperation(
+            "save_enforcement_event not supported by this backend".into(),
+        ))
     }
 }
 

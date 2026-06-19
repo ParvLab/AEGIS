@@ -90,7 +90,10 @@ impl GraphEngine {
             created_at: now.clone(),
             updated_at: now,
         };
-        let mut schedules = self.analysis_schedules.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut schedules = self
+            .analysis_schedules
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let id = schedule.id;
         schedules.insert(id, schedule.clone());
         Ok(schedule)
@@ -98,7 +101,10 @@ impl GraphEngine {
 
     /// List all analysis schedules.
     pub fn list_analysis_schedules(&self) -> AegisResult<Vec<AnalysisSchedule>> {
-        let schedules = self.analysis_schedules.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let schedules = self
+            .analysis_schedules
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let mut result: Vec<_> = schedules.values().cloned().collect();
         result.sort_by(|a, b| a.created_at.cmp(&b.created_at));
         Ok(result)
@@ -106,14 +112,20 @@ impl GraphEngine {
 
     /// Delete an analysis schedule by ID.
     pub fn delete_analysis_schedule(&self, id: Uuid) -> AegisResult<bool> {
-        let mut schedules = self.analysis_schedules.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut schedules = self
+            .analysis_schedules
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         Ok(schedules.remove(&id).is_some())
     }
 
     /// Run analysis immediately for a given schedule, or for all enabled schedules if None.
     pub fn run_analysis_now(&self, schedule_id: Option<Uuid>) -> AegisResult<Vec<AnalysisRun>> {
         let schedules: Vec<AnalysisSchedule> = {
-            let s = self.analysis_schedules.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let s = self
+                .analysis_schedules
+                .lock()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             if let Some(id) = schedule_id {
                 s.get(&id).cloned().into_iter().collect()
             } else {
@@ -131,7 +143,10 @@ impl GraphEngine {
 
     /// Get recent analysis runs.
     pub fn get_analysis_runs(&self, limit: usize) -> AegisResult<Vec<AnalysisRun>> {
-        let runs = self.analysis_runs.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+        let runs = self
+            .analysis_runs
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
         let mut result: Vec<_> = runs.values().cloned().collect();
         result.sort_by(|a, b| b.completed_at.cmp(&a.completed_at));
         result.truncate(limit);
@@ -139,10 +154,7 @@ impl GraphEngine {
     }
 
     /// Start the background scheduler thread. Returns a handle that can be joined.
-    pub fn start_scheduler(
-        self: &Arc<Self>,
-        config: SchedulerConfig,
-    ) -> JoinHandle<()> {
+    pub fn start_scheduler(self: &Arc<Self>, config: SchedulerConfig) -> JoinHandle<()> {
         let engine = Arc::clone(self);
         std::thread::spawn(move || {
             let tick = std::time::Duration::from_secs(config.tick_interval_seconds);
@@ -169,10 +181,16 @@ impl GraphEngine {
                                     .map(|r| {
                                         chrono::DateTime::parse_from_rfc3339(&r.completed_at)
                                             .map(|dt| dt.with_timezone(&chrono::Utc))
-                                            .unwrap_or(now - std::time::Duration::from_secs(s.interval_seconds * 2))
+                                            .unwrap_or(
+                                                now - std::time::Duration::from_secs(
+                                                    s.interval_seconds * 2,
+                                                ),
+                                            )
                                     })
                                     .unwrap_or(
-                                        now - std::time::Duration::from_secs(s.interval_seconds * 2),
+                                        now - std::time::Duration::from_secs(
+                                            s.interval_seconds * 2,
+                                        ),
                                     )
                             };
                             let elapsed = (now - last_run).num_seconds() as u64;
@@ -208,7 +226,10 @@ impl GraphEngine {
             error_message: None,
         };
         {
-            let mut runs = self.analysis_runs.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let mut runs = self
+                .analysis_runs
+                .lock()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             runs.insert(run_id, run);
         }
 
@@ -235,7 +256,10 @@ impl GraphEngine {
         };
 
         {
-            let mut runs = self.analysis_runs.lock().map_err(|e| AegisError::Internal(e.to_string()))?;
+            let mut runs = self
+                .analysis_runs
+                .lock()
+                .map_err(|e| AegisError::Internal(e.to_string()))?;
             runs.insert(run_id, completed_run.clone());
         }
 
@@ -269,12 +293,18 @@ impl GraphEngine {
                 "allowed": check.allowed,
             }));
         }
-        output.insert("checks".to_string(), serde_json::Value::Array(check_results));
+        output.insert(
+            "checks".to_string(),
+            serde_json::Value::Array(check_results),
+        );
 
         // Run access diff if a compare schema is provided
         if let Some(ref compare_schema) = schedule.compare_schema {
             let current_schema = {
-                let s = self.schema.read().map_err(|e| AegisError::Internal(e.to_string()))?;
+                let s = self
+                    .schema
+                    .read()
+                    .map_err(|e| AegisError::Internal(e.to_string()))?;
                 s.clone()
             };
             match self.access_diff(&current_schema, compare_schema, None, Some(1000)) {
@@ -304,13 +334,13 @@ impl GraphEngine {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "sqlite"))]
 mod tests {
     use super::*;
     use crate::engine::GraphEngine;
+    use crate::storage::StorageBackend;
     #[cfg(feature = "sqlite")]
     use crate::storage::sqlite::{SqliteConfig, SqliteStorage};
-    use crate::storage::StorageBackend;
     use crate::types::*;
     use std::sync::Arc;
 

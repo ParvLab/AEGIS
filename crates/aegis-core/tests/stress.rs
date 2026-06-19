@@ -1,11 +1,11 @@
 #![cfg(feature = "sqlite")]
 use aegis_core::engine::GraphEngine;
 use aegis_core::schema::parse_schema;
-use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
+use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::types::*;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 fn make_schema() -> Schema {
@@ -31,11 +31,10 @@ types:
 /// Create an engine backed by a unique temp file (avoids :memory: isolation quirks
 /// with WAL + pooled connections under concurrent write load).
 fn make_file_engine(max_readers: u32) -> (GraphEngine, String) {
-    let path = format!(
-        "{}\\aegis_stress_{}.db",
-        std::env::temp_dir().display(),
-        fastrand::u64(..)
-    );
+    let path = std::env::temp_dir()
+        .join(format!("aegis_stress_{}.db", fastrand::u64(..)))
+        .to_string_lossy()
+        .into_owned();
     let config = SqliteConfig {
         path: path.clone(),
         max_readers,
@@ -112,7 +111,7 @@ fn str004_read_during_write() {
 
     // Writer: add many viewer tuples to the same resource
     for i in 0..50 {
-        let viewer = SubjectId::new(&format!("user:viewer{}", i)).unwrap();
+        let viewer = SubjectId::new(format!("user:viewer{}", i)).unwrap();
         engine
             .write(&RelationshipTuple::new(
                 viewer,
@@ -129,7 +128,7 @@ fn str004_read_during_write() {
 
     // Verify all viewer writes persisted
     for i in 0..50 {
-        let viewer = SubjectId::new(&format!("user:viewer{}", i)).unwrap();
+        let viewer = SubjectId::new(format!("user:viewer{}", i)).unwrap();
         let result = engine.check(&viewer, "read", &resource, None).unwrap();
         assert!(result.allowed, "viewer{} should have access after write", i);
     }
@@ -150,8 +149,8 @@ fn str006_write_queue_depth() {
     for i in 0..100 {
         let engine = Arc::clone(&engine);
         handles.push(std::thread::spawn(move || {
-            let subject = SubjectId::new(&format!("user:sw{}", i)).unwrap();
-            let resource = ResourceId::new(&format!("repo:sw{}", i)).unwrap();
+            let subject = SubjectId::new(format!("user:sw{}", i)).unwrap();
+            let resource = ResourceId::new(format!("repo:sw{}", i)).unwrap();
             engine.write(&RelationshipTuple::new(
                 subject,
                 Relation::new("owner").unwrap(),
@@ -161,13 +160,14 @@ fn str006_write_queue_depth() {
     }
 
     for h in handles {
-        h.join()
-            .unwrap()
-            .expect("concurrent write should succeed");
+        h.join().unwrap().expect("concurrent write should succeed");
     }
 
     // Verify revision increased
-    let rev = engine.storage().current_revision(&PartitionId::default()).unwrap();
+    let rev = engine
+        .storage()
+        .current_revision(&PartitionId::default())
+        .unwrap();
     assert!(
         rev.as_u64() >= 100,
         "expected >= 100 writes, got rev {}",
@@ -176,8 +176,8 @@ fn str006_write_queue_depth() {
 
     // Verify sample of tuples are queryable
     for i in 0..10 {
-        let subject = SubjectId::new(&format!("user:sw{}", i)).unwrap();
-        let resource = ResourceId::new(&format!("repo:sw{}", i)).unwrap();
+        let subject = SubjectId::new(format!("user:sw{}", i)).unwrap();
+        let resource = ResourceId::new(format!("repo:sw{}", i)).unwrap();
         let result = engine.check(&subject, "read", &resource, None).unwrap();
         assert!(result.allowed, "tuple {} should exist", i);
     }
@@ -197,10 +197,10 @@ fn str007_large_graph_stress() {
 
     // Create teams
     for t in 0..num_teams {
-        let team = ResourceId::new(&format!("team:t{}", t)).unwrap();
+        let team = ResourceId::new(format!("team:t{}", t)).unwrap();
         for m in 0..20 {
             let user_idx = (t * 20 + m) % num_subjects;
-            let user = SubjectId::new(&format!("user:u{}", user_idx)).unwrap();
+            let user = SubjectId::new(format!("user:u{}", user_idx)).unwrap();
             engine
                 .write(&RelationshipTuple::new(
                     user,
@@ -214,8 +214,8 @@ fn str007_large_graph_stress() {
     // Create repos owned by teams
     let num_repos = 500;
     for r in 0..num_repos {
-        let team = SubjectId::new(&format!("team:t{}", r % num_teams)).unwrap();
-        let repo = ResourceId::new(&format!("repo:r{}", r)).unwrap();
+        let team = SubjectId::new(format!("team:t{}", r % num_teams)).unwrap();
+        let repo = ResourceId::new(format!("repo:r{}", r)).unwrap();
         engine
             .write(&RelationshipTuple::new(
                 team,
@@ -231,9 +231,8 @@ fn str007_large_graph_stress() {
     let mut latencies = Vec::with_capacity(num_checks);
 
     for _ in 0..num_checks {
-        let user =
-            SubjectId::new(&format!("user:u{}", fastrand::usize(0..num_subjects))).unwrap();
-        let repo = ResourceId::new(&format!("repo:r{}", fastrand::usize(0..num_repos))).unwrap();
+        let user = SubjectId::new(format!("user:u{}", fastrand::usize(0..num_subjects))).unwrap();
+        let repo = ResourceId::new(format!("repo:r{}", fastrand::usize(0..num_repos))).unwrap();
         let check_start = Instant::now();
         let result = engine.check(&user, "access", &repo, None).unwrap();
         latencies.push(check_start.elapsed());
@@ -272,8 +271,8 @@ fn str010_extended_soak() {
     let start = Instant::now();
 
     for i in 0..iterations {
-        let subject = SubjectId::new(&format!("user:soak{}", i)).unwrap();
-        let resource = ResourceId::new(&format!("repo:soak{}", i)).unwrap();
+        let subject = SubjectId::new(format!("user:soak{}", i)).unwrap();
+        let resource = ResourceId::new(format!("repo:soak{}", i)).unwrap();
 
         engine
             .write(&RelationshipTuple::new(

@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::types::*;
+use serde::{Deserialize, Serialize};
 
 /// Reason a permission check was denied.
 #[derive(Debug, Clone, Serialize, Deserialize)]
