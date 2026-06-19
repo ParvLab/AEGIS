@@ -124,6 +124,7 @@ impl RocksDbStorage {
         })
     }
 
+    #[allow(dead_code)]
     fn read_schema_version(&self) -> AegisResult<u32> {
         let cf = self
             .db
@@ -139,6 +140,7 @@ impl RocksDbStorage {
         }
     }
 
+    #[allow(dead_code)]
     fn write_schema_version(&self, version: u32) -> AegisResult<()> {
         let cf = self
             .db
@@ -1928,6 +1930,7 @@ pub struct RocksDbTransaction {
     cf_idx: &'static rocksdb::ColumnFamily,
     cf_events: &'static rocksdb::ColumnFamily,
     cf_meta: &'static rocksdb::ColumnFamily,
+    #[allow(dead_code)]
     node_id: Uuid,
     revision_mutex: std::sync::Arc<std::sync::Mutex<()>>,
     actor_identity: Option<String>,
@@ -1974,6 +1977,7 @@ impl RocksDbTransaction {
         Ok(())
     }
 
+    #[allow(dead_code)]
     fn put_tuple_to_batch(
         &mut self,
         partition_id: &str,
