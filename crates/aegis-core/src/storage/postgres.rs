@@ -1259,11 +1259,8 @@ impl StorageBackend for PostgresStorage {
                 let meta_val: Option<serde_json::Value> = row.get(5);
 
                 let revision = Revision::new(rev as u64);
-                #[allow(clippy::collapsible_if)]
-                if let Some(target) = to_revision {
-                    if revision > target {
-                        continue;
-                    }
+                if let Some(target) = to_revision && revision > target {
+                    continue;
                 }
 
                 match action.as_str() {
@@ -1366,6 +1363,27 @@ impl StorageBackend for PostgresStorage {
     fn close(&self) -> AegisResult<()> {
         self.pool.close();
         Ok(())
+    }
+
+    fn storage_version(&self) -> Option<String> {
+        self.runtime.block_on(async {
+            let client = self.pool.get().await.ok()?;
+            client
+                .query_one("SELECT version()", &[])
+                .await
+                .ok()?
+                .get::<_, String>(0)
+                .into()
+        })
+    }
+
+    fn connection_stats(&self) -> crate::types::ConnectionStats {
+        let status = self.pool.status();
+        crate::types::ConnectionStats {
+            read_active: status.size as u32,
+            read_idle: status.available as u32,
+            write_busy: false,
+        }
     }
 
     fn verify_audit_chain(&self, partition_id: &PartitionId) -> AegisResult<Option<String>> {
@@ -1829,7 +1847,7 @@ impl StorageTransaction for PostgresTransaction {
         let pid = partition_id.as_str().to_string();
         let identity = self.actor_identity.clone();
         self.block_on(async {
-            let conn = self.conn.as_ref().unwrap();
+            let conn = self.conn()?;
             let revision = Self::bump_revision_async(conn, partition_id).await?;
             let meta_val = tuple_clone
                 .metadata
@@ -1871,7 +1889,7 @@ impl StorageTransaction for PostgresTransaction {
         let pid = partition_id.as_str().to_string();
         let identity = self.actor_identity.clone();
         self.block_on(async {
-            let conn = self.conn.as_ref().unwrap();
+            let conn = self.conn()?;
             let revision = Self::bump_revision_async(conn, partition_id).await?;
 
             conn
@@ -1897,7 +1915,7 @@ impl StorageTransaction for PostgresTransaction {
         Self::validate_savepoint_name(name)?;
         let name_owned = name.to_string();
         self.block_on(async {
-            let conn = self.conn.as_ref().unwrap();
+            let conn = self.conn()?;
             conn.execute(&format!("SAVEPOINT \"{}\"", name_owned), &[])
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1909,7 +1927,7 @@ impl StorageTransaction for PostgresTransaction {
         Self::validate_savepoint_name(name)?;
         let name_owned = name.to_string();
         self.block_on(async {
-            let conn = self.conn.as_ref().unwrap();
+            let conn = self.conn()?;
             conn.execute(&format!("ROLLBACK TO SAVEPOINT \"{}\"", name_owned), &[])
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
@@ -1921,7 +1939,7 @@ impl StorageTransaction for PostgresTransaction {
         Self::validate_savepoint_name(name)?;
         let name_owned = name.to_string();
         self.block_on(async {
-            let conn = self.conn.as_ref().unwrap();
+            let conn = self.conn()?;
             conn.execute(&format!("RELEASE SAVEPOINT \"{}\"", name_owned), &[])
                 .await
                 .map_err(|e| AegisError::StorageQuery(e.to_string()))?;

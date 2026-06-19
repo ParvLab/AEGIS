@@ -108,11 +108,10 @@ impl DecisionCache {
         self.access_order.retain(|k| k != &key);
 
         // Evict LRU entry if at capacity
-        #[allow(clippy::collapsible_if)]
-        if self.entries.len() >= self.capacity {
-            if let Some(lru_key) = self.access_order.pop_front() {
-                self.entries.remove(&lru_key);
-            }
+        if self.entries.len() >= self.capacity
+            && let Some(lru_key) = self.access_order.pop_front()
+        {
+            self.entries.remove(&lru_key);
         }
 
         self.access_order.push_back(key.clone());
@@ -229,11 +228,10 @@ impl TraversalCache {
         self.access_order.retain(|k| k != &key);
 
         // Evict LRU entry if at capacity
-        #[allow(clippy::collapsible_if)]
-        if self.entries.len() >= self.capacity {
-            if let Some(lru_key) = self.access_order.pop_front() {
-                self.entries.remove(&lru_key);
-            }
+        if self.entries.len() >= self.capacity
+            && let Some(lru_key) = self.access_order.pop_front()
+        {
+            self.entries.remove(&lru_key);
         }
 
         self.access_order.push_back(key.clone());

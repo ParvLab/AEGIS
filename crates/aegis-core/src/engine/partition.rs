@@ -53,11 +53,10 @@ impl PartitionManager {
 
     pub fn check_rate_limit(&self, partition_id: &PartitionId) -> AegisResult<()> {
         let key = partition_id.to_string();
-        #[allow(clippy::collapsible_if)]
-        if let Ok(map) = self.partitions.lock() {
-            if let Some(state) = map.get(&key) {
-                return state.rate_limiter.check(&key, RateLimitOp::Check);
-            }
+        if let Ok(map) = self.partitions.lock()
+            && let Some(state) = map.get(&key)
+        {
+            return state.rate_limiter.check(&key, RateLimitOp::Check);
         }
         // If no partition-specific state, use default
         self.default_partition

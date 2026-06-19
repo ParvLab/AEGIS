@@ -7,9 +7,9 @@ use crate::storage::traits::{
     TupleFilter,
 };
 use crate::types::{
-    AuditEntry, ConsistencyMode, PaginatedTuples, PaginationCursor, PaginationParams, PartitionId,
-    Relation, RelationshipTuple, ResourceId, Revision, RevisionToken, SubjectId, TupleKey,
-    TupleMutation,
+    AuditEntry, ConnectionStats, ConsistencyMode, PaginatedTuples, PaginationCursor,
+    PaginationParams, PartitionId, Relation, RelationshipTuple, ResourceId, Revision,
+    RevisionToken, SubjectId, TupleKey, TupleMutation,
 };
 use crate::util::redact::Redacted;
 use chrono::{DateTime, Utc};
@@ -320,6 +320,25 @@ impl StorageBackend for MysqlStorage {
         BackendType::Mysql
     }
 
+    fn connection_stats(&self) -> ConnectionStats {
+        ConnectionStats {
+            read_active: 0,
+            read_idle: 0,
+            write_busy: false,
+        }
+    }
+
+    fn wal_size_mb(&self) -> Option<f64> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await.ok()?;
+            let row: mysql_async::Row = conn
+                .exec_first("SELECT ROUND(@@innodb_log_file_size / 1048576, 2)", ())
+                .await
+                .ok()??;
+            row.get::<f64, _>(0)
+        })
+    }
+
     fn write_tuple(
         &self,
         partition_id: &PartitionId,
@@ -585,7 +604,10 @@ impl StorageBackend for MysqlStorage {
                 return Ok(None);
             }
 
-            let (subject, relation, object, created_at, metadata_json) = rows.into_iter().next().unwrap();
+            let (subject, relation, object, created_at, metadata_json) = rows
+                .into_iter()
+                .next()
+                .ok_or_else(|| AegisError::Internal("expected at least one tuple row".into()))?;
             Self::row_to_tuple(subject, relation, object, created_at, metadata_json).map(Some)
         })
     }
@@ -1056,11 +1078,8 @@ impl StorageBackend for MysqlStorage {
 
             for (rev, action, subject, relation, object, metadata) in &rows {
                 let revision = Revision::new(*rev as u64);
-                #[allow(clippy::collapsible_if)]
-                if let Some(target) = to_revision {
-                    if revision > target {
-                        continue;
-                    }
+                if let Some(target) = to_revision && revision > target {
+                    continue;
                 }
                 let now = Utc::now().to_rfc3339();
 
@@ -1158,6 +1177,14 @@ impl StorageBackend for MysqlStorage {
         self.runtime
             .block_on(self.pool.clone().disconnect())
             .map_err(|e| AegisError::StorageConnection(e.to_string()))
+    }
+
+    fn storage_version(&self) -> Option<String> {
+        self.runtime.block_on(async {
+            let mut conn = self.get_conn().await.ok()?;
+            let row: mysql_async::Row = conn.exec_first("SELECT VERSION()", ()).await.ok()??;
+            row.get::<String, _>(0)
+        })
     }
 
     fn verify_audit_chain(&self, partition_id: &PartitionId) -> AegisResult<Option<String>> {

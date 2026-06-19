@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
+use serde_json;
 use uuid::Uuid;
 
 use crate::engine::enforcement_history::EnforcementEvent;
@@ -22,6 +23,8 @@ type TupleMap = HashMap<(String, String, String), RelationshipTuple>;
 struct Inner {
     tuples: TupleMap,
     events: Vec<AuditEntry>,
+    /// Parallel to `events`: (previous_hash, event_hash) for each event.
+    event_hashes: Vec<(String, String)>,
     revision: u64,
     schema_version: u32,
     node_id: Uuid,
@@ -49,6 +52,7 @@ impl InMemoryStorage {
             inner: Arc::new(Mutex::new(Inner {
                 tuples: HashMap::new(),
                 events: Vec::new(),
+                event_hashes: Vec::new(),
                 revision: 0,
                 schema_version: 0,
                 node_id: Uuid::new_v4(),
@@ -69,6 +73,7 @@ impl InMemoryStorage {
 
     fn append_event(
         inner: &mut Inner,
+        partition_id: &str,
         action: TupleMutation,
         subject: &str,
         relation: &str,
@@ -76,16 +81,41 @@ impl InMemoryStorage {
         revision: Revision,
     ) {
         let identity = inner.actor_identity.clone();
+        let timestamp = Utc::now();
         let event = AuditEntry {
             revision,
             action,
             subject: subject.to_string(),
             relation: relation.to_string(),
             object: object.to_string(),
-            timestamp: Utc::now(),
+            timestamp,
             metadata: None,
-            identity,
+            identity: identity.clone(),
         };
+
+        let action_str = match action {
+            TupleMutation::Add => "add",
+            TupleMutation::Remove => "remove",
+        };
+        let previous_hash = inner
+            .event_hashes
+            .last()
+            .map(|h| h.1.clone())
+            .unwrap_or_default();
+        let event_hash = crate::storage::compute_event_hash(
+            &previous_hash,
+            revision.as_u64() as i64,
+            action_str,
+            subject,
+            relation,
+            object,
+            partition_id,
+            None,
+            &timestamp.to_rfc3339(),
+            identity.as_deref(),
+        );
+
+        inner.event_hashes.push((previous_hash, event_hash));
         inner.events.push(event);
     }
 }
@@ -100,6 +130,7 @@ impl StorageBackend for InMemoryStorage {
         inner.schema_version = 1;
         inner.tuples.clear();
         inner.events.clear();
+        inner.event_hashes.clear();
         Ok(StorageMeta {
             schema_version: 1,
             current_revision: Revision::ZERO,
@@ -110,7 +141,7 @@ impl StorageBackend for InMemoryStorage {
 
     fn write_tuple(
         &self,
-        _partition_id: &PartitionId,
+        partition_id: &PartitionId,
         tuple: &RelationshipTuple,
     ) -> AegisResult<Revision> {
         let mut inner = self
@@ -126,6 +157,7 @@ impl StorageBackend for InMemoryStorage {
         inner.tuples.insert(key, tuple.clone());
         Self::append_event(
             &mut inner,
+            partition_id.as_str(),
             TupleMutation::Add,
             tuple.subject.as_str(),
             tuple.relation.as_str(),
@@ -137,7 +169,7 @@ impl StorageBackend for InMemoryStorage {
 
     fn write_tuples_batch(
         &self,
-        _partition_id: &PartitionId,
+        partition_id: &PartitionId,
         tuples: &[RelationshipTuple],
     ) -> AegisResult<Revision> {
         let mut inner = self
@@ -155,6 +187,7 @@ impl StorageBackend for InMemoryStorage {
             inner.tuples.insert(key, tuple.clone());
             Self::append_event(
                 &mut inner,
+                partition_id.as_str(),
                 TupleMutation::Add,
                 tuple.subject.as_str(),
                 tuple.relation.as_str(),
@@ -165,7 +198,7 @@ impl StorageBackend for InMemoryStorage {
         Ok(revision)
     }
 
-    fn delete_tuple(&self, _partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Revision> {
+    fn delete_tuple(&self, partition_id: &PartitionId, key: &TupleKey) -> AegisResult<Revision> {
         let mut inner = self
             .inner
             .lock()
@@ -179,6 +212,7 @@ impl StorageBackend for InMemoryStorage {
         inner.tuples.remove(&k);
         Self::append_event(
             &mut inner,
+            partition_id.as_str(),
             TupleMutation::Remove,
             key.subject.as_str(),
             key.relation.as_str(),
@@ -190,7 +224,7 @@ impl StorageBackend for InMemoryStorage {
 
     fn delete_subject(
         &self,
-        _partition_id: &PartitionId,
+        partition_id: &PartitionId,
         subject: &SubjectId,
     ) -> AegisResult<Revision> {
         let mut inner = self
@@ -209,6 +243,7 @@ impl StorageBackend for InMemoryStorage {
             if let Some(tuple) = inner.tuples.remove(&k) {
                 Self::append_event(
                     &mut inner,
+                    partition_id.as_str(),
                     TupleMutation::Remove,
                     tuple.subject.as_str(),
                     tuple.relation.as_str(),
@@ -225,7 +260,7 @@ impl StorageBackend for InMemoryStorage {
 
     fn delete_object(
         &self,
-        _partition_id: &PartitionId,
+        partition_id: &PartitionId,
         object: &ResourceId,
     ) -> AegisResult<Revision> {
         let mut inner = self
@@ -244,6 +279,7 @@ impl StorageBackend for InMemoryStorage {
             if let Some(tuple) = inner.tuples.remove(&k) {
                 Self::append_event(
                     &mut inner,
+                    partition_id.as_str(),
                     TupleMutation::Remove,
                     tuple.subject.as_str(),
                     tuple.relation.as_str(),
@@ -364,23 +400,20 @@ impl StorageBackend for InMemoryStorage {
             .tuples
             .values()
             .filter(|t| {
-                #[allow(clippy::collapsible_if)]
-                if let Some(ref st) = filter.subject_type {
-                    if !t.subject.as_str().starts_with(st.trim_end_matches('#')) {
-                        return false;
-                    }
+                if let Some(ref st) = filter.subject_type
+                    && !t.subject.as_str().starts_with(st.trim_end_matches('#'))
+                {
+                    return false;
                 }
-                #[allow(clippy::collapsible_if)]
-                if let Some(ref rel) = filter.relation {
-                    if t.relation != *rel {
-                        return false;
-                    }
+                if let Some(ref rel) = filter.relation
+                    && t.relation != *rel
+                {
+                    return false;
                 }
-                #[allow(clippy::collapsible_if)]
-                if let Some(ref ot) = filter.object_type {
-                    if !t.object.as_str().starts_with(ot) {
-                        return false;
-                    }
+                if let Some(ref ot) = filter.object_type
+                    && !t.object.as_str().starts_with(ot)
+                {
+                    return false;
                 }
                 true
             })
@@ -504,7 +537,16 @@ impl StorageBackend for InMemoryStorage {
             .lock()
             .map_err(|e| AegisError::Internal(e.to_string()))?;
         let before = inner.events.len();
-        inner.events.retain(|e| e.timestamp >= cutoff);
+        let mut new_events = Vec::new();
+        let mut new_hashes = Vec::new();
+        for (i, event) in inner.events.iter().enumerate() {
+            if event.timestamp >= cutoff {
+                new_events.push(event.clone());
+                new_hashes.push(inner.event_hashes[i].clone());
+            }
+        }
+        inner.events = new_events;
+        inner.event_hashes = new_hashes;
         Ok(before - inner.events.len())
     }
 
@@ -573,6 +615,7 @@ impl StorageBackend for InMemoryStorage {
             .map_err(|e| AegisError::Internal(e.to_string()))?;
         inner.tuples.clear();
         inner.events.clear();
+        inner.event_hashes.clear();
         for tuple in tuples {
             let key = (
                 tuple.subject.as_str().to_string(),
@@ -592,6 +635,68 @@ impl StorageBackend for InMemoryStorage {
 
     fn storage_version(&self) -> Option<String> {
         Some("0.1.0 (in-memory)".to_string())
+    }
+
+    fn verify_audit_chain(&self, partition_id: &PartitionId) -> AegisResult<Option<String>> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|e| AegisError::Internal(e.to_string()))?;
+        let mut last_event_hash = String::new();
+        for (i, event) in inner.events.iter().enumerate() {
+            let (stored_prev_hash, stored_event_hash) =
+                inner.event_hashes.get(i).ok_or_else(|| {
+                    AegisError::StorageCorruption(format!(
+                        "missing hash chain entry for event {} (revision {})",
+                        i,
+                        event.revision.as_u64()
+                    ))
+                })?;
+
+            if *stored_prev_hash != last_event_hash {
+                return Ok(Some(format!(
+                    "Chain break at event {} (revision {}): expected previous_hash='{}', got '{}'",
+                    i,
+                    event.revision.as_u64(),
+                    last_event_hash,
+                    stored_prev_hash
+                )));
+            }
+
+            let action_str = match event.action {
+                TupleMutation::Add => "add",
+                TupleMutation::Remove => "remove",
+            };
+            let metadata_str = event
+                .metadata
+                .as_ref()
+                .map(|m| serde_json::to_string(m).unwrap_or_default());
+            let expected = crate::storage::compute_event_hash(
+                &last_event_hash,
+                event.revision.as_u64() as i64,
+                action_str,
+                &event.subject,
+                &event.relation,
+                &event.object,
+                partition_id.as_str(),
+                metadata_str.as_deref(),
+                &event.timestamp.to_rfc3339(),
+                event.identity.as_deref(),
+            );
+
+            if expected != *stored_event_hash {
+                return Ok(Some(format!(
+                    "Hash mismatch at event {} (revision {}): expected '{}', got '{}'",
+                    i,
+                    event.revision.as_u64(),
+                    expected,
+                    stored_event_hash
+                )));
+            }
+
+            last_event_hash = stored_event_hash.clone();
+        }
+        Ok(None)
     }
 
     fn set_actor_identity(&self, identity: Option<String>) -> Option<String> {
