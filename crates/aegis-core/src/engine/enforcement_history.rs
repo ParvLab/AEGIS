@@ -240,20 +240,17 @@ impl GraphEngine {
         }
 
         // Periodically purge expired events (every ~1000 records)
-        // Periodically purge expired events (every ~1000 records)
-        #[allow(clippy::collapsible_if)]
-        if cfg.max_days > 0 {
-            if let Ok(mut events) = self.enforcement_events.lock() {
-                if events.len() % 1000 == 0 {
-                    let cutoff = chrono::Utc::now() - chrono::Duration::days(cfg.max_days as i64);
-                    let cutoff_str = cutoff.to_rfc3339();
-                    while let Some(front) = events.front() {
-                        if front.timestamp < cutoff_str {
-                            events.pop_front();
-                        } else {
-                            break;
-                        }
-                    }
+        if cfg.max_days > 0
+            && let Ok(mut events) = self.enforcement_events.lock()
+            && events.len() % 1000 == 0
+        {
+            let cutoff = chrono::Utc::now() - chrono::Duration::days(cfg.max_days as i64);
+            let cutoff_str = cutoff.to_rfc3339();
+            while let Some(front) = events.front() {
+                if front.timestamp < cutoff_str {
+                    events.pop_front();
+                } else {
+                    break;
                 }
             }
         }

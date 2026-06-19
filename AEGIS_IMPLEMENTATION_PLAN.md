@@ -1325,7 +1325,7 @@ Scope:
   - WASM architecture spec (`docs/wasm-architecture.md`),
   - Browser getting-started guide (`docs/browser-getting-started.md`),
   - Schema migration on browser guide,
-  - Support matrix (`docs/support-matrix.md`).
+  - Support matrix (rendered from `AEGIS_IMPLEMENTATION_PLAN.md`).
 - **Release**:
   - npm publish (`@aegis/browser`),
   - cargo publish (`aegis-core` with `wasm` + `indexeddb` features),
