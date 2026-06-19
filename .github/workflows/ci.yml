@@ -73,12 +73,14 @@ jobs:
 
       - name: WASM test (Chrome)
         if: matrix.rust != '1.86'
+        shell: bash
         run: |
           cd crates/aegis-core
           wasm-pack test --chrome --headless -- --no-default-features --features wasm || true
 
       - name: WASM test (Firefox)
         if: matrix.rust != '1.86'
+        shell: bash
         run: |
           cd crates/aegis-core
           wasm-pack test --firefox --headless -- --no-default-features --features wasm || echo "Firefox not available, skipping"
