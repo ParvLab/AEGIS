@@ -966,20 +966,20 @@ impl StorageBackend for RocksDbStorage {
                 let rel = parts[2];
                 let subj = parts[3];
 
-                if let Some(ref ot) = filter.object_type
-                    && !obj.starts_with(&format!("{ot}:"))
-                {
-                    continue;
+                if let Some(ref ot) = filter.object_type {
+                    if !obj.starts_with(&format!("{ot}:")) {
+                        continue;
+                    }
                 }
-                if let Some(ref r) = filter.relation
-                    && rel != r.as_str()
-                {
-                    continue;
+                if let Some(ref r) = filter.relation {
+                    if rel != r.as_str() {
+                        continue;
+                    }
                 }
-                if let Some(ref st) = filter.subject_type
-                    && !subj.starts_with(&format!("{st}:"))
-                {
-                    continue;
+                if let Some(ref st) = filter.subject_type {
+                    if !subj.starts_with(&format!("{st}:")) {
+                        continue;
+                    }
                 }
 
                 let pk = tuple_key(partition_id.as_str(), subj, rel, obj);
@@ -1241,10 +1241,10 @@ impl StorageBackend for RocksDbStorage {
                 }
 
                 let event_obj = event["object"].as_str().unwrap_or("").to_string();
-                if let Some(obj) = object
-                    && event_obj != obj.as_str()
-                {
-                    continue;
+                if let Some(obj) = object {
+                    if event_obj != obj.as_str() {
+                        continue;
+                    }
                 }
 
                 let action = if event["action"] == "add" {
