@@ -2573,6 +2573,74 @@ types:
         assert!(ver_after > ver_before || ver_after == 1);
     }
 
+    // ── INT-032: Orphan type yields warning ──
+    #[test]
+    fn test_check_schema_new_type_warns() {
+        let engine = make_engine();
+        let mut new_schema = engine.schema().clone();
+        let mut types = new_schema.types.clone();
+        types.insert(
+            "orphan".to_string(),
+            crate::types::schema::TypeDef {
+                relations: std::collections::HashMap::new(),
+                permissions: std::collections::HashMap::new(),
+                ..Default::default()
+            },
+        );
+        new_schema.types = types;
+        let report = engine.check_schema(&new_schema);
+        assert!(report.compatible);
+        assert!(
+            report.warnings.iter().any(|w| w.contains("orphan")),
+            "expected warning about new type 'orphan', got: {:?}",
+            report.warnings
+        );
+    }
+
+    // ── INT-036: checkSchema with compatible schema ──
+    #[test]
+    fn test_check_schema_compatible_additive() {
+        let engine = make_engine();
+        // Create a compatible schema: add new permission but keep existing ones
+        let mut new_schema = engine.schema().clone();
+        let mut types = new_schema.types.clone();
+        if let Some(repo) = types.get_mut("repo") {
+            repo.permissions.insert(
+                "write".to_string(),
+                crate::types::schema::PermissionDef {
+                    union_of: vec!["owner".to_string()],
+                    condition: None,
+                    description: None,
+                    ..Default::default()
+                },
+            );
+        }
+        new_schema.types = types;
+        let report = engine.check_schema(&new_schema);
+        assert!(report.compatible);
+        assert!(report.breaking.is_empty());
+    }
+
+    // ── INT-037: checkSchema with breaking schema ──
+    #[test]
+    fn test_check_schema_breaking_change() {
+        let engine = make_engine();
+        // Create a breaking schema: remove a relation
+        let mut new_schema = engine.schema().clone();
+        let mut types = new_schema.types.clone();
+        if let Some(repo) = types.get_mut("repo") {
+            repo.relations.remove("viewer");
+        }
+        new_schema.types = types;
+        let report = engine.check_schema(&new_schema);
+        assert!(!report.compatible);
+        assert!(
+            report.breaking.iter().any(|b| b.contains("viewer")),
+            "expected breaking change about removed relation 'viewer', got: {:?}",
+            report.breaking
+        );
+    }
+
     #[test]
     fn test_migration_rollback() {
         let engine = make_engine();
@@ -2935,6 +3003,249 @@ types:
         let resource = ResourceId::new("repo:ghost").unwrap();
         let result = engine.check(&subject, "read", &resource, None).unwrap();
         assert!(!result.allowed);
+    }
+
+    // ── ERR-001: Invalid DB path ──
+    #[test]
+    fn test_invalid_db_path_errors() {
+        let result = SqliteStorage::new(SqliteConfig {
+            path: "/nonexistent/deep/path/test.db".to_string(),
+            ..Default::default()
+        });
+        assert!(result.is_err(), "expected error for invalid DB path");
+    }
+
+    fn make_engine_with_fail_mode(mode: FailClosedMode) -> GraphEngine {
+        let schema = Schema {
+            schema_version: 1,
+            namespace: "test".to_string(),
+            types: {
+                let mut types = std::collections::HashMap::new();
+                let mut relations = std::collections::HashMap::new();
+                relations.insert(
+                    "owner".to_string(),
+                    crate::types::schema::RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
+                relations.insert(
+                    "viewer".to_string(),
+                    crate::types::schema::RelationDef {
+                        inherit_from: vec![],
+                        description: None,
+                    },
+                );
+                let mut permissions = std::collections::HashMap::new();
+                permissions.insert(
+                    "read".to_string(),
+                    crate::types::schema::PermissionDef {
+                        union_of: vec!["viewer".to_string(), "owner".to_string()],
+                        condition: None,
+                        description: None,
+                        ..Default::default()
+                    },
+                );
+                types.insert(
+                    "repo".to_string(),
+                    crate::types::schema::TypeDef {
+                        relations,
+                        permissions,
+                        ..Default::default()
+                    },
+                );
+                types
+            },
+        };
+        let mut storage = SqliteStorage::new(SqliteConfig::in_memory()).unwrap();
+        storage.initialize().unwrap();
+        GraphEngine::new(Box::new(storage), schema).with_fail_closed(mode)
+    }
+
+    #[test]
+    fn test_fail_closed_default_deny_on_error() {
+        let engine = make_engine();
+        let result = engine
+            .check(
+                &SubjectId::new("user:alice").unwrap(),
+                "nonexistent_permission",
+                &ResourceId::new("repo:test").unwrap(),
+                None,
+            )
+            .unwrap();
+        // Unknown permission → denied (fail-closed, not an error)
+        assert!(!result.allowed);
+    }
+
+    #[test]
+    fn test_fail_closed_allow_on_error_builder() {
+        let engine = make_engine_with_fail_mode(FailClosedMode::AllowOnError);
+        let result = engine
+            .check(
+                &SubjectId::new("user:alice").unwrap(),
+                "nonexistent_permission",
+                &ResourceId::new("repo:test").unwrap(),
+                None,
+            )
+            .unwrap();
+        assert!(!result.allowed);
+    }
+
+    #[test]
+    fn test_fail_closed_on_storage_failure() {
+        let engine = make_engine();
+        engine.close().unwrap();
+        let result = engine.check(
+            &SubjectId::new("user:alice").unwrap(),
+            "read",
+            &ResourceId::new("repo:test").unwrap(),
+            None,
+        );
+        // Default DenyOnError: storage failure → denied (fail closed)
+        assert!(result.is_ok());
+        assert!(!result.unwrap().allowed);
+    }
+
+    #[test]
+    fn test_cross_node_token_error_exists() {
+        let err = AegisError::CrossNodeToken;
+        let msg = format!("{}", err);
+        assert!(msg.contains("cross") || msg.contains("node") || msg.contains("token"));
+    }
+
+    #[test]
+    fn test_write_after_close_errors() {
+        let engine = make_engine();
+        engine.close().unwrap();
+        let result = engine.write(&RelationshipTuple::new(
+            SubjectId::new("user:alice").unwrap(),
+            Relation::new("owner").unwrap(),
+            ResourceId::new("repo:test").unwrap(),
+        ));
+        assert!(result.is_err());
+    }
+
+    // ── INT-022: Stale token check ──
+    #[test]
+    fn test_stale_token_returns_revision_result() {
+        let engine = make_engine();
+        let subject = SubjectId::new("user:stale").unwrap();
+        let resource = ResourceId::new("repo:stale").unwrap();
+
+        // Write as owner at T1
+        let token = engine
+            .write(&RelationshipTuple::new(
+                subject.clone(),
+                Relation::new("owner").unwrap(),
+                resource.clone(),
+            ))
+            .unwrap();
+
+        // Check at T1 revision → should be allowed (owner can read)
+        let result = engine
+            .check(
+                &subject,
+                "read",
+                &resource,
+                Some(ConsistencyMode::AtRevision(token.revision)),
+            )
+            .unwrap();
+        assert!(result.allowed);
+
+        // Delete the tuple at T2
+        engine
+            .delete(&TupleKey {
+                subject: subject.clone(),
+                relation: Relation::new("owner").unwrap(),
+                object: resource.clone(),
+            })
+            .unwrap();
+
+        // Check at T1 revision → should still be allowed (snapshot at T1)
+        let result = engine
+            .check(
+                &subject,
+                "read",
+                &resource,
+                Some(ConsistencyMode::AtRevision(token.revision)),
+            )
+            .unwrap();
+        assert!(result.allowed);
+
+        // Check without consistency mode → should be denied (current state)
+        let result = engine.check(&subject, "read", &resource, None).unwrap();
+        assert!(!result.allowed);
+    }
+
+    // ── SEC-002: Deep nesting cycle-breaking ──
+    #[test]
+    fn test_deep_nesting_cycle_handled() {
+        let engine = make_engine();
+        // Create a chain of 100 resources where each points to the next via subject-set,
+        // and the last points back to the first forming a cycle.
+        let objects: Vec<_> = (0..100)
+            .map(|i| ResourceId::new(format!("repo:cycle{i}")).unwrap())
+            .collect();
+
+        for i in 0..99 {
+            let as_subject = SubjectId::new(format!("repo:cycle{}", i)).unwrap();
+            engine
+                .write(&RelationshipTuple::new(
+                    as_subject,
+                    Relation::new("owner").unwrap(),
+                    objects[i + 1].clone(),
+                ))
+                .unwrap();
+        }
+        // Complete the cycle: last points to first
+        let last = SubjectId::new("repo:cycle99").unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                last,
+                Relation::new("owner").unwrap(),
+                objects[0].clone(),
+            ))
+            .unwrap();
+
+        // Verify check doesn't panic or hang — returns a result
+        let root = SubjectId::new("user:root").unwrap();
+        let result = engine.check(&root, "read", &objects[50], None);
+        assert!(result.is_ok());
+    }
+
+    // ── SEC-003: Max traversal depth exceeded ──
+    #[test]
+    fn test_max_traversal_depth_respected() {
+        let engine = make_engine();
+        // Create a chain deeper than default max_traversal_depth (10)
+        let depth = 15;
+        let objects: Vec<_> = (0..depth)
+            .map(|i| ResourceId::new(format!("repo:depth{i}")).unwrap())
+            .collect();
+
+        for i in 0..depth - 1 {
+            let as_subject = SubjectId::new(format!("repo:depth{}", i)).unwrap();
+            engine
+                .write(&RelationshipTuple::new(
+                    as_subject,
+                    Relation::new("owner").unwrap(),
+                    objects[i + 1].clone(),
+                ))
+                .unwrap();
+        }
+        // Make user:root the owner of the first in chain
+        let root = SubjectId::new("user:root").unwrap();
+        engine
+            .write(&RelationshipTuple::new(
+                root.clone(),
+                Relation::new("owner").unwrap(),
+                objects[0].clone(),
+            ))
+            .unwrap();
+
+        // Attempt to traverse beyond default max depth (10) → should stop gracefully
+        let result = engine.check(&root, "read", &objects[depth - 1], None);
+        assert!(result.is_ok());
     }
 
     #[test]

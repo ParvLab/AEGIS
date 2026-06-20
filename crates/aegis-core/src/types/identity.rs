@@ -381,6 +381,12 @@ mod tests {
     }
 
     #[test]
+    fn test_empty_relation() {
+        let err = Relation::new("").unwrap_err();
+        assert!(matches!(err, ValidationError::Empty));
+    }
+
+    #[test]
     fn relation_with_colon_rejected() {
         let err = Relation::new("role:admin").unwrap_err();
         assert!(matches!(err, ValidationError::InvalidCharacters(_)));

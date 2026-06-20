@@ -83,6 +83,26 @@ name = "partition"
 harness = false
 path = "benches/partition.rs"
 
+[[bench]]
+name = "list"
+harness = false
+path = "benches/list.rs"
+
+[[bench]]
+name = "write"
+harness = false
+path = "benches/write.rs"
+
+[[bench]]
+name = "explain"
+harness = false
+path = "benches/explain.rs"
+
+[[bench]]
+name = "memory"
+harness = false
+path = "benches/memory.rs"
+
 [features]
 default = ["sqlite"]
 sqlite = ["dep:rusqlite", "dep:r2d2", "dep:r2d2_sqlite"]

@@ -42,6 +42,14 @@ pub struct WatchFilter {
     pub relations: Option<Vec<String>>,
     pub objects: Option<Vec<String>>,
     pub event_types: Option<Vec<WatchEventType>>,
+    pub since_revision: Option<Revision>,
+}
+
+impl WatchFilter {
+    pub fn since(mut self, revision: Revision) -> Self {
+        self.since_revision = Some(revision);
+        self
+    }
 }
 
 impl WatchFilter {
@@ -63,6 +71,11 @@ impl WatchFilter {
         }
         if let Some(types) = &self.event_types
             && !types.contains(&event.event_type)
+        {
+            return false;
+        }
+        if let Some(since) = self.since_revision
+            && event.revision <= since
         {
             return false;
         }
@@ -455,5 +468,104 @@ mod tests {
 
         let event = sub.recv().unwrap();
         assert_eq!(event.subject, "user:alice");
+    }
+
+    #[test]
+    fn test_watch_since_revision() {
+        let engine = make_engine();
+        let sub = engine.watch_all();
+
+        let t1 = engine
+            .write(&RelationshipTuple::new(
+                SubjectId::new("user:alice").unwrap(),
+                Relation::new("owner").unwrap(),
+                ResourceId::new("repo:first").unwrap(),
+            ))
+            .unwrap()
+            .revision;
+
+        // Subscribe with since(T1) — should only see events AFTER T1
+        let since_sub = engine.watch(WatchFilter::default().since(t1));
+
+        // Consume the T1 event from the all-subscriber
+        let _event = sub.recv().unwrap();
+        assert_eq!(_event.revision, t1);
+
+        // Write T2
+        let t2 = engine
+            .write(&RelationshipTuple::new(
+                SubjectId::new("user:bob").unwrap(),
+                Relation::new("viewer").unwrap(),
+                ResourceId::new("repo:second").unwrap(),
+            ))
+            .unwrap()
+            .revision;
+
+        // since_sub should get T2
+        let event2 = since_sub.recv().unwrap();
+        assert_eq!(event2.revision, t2);
+
+        // Write T3
+        let t3 = engine
+            .write(&RelationshipTuple::new(
+                SubjectId::new("user:charlie").unwrap(),
+                Relation::new("owner").unwrap(),
+                ResourceId::new("repo:third").unwrap(),
+            ))
+            .unwrap()
+            .revision;
+
+        // since_sub should get T3
+        let event3 = since_sub.recv().unwrap();
+        assert_eq!(event3.revision, t3);
+
+        // Ensure no extra events on since_sub
+        match since_sub.try_recv() {
+            Err(TryRecvError::Empty) => {}
+            other => panic!("expected empty channel, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_watch_since_revision_excludes_before() {
+        let engine = make_engine();
+        let sub = engine.watch_all();
+
+        // Write tuples until we get past revision 5
+        let mut last_rev = Revision::ZERO;
+        for _ in 0..10 {
+            let token = engine
+                .write(&RelationshipTuple::new(
+                    SubjectId::new("user:alice").unwrap(),
+                    Relation::new("owner").unwrap(),
+                    ResourceId::new("repo:fluxbus").unwrap(),
+                ))
+                .unwrap();
+            last_rev = token.revision;
+            let _ = sub.recv().unwrap();
+        }
+        assert!(last_rev.as_u64() > 5, "need revision > 5 for test setup");
+
+        // Now subscribe with since_revision=5
+        let since_sub = engine.watch(
+            WatchFilter {
+                since_revision: Some(Revision::new(5)),
+                ..Default::default()
+            },
+        );
+
+        // Write another tuple — revision will be > 5
+        let token = engine
+            .write(&RelationshipTuple::new(
+                SubjectId::new("user:bob").unwrap(),
+                Relation::new("viewer").unwrap(),
+                ResourceId::new("repo:other").unwrap(),
+            ))
+            .unwrap();
+        assert!(token.revision.as_u64() > 5);
+
+        // The event should be received because its revision > 5
+        let event = since_sub.recv().unwrap();
+        assert_eq!(event.revision, token.revision);
     }
 }

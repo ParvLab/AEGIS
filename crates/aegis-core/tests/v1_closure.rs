@@ -404,3 +404,57 @@ fn v1_m4_health_cache_ratio() {
     assert!(health.total_checks >= 2);
     assert!(health.allowed_checks >= 1);
 }
+
+#[test]
+fn test_cache_warmup_reduces_latency() {
+    let engine = make_engine_in_memory();
+
+    for i in 0..100 {
+        engine
+            .write(&RelationshipTuple::new(
+                SubjectId::new(&format!("user:seed{i}")).unwrap(),
+                Relation::new("owner").unwrap(),
+                ResourceId::new(&format!("repo:seed{i}")).unwrap(),
+            ))
+            .unwrap();
+    }
+
+    let subjects: Vec<_> = (0..100)
+        .map(|i| {
+            (
+                SubjectId::new(&format!("user:seed{i}")).unwrap(),
+                ResourceId::new(&format!("repo:seed{i}")).unwrap(),
+            )
+        })
+        .collect();
+
+    engine.invalidate_cache();
+
+    let start = std::time::Instant::now();
+    for (subj, res) in &subjects {
+        engine.check(subj, "read", res, None).unwrap();
+    }
+    let uncached_duration = start.elapsed();
+    let uncached_avg = uncached_duration / 100;
+
+    for (subj, res) in &subjects {
+        engine.check(subj, "read", res, None).unwrap();
+    }
+
+    engine.invalidate_cache();
+    for (subj, res) in &subjects {
+        engine.check(subj, "read", res, None).unwrap();
+    }
+
+    let start = std::time::Instant::now();
+    for (subj, res) in &subjects {
+        engine.check(subj, "read", res, None).unwrap();
+    }
+    let cached_duration = start.elapsed();
+    let cached_avg = cached_duration / 100;
+
+    assert!(
+        cached_avg < uncached_avg / 2,
+        "cached average ({cached_avg:?}) should be at least 2x faster than uncached average ({uncached_avg:?})",
+    );
+}
