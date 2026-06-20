@@ -86,18 +86,11 @@ fn test_tenant_isolation_write_read() {
         ))
         .unwrap();
 
-    let result = engine_a
-        .check(&subject, "read", &resource, None)
-        .unwrap();
+    let result = engine_a.check(&subject, "read", &resource, None).unwrap();
     assert!(result.allowed, "tenant_a should read its own tuple");
 
-    let result = engine_b
-        .check(&subject, "read", &resource, None)
-        .unwrap();
-    assert!(
-        !result.allowed,
-        "tenant_b should not read tenant_a's tuple"
-    );
+    let result = engine_b.check(&subject, "read", &resource, None).unwrap();
+    assert!(!result.allowed, "tenant_b should not read tenant_a's tuple");
 
     engine_a.close().unwrap();
     engine_b.close().unwrap();
@@ -188,17 +181,10 @@ fn test_tenant_admin_cannot_access_other_tenant() {
         ))
         .unwrap();
 
-    let result = engine_a
-        .check(&admin_a, "read", &resource_a, None)
-        .unwrap();
-    assert!(
-        result.allowed,
-        "admin_tenant_a should access tenant_a data"
-    );
+    let result = engine_a.check(&admin_a, "read", &resource_a, None).unwrap();
+    assert!(result.allowed, "admin_tenant_a should access tenant_a data");
 
-    let result = engine_b
-        .check(&admin_a, "read", &resource_b, None)
-        .unwrap();
+    let result = engine_b.check(&admin_a, "read", &resource_b, None).unwrap();
     assert!(
         !result.allowed,
         "admin_tenant_a should not access tenant_b data"
@@ -277,10 +263,7 @@ types:
     let result = engine
         .check(&super_admin, "read", &resource_a, None)
         .unwrap();
-    assert!(
-        result.allowed,
-        "super:admin should read tenant_a resource"
-    );
+    assert!(result.allowed, "super:admin should read tenant_a resource");
 
     let result = engine
         .check(&super_admin, "read", &resource_b, None)
@@ -354,11 +337,7 @@ types:
     let result = engine
         .query(&filter, &PaginationParams::new(100, None), None)
         .unwrap();
-    assert_eq!(
-        result.tuples.len(),
-        5,
-        "should get exactly 5 repo tuples"
-    );
+    assert_eq!(result.tuples.len(), 5, "should get exactly 5 repo tuples");
     for t in &result.tuples {
         assert!(
             t.object.as_str().starts_with("repo:"),
@@ -374,11 +353,7 @@ types:
     let result = engine
         .query(&filter, &PaginationParams::new(100, None), None)
         .unwrap();
-    assert_eq!(
-        result.tuples.len(),
-        5,
-        "should get exactly 5 doc tuples"
-    );
+    assert_eq!(result.tuples.len(), 5, "should get exactly 5 doc tuples");
     for t in &result.tuples {
         assert!(
             t.object.as_str().starts_with("doc:"),
@@ -403,8 +378,7 @@ fn test_concurrent_tenant_operations() {
         std::thread::spawn(move || {
             for i in 0..20 {
                 let subject = SubjectId::new(format!("user:a{}", i)).unwrap();
-                let resource =
-                    ResourceId::new(format!("tenant_a_repo:r{}", i)).unwrap();
+                let resource = ResourceId::new(format!("tenant_a_repo:r{}", i)).unwrap();
                 engine
                     .write(&RelationshipTuple::new(
                         subject,
@@ -421,8 +395,7 @@ fn test_concurrent_tenant_operations() {
         std::thread::spawn(move || {
             for i in 0..20 {
                 let subject = SubjectId::new(format!("user:b{}", i)).unwrap();
-                let resource =
-                    ResourceId::new(format!("tenant_b_repo:r{}", i)).unwrap();
+                let resource = ResourceId::new(format!("tenant_b_repo:r{}", i)).unwrap();
                 engine
                     .write(&RelationshipTuple::new(
                         subject,
@@ -444,11 +417,7 @@ fn test_concurrent_tenant_operations() {
             None,
         )
         .unwrap();
-    assert_eq!(
-        result.tuples.len(),
-        20,
-        "tenant_a should have 20 tuples"
-    );
+    assert_eq!(result.tuples.len(), 20, "tenant_a should have 20 tuples");
 
     let result = engine_b
         .query(
@@ -457,11 +426,7 @@ fn test_concurrent_tenant_operations() {
             None,
         )
         .unwrap();
-    assert_eq!(
-        result.tuples.len(),
-        20,
-        "tenant_b should have 20 tuples"
-    );
+    assert_eq!(result.tuples.len(), 20, "tenant_b should have 20 tuples");
 
     engine_a.close().unwrap();
     engine_b.close().unwrap();

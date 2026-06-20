@@ -75,11 +75,13 @@ fn str005_read_pool_exhaustion() {
     let alice = SubjectId::new("user:alice").unwrap();
     let resource = ResourceId::new("repo:shared").unwrap();
 
-    engine.write(&RelationshipTuple::new(
-        alice.clone(),
-        Relation::new("owner").unwrap(),
-        resource.clone(),
-    )).unwrap();
+    engine
+        .write(&RelationshipTuple::new(
+            alice.clone(),
+            Relation::new("owner").unwrap(),
+            resource.clone(),
+        ))
+        .unwrap();
 
     let mut handles = vec![];
     for _ in 0..10 {
@@ -99,7 +101,9 @@ fn str005_read_pool_exhaustion() {
                 assert!(result.allowed);
                 ok_count += 1;
             }
-            Err(_) => { _err_count += 1; }
+            Err(_) => {
+                _err_count += 1;
+            }
         }
     }
 
@@ -474,17 +478,33 @@ fn str008_deep_hierarchy_scaled() {
 
     // Depth 5 from root should be reachable
     let result = engine
-        .check(&root, "read", &ResourceId::new("repo:level4").unwrap(), None)
+        .check(
+            &root,
+            "read",
+            &ResourceId::new("repo:level4").unwrap(),
+            None,
+        )
         .unwrap();
-    assert!(result.allowed, "root should have transitive access at depth 5");
+    assert!(
+        result.allowed,
+        "root should have transitive access at depth 5"
+    );
 
     // Depth 9 from root exceeds default max_traversal_depth (10)
     // The traversal starts at the resource being checked and walks up,
     // so depth 9 means 9 hops, which is within the limit of 10
     let result = engine
-        .check(&root, "read", &ResourceId::new("repo:level9").unwrap(), None)
+        .check(
+            &root,
+            "read",
+            &ResourceId::new("repo:level9").unwrap(),
+            None,
+        )
         .unwrap();
-    assert!(result.allowed, "root should have transitive access at depth 9");
+    assert!(
+        result.allowed,
+        "root should have transitive access at depth 9"
+    );
 
     engine.close().unwrap();
 }

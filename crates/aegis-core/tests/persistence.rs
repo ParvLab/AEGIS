@@ -269,13 +269,19 @@ fn test_recover_from_events() {
 
     // Recover to the current revision (replays event log)
     let recovered = engine.recover_from_events(Some(rev)).unwrap();
-    assert!(recovered.as_u64() >= rev.as_u64(), "recovery should reach at least the current revision");
+    assert!(
+        recovered.as_u64() >= rev.as_u64(),
+        "recovery should reach at least the current revision"
+    );
 
     verify_n_tuples(&engine, 10);
 
     // Also test with None (recover to latest)
     let recovered = engine.recover_from_events(None).unwrap();
-    assert!(recovered.as_u64() >= rev.as_u64(), "recovery to latest should succeed");
+    assert!(
+        recovered.as_u64() >= rev.as_u64(),
+        "recovery to latest should succeed"
+    );
 
     verify_n_tuples(&engine, 10);
 

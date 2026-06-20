@@ -85,11 +85,7 @@ fn test_subject_with_many_relationships() {
     let elapsed = start.elapsed();
 
     assert!(result.allowed);
-    assert!(
-        elapsed.as_secs() < 5,
-        "check took too long: {:?}",
-        elapsed
-    );
+    assert!(elapsed.as_secs() < 5, "check took too long: {:?}", elapsed);
 }
 
 #[test]

@@ -1,8 +1,8 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use aegis_core::engine::GraphEngine;
-use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
+use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::types::schema::{PermissionDef, RelationDef, Schema, TypeDef};
 use aegis_core::types::*;
 use std::collections::HashMap;

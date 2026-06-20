@@ -547,12 +547,10 @@ mod tests {
         assert!(last_rev.as_u64() > 5, "need revision > 5 for test setup");
 
         // Now subscribe with since_revision=5
-        let since_sub = engine.watch(
-            WatchFilter {
-                since_revision: Some(Revision::new(5)),
-                ..Default::default()
-            },
-        );
+        let since_sub = engine.watch(WatchFilter {
+            since_revision: Some(Revision::new(5)),
+            ..Default::default()
+        });
 
         // Write another tuple — revision will be > 5
         let token = engine

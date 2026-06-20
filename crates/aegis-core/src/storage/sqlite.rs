@@ -3139,13 +3139,21 @@ mod tests {
     fn test_audit_entry_has_timestamp() {
         let mut store = storage();
         store.initialize().unwrap();
-        store.write_tuple(&PartitionId::default(), &tuple("user:ts", "owner", "repo:ts")).unwrap();
-        let entries = store.query_audit(
-            &PartitionId::default(),
-            Some(&ResourceId::new("repo:ts").unwrap()),
-            None, None,
-            &PaginationParams::default(),
-        ).unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:ts", "owner", "repo:ts"),
+            )
+            .unwrap();
+        let entries = store
+            .query_audit(
+                &PartitionId::default(),
+                Some(&ResourceId::new("repo:ts").unwrap()),
+                None,
+                None,
+                &PaginationParams::default(),
+            )
+            .unwrap();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].timestamp.timestamp() > 0);
     }

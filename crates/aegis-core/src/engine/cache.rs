@@ -399,8 +399,22 @@ mod tests {
     #[test]
     fn test_cache_invalidate_before() {
         let mut cache = DecisionCache::new(100);
-        cache.insert("user:1", "read", "repo:a", "default", true, Revision::new(5));
-        cache.insert("user:2", "read", "repo:b", "default", true, Revision::new(10));
+        cache.insert(
+            "user:1",
+            "read",
+            "repo:a",
+            "default",
+            true,
+            Revision::new(5),
+        );
+        cache.insert(
+            "user:2",
+            "read",
+            "repo:b",
+            "default",
+            true,
+            Revision::new(10),
+        );
 
         cache.invalidate_before(Revision::new(8));
 
@@ -426,10 +440,7 @@ mod tests {
             Revision::new(5),
         );
         cache.clear();
-        assert_eq!(
-            cache.get("user:1", "owner", Revision::new(5)),
-            None
-        );
+        assert_eq!(cache.get("user:1", "owner", Revision::new(5)), None);
     }
 
     #[test]
@@ -450,10 +461,7 @@ mod tests {
 
         cache.invalidate_before(Revision::new(8));
 
-        assert_eq!(
-            cache.get("user:1", "owner", Revision::new(5)),
-            None
-        );
+        assert_eq!(cache.get("user:1", "owner", Revision::new(5)), None);
         assert_eq!(
             cache.get("user:2", "owner", Revision::new(10)),
             Some(vec!["repo:b".to_string()])

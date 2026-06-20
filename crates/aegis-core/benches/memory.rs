@@ -1,8 +1,8 @@
 use criterion::{Criterion, black_box, criterion_group, criterion_main};
 
 use aegis_core::engine::GraphEngine;
-use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::storage::StorageBackend;
+use aegis_core::storage::sqlite::{SqliteConfig, SqliteStorage};
 use aegis_core::types::schema::{PermissionDef, RelationDef, Schema, TypeDef};
 use aegis_core::types::*;
 use std::collections::HashMap;
@@ -12,13 +12,7 @@ fn current_rss_kb() -> u64 {
     {
         let pid = std::process::id();
         let output = std::process::Command::new("tasklist")
-            .args([
-                "/FI",
-                &format!("PID eq {}", pid),
-                "/FO",
-                "CSV",
-                "/NH",
-            ])
+            .args(["/FI", &format!("PID eq {}", pid), "/FO", "CSV", "/NH"])
             .output()
             .expect("tasklist failed");
         let stdout = String::from_utf8(output.stdout).expect("invalid utf8");
