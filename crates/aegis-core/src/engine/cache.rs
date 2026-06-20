@@ -349,6 +349,126 @@ mod tests {
     }
 
     #[test]
+    fn test_cache_ttl_expiry() {
+        let mut cache = DecisionCache::new(100).with_ttl(Duration::from_millis(1));
+        cache.insert(
+            "user:1",
+            "read",
+            "repo:a",
+            "default",
+            true,
+            Revision::new(5),
+        );
+
+        // Should be available immediately
+        assert_eq!(
+            cache.get("user:1", "read", "repo:a", "default", Revision::new(5)),
+            Some(true)
+        );
+
+        // Sleep for 2ms to ensure TTL expires
+        std::thread::sleep(Duration::from_millis(2));
+
+        // Should be gone after TTL expiry
+        assert_eq!(
+            cache.get("user:1", "read", "repo:a", "default", Revision::new(5)),
+            None
+        );
+    }
+
+    #[test]
+    fn test_cache_remove_partition() {
+        let mut cache = DecisionCache::new(100);
+        cache.insert("user:1", "read", "repo:a", "alpha", true, Revision::new(1));
+        cache.insert("user:2", "read", "repo:b", "beta", true, Revision::new(2));
+
+        assert_eq!(cache.len(), 2);
+
+        cache.remove("alpha");
+        assert_eq!(cache.len(), 1);
+        assert_eq!(
+            cache.get("user:1", "read", "repo:a", "alpha", Revision::new(1)),
+            None
+        );
+        assert_eq!(
+            cache.get("user:2", "read", "repo:b", "beta", Revision::new(2)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_cache_invalidate_before() {
+        let mut cache = DecisionCache::new(100);
+        cache.insert(
+            "user:1",
+            "read",
+            "repo:a",
+            "default",
+            true,
+            Revision::new(5),
+        );
+        cache.insert(
+            "user:2",
+            "read",
+            "repo:b",
+            "default",
+            true,
+            Revision::new(10),
+        );
+
+        cache.invalidate_before(Revision::new(8));
+
+        // user:1 at rev 5 should be evicted
+        assert_eq!(
+            cache.get("user:1", "read", "repo:a", "default", Revision::new(5)),
+            None
+        );
+        // user:2 at rev 10 should remain
+        assert_eq!(
+            cache.get("user:2", "read", "repo:b", "default", Revision::new(10)),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn test_traversal_cache_clear() {
+        let mut cache = TraversalCache::new(100);
+        cache.insert(
+            "user:1",
+            "owner",
+            vec!["repo:a".to_string()],
+            Revision::new(5),
+        );
+        cache.clear();
+        assert_eq!(cache.get("user:1", "owner", Revision::new(5)), None);
+    }
+
+    #[test]
+    fn test_traversal_cache_invalidate_before() {
+        let mut cache = TraversalCache::new(100);
+        cache.insert(
+            "user:1",
+            "owner",
+            vec!["repo:a".to_string()],
+            Revision::new(5),
+        );
+        cache.insert(
+            "user:2",
+            "owner",
+            vec!["repo:b".to_string()],
+            Revision::new(10),
+        );
+
+        cache.invalidate_before(Revision::new(8));
+
+        assert_eq!(cache.get("user:1", "owner", Revision::new(5)), None);
+        assert_eq!(
+            cache.get("user:2", "owner", Revision::new(10)),
+            Some(vec!["repo:b".to_string()])
+        );
+    }
+
+    #[test]
     fn test_traversal_cache() {
         let mut cache = TraversalCache::new(100);
         let resources = vec!["repo:a".to_string(), "repo:b".to_string()];

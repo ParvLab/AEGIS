@@ -1806,6 +1806,7 @@ pub extern "C" fn aegis_engine_watch(
                 ])
             },
             event_types: None,
+            since_revision: None,
         };
         let sub = eng.watch(filter);
         Box::into_raw(Box::new(AegisWatchSubscription { inner: Some(sub) }))

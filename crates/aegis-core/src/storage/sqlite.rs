@@ -3001,6 +3001,63 @@ mod tests {
     }
 
     #[test]
+    fn test_nested_savepoint() {
+        let mut store = storage();
+        store.initialize().unwrap();
+
+        let mut tx = store.begin_transaction(&PartitionId::default()).unwrap();
+        tx.write(&PartitionId::default(), &test_tuple()).unwrap();
+
+        tx.savepoint("outer").unwrap();
+        tx.write(
+            &PartitionId::default(),
+            &tuple("user:outer", "editor", "repo:outer"),
+        )
+        .unwrap();
+
+        tx.savepoint("inner").unwrap();
+        tx.write(
+            &PartitionId::default(),
+            &tuple("user:inner", "editor", "repo:inner"),
+        )
+        .unwrap();
+
+        // Roll back inner savepoint — third tuple should be gone
+        tx.rollback_to_savepoint("inner").unwrap();
+        tx.release_savepoint("inner").unwrap();
+
+        // Roll back outer savepoint — second tuple should be gone
+        tx.rollback_to_savepoint("outer").unwrap();
+        tx.release_savepoint("outer").unwrap();
+
+        let rev = tx.commit().unwrap();
+        assert!(rev.as_u64() > 0);
+
+        // Only the first tuple (written before any savepoint) survives
+        assert!(
+            store
+                .has_tuple(&PartitionId::default(), &test_tuple().key())
+                .unwrap()
+        );
+        assert!(
+            !store
+                .has_tuple(
+                    &PartitionId::default(),
+                    &key("user:outer", "editor", "repo:outer")
+                )
+                .unwrap()
+        );
+        assert!(
+            !store
+                .has_tuple(
+                    &PartitionId::default(),
+                    &key("user:inner", "editor", "repo:inner")
+                )
+                .unwrap()
+        );
+    }
+
+    #[test]
     fn test_transaction_rollback_on_drop() {
         let mut store = storage();
         store.initialize().unwrap();
@@ -3076,6 +3133,29 @@ mod tests {
             .unwrap();
         assert_eq!(audit.len(), 1);
         assert_eq!(audit[0].subject, "user:2");
+    }
+
+    #[test]
+    fn test_audit_entry_has_timestamp() {
+        let mut store = storage();
+        store.initialize().unwrap();
+        store
+            .write_tuple(
+                &PartitionId::default(),
+                &tuple("user:ts", "owner", "repo:ts"),
+            )
+            .unwrap();
+        let entries = store
+            .query_audit(
+                &PartitionId::default(),
+                Some(&ResourceId::new("repo:ts").unwrap()),
+                None,
+                None,
+                &PaginationParams::default(),
+            )
+            .unwrap();
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].timestamp.timestamp() > 0);
     }
 
     // ── Integrity ──
