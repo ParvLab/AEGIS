@@ -1108,6 +1108,7 @@ impl JsAegis {
                 relations: relation.map(|r| vec![r]),
                 objects: object_type.map(|o| vec![o]),
                 event_types: None,
+                since_revision: None,
             };
             let subscription = self.engine.watch(filter);
             Ok(JsWatchSubscription {
