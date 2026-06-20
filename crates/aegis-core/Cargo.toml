@@ -25,14 +25,14 @@ r2d2 = { workspace = true, optional = true }
 r2d2_sqlite = { workspace = true, optional = true }
 serde_json.workspace = true
 async-trait = { workspace = true }
-sha2 = "0.10"
+sha2 = "0.11"
 ed25519-dalek = { version = "2", features = ["digest"] }
-rand = "0.8"
+rand = "0.10"
 hex = "0.4"
 tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1", "with-uuid-1"], optional = true }
 deadpool-postgres = { version = "0.14", features = ["serde"], optional = true }
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "macros"], optional = true }
-tokio-postgres-rustls = { version = "0.12", optional = true }
+tokio-postgres-rustls = { version = "0.14", optional = true }
 rustls = { version = "0.23", optional = true }
 webpki-roots = { version = "1", optional = true }
 rocksdb = { workspace = true, optional = true }
@@ -63,7 +63,7 @@ web-sys = { version = "0.3", features = [
 fastrand = "2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-criterion = "0.5"
+criterion = "0.8"
 
 [target.'cfg(target_arch = "wasm32")'.dev-dependencies]
 wasm-bindgen-test = "0.3"
