@@ -163,7 +163,7 @@ The contract is: **auth provider gives Aegis an identity; Aegis decides what tha
 | Language | Package | Notes |
 |---|---|---|
 | **TypeScript / Node.js** | `@aegis/core` | Primary SDK; NAPI bindings to Rust core |
-| **Go** | `github.com/aegis-auth/aegis-go` | CGo bindings; idiomatic Go API |
+| **Go** | `github.com/ParvLab/AEGIS/go` | CGo bindings; idiomatic Go API |
 | **Rust** | `aegis` (crate) | Direct library usage; zero-overhead |
 | **Python** | `aegis-auth` (PyPI) | PyO3 bindings; async-compatible |
 
@@ -846,7 +846,7 @@ npm install @aegis/core
 pip install aegis-auth
 
 # Go
-go get github.com/aegis-auth/aegis-go
+go get github.com/ParvLab/AEGIS/go
 
 # Rust
 cargo add aegis

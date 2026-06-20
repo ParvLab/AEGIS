@@ -1,4 +1,4 @@
-# @aegis/browser
+# @aegis-v/browser
 
 Aegis authorization engine compiled to WASM for browser environments.
 Check permissions, write/delete relations, and export/import data — all offline.
@@ -6,13 +6,13 @@ Check permissions, write/delete relations, and export/import data — all offlin
 ## Install
 
 ```bash
-npm install @aegis/browser
+npm install @aegis-v/browser
 ```
 
 ## Quick Example
 
 ```typescript
-import init, * as wasm from '@aegis/browser/pkg/aegis_browser.js';
+import init, * as wasm from '@aegis-v/browser/pkg/aegis_browser.js';
 
 const schema = JSON.stringify({
   namespaces: [{ name: "doc", relations: { owner: {}, writer: { union: ["owner"] }, reader: { union: ["writer"] } } }]

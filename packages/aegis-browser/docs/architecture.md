@@ -14,7 +14,7 @@ packages/aegis-browser/
     worker.ts                    # Web Worker bridge
   demo/                          # Offline demo app
   docs/                          # Documentation
-  package.json                   # npm package (@aegis/browser)
+  package.json                   # npm package (@aegis-v/browser)
   tsconfig.json
 ```
 

@@ -1,17 +1,17 @@
 {
-  "name": "@aegis-auth/engine",
+  "name": "@aegis-v/engine",
   "version": "0.3.0",
   "description": "Aegis authorization engine — native Node.js bindings",
   "main": "index.js",
   "types": "index.d.ts",
   "scripts": {
-    "build": "cd ../../ && cargo build --package aegis-napi --release && node scripts/copy-napi.js",
+    "build": "cd ../../ && cargo build --package aegis-napi --release && node crates/aegis-napi/scripts/copy-napi.js",
     "test": "node test/index.js",
     "prepublishOnly": "npm run build"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/aegis-auth/aegis"
+    "url": "https://github.com/ParvLab/AEGIS"
   },
   "keywords": ["authorization", "rebac", "zanzibar", "acl", "rbac"],
   "license": "MIT",

@@ -1151,7 +1151,7 @@ GraphEngine
 
 #### Browser SDK (M3)
 
-- JS/TypeScript package (`@aegis/browser`),
+- JS/TypeScript package (`@aegis-v/browser`),
 - `AegisEngine.create(schema, config)` factory,
 - `check()`, `write()`, `delete()`, `listByObject()`, `listBySubject()`,
 - `exportToJson()`, `importFromJson()`,
@@ -1327,7 +1327,7 @@ Scope:
   - Schema migration on browser guide,
   - Support matrix (rendered from `AEGIS_IMPLEMENTATION_PLAN.md`).
 - **Release**:
-  - npm publish (`@aegis/browser`),
+  - npm publish (`@aegis-v/browser`),
   - cargo publish (`aegis-core` with `wasm` + `indexeddb` features),
   - V5 changelog,
   - All release gates signed off (engineering, product, security, architecture, performance, compatibility).
@@ -1343,7 +1343,7 @@ Completion evidence:
 
 - `AsyncStorageBackend` trait + `StorageCapabilities` (M2),
 - `IndexedDbStorage` implementation (M2),
-- `@aegis/browser` npm package (M3),
+- `@aegis-v/browser` npm package (M3),
 - Web Worker integration (M3),
 - offline-first demo app (M3),
 - WASM/IndexedDB architecture spec (M4),
