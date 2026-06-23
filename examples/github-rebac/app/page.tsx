@@ -5,7 +5,7 @@ import Link from "next/link";
 import TypeCards from "./components/TypeCards";
 
 export default function DashboardPage() {
-  const [health, setHealth] = useState<Record<string, unknown> | null>(null);
+  const [health, setHealth] = useState<any>(null);
   const [seeding, setSeeding] = useState(false);
   const [message, setMessage] = useState("");
   const [cacheMsg, setCacheMsg] = useState("");
@@ -36,8 +36,10 @@ export default function DashboardPage() {
 
   async function reset() {
     setSeeding(true); setMessage("");
-    try { await fetch("/api/reset", { method: "POST" }); setMessage("Engine reset and re-seeded"); }
-    catch { setMessage("Failed to reset"); }
+    try {
+      await fetch("/api/reset", { method: "POST" });
+      setMessage("Engine reset and re-seeded");
+    } catch { setMessage("Failed to reset"); }
     setSeeding(false);
     fetchHealth();
   }
@@ -66,17 +68,39 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-8">
-      <div>
-        <h2 className="text-2xl font-bold text-aegis-text">Dashboard</h2>
-        <p className="text-aegis-muted text-sm mt-1">AEGIS authorization engine &mdash; GitHub-style ReBAC demo</p>
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-aegis-text">Dashboard</h2>
+          <p className="text-aegis-muted text-sm mt-1">AEGIS authorization engine &mdash; GitHub-style ReBAC demo</p>
+        </div>
+
+        {/* Tenant and Actor Badges */}
+        <div className="flex items-center gap-3">
+          <div className="px-3 py-1.5 bg-aegis-accent/15 border border-aegis-accent/20 rounded-lg text-xs flex items-center gap-2">
+            <span className="text-aegis-muted">Workspace:</span>
+            <Link href="/partitions" className="font-bold text-aegis-accent hover:underline">
+              {health.activePartition ?? "default"}
+            </Link>
+          </div>
+          <div className="px-3 py-1.5 bg-aegis-border/30 border border-aegis-border rounded-lg text-xs flex items-center gap-2">
+            <span className="text-aegis-muted">Actor:</span>
+            <Link href="/actor" className="font-bold text-aegis-text hover:underline font-mono">
+              {health.activeActor ?? "anonymous"}
+            </Link>
+          </div>
+        </div>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+      {/* 8-Card Stat Grid */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-4">
         <StatCard label="Revision" value={String(health.revision ?? "—")} />
         <StatCard label="Status" value={health.healthy ? "Healthy" : "Error"} color={health.healthy ? "green" : "red"} />
         <StatCard label="Cache Hit Rate" value={health.cacheHitRate != null ? `${(Number(health.cacheHitRate) * 100).toFixed(0)}%` : "—"} />
-        <StatCard label="Cache Entries" value={String(health.cacheEntries ?? health.cacheSize ?? "—")} />
-        <StatCard label="Backend" value="SQLite WAL" />
+        <StatCard label="Cache Entries" value={String(health.cacheEntries ?? "—")} />
+        <StatCard label="Total Checks" value={String(health.totalChecks ?? "0")} />
+        <StatCard label="Allowed Checks" value={String(health.allowedChecks ?? "0")} color="green" />
+        <StatCard label="Denied Checks" value={String(health.deniedChecks ?? "0")} color="red" />
+        <StatCard label="WAL size" value={`${(health.walSizeMb ?? 0).toFixed(2)} MB`} />
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
@@ -102,8 +126,8 @@ export default function DashboardPage() {
         <div className="p-4 bg-aegis-card border border-aegis-border rounded-lg text-sm text-aegis-text animate-fade-in">{message || cacheMsg}</div>
       )}
 
-      <div className="bg-aegis-card border border-aegis-border rounded-xl p-6">
-        <p className="text-sm font-medium text-aegis-text mb-3">Schema Migration</p>
+      <div className="bg-aegis-card border border-aegis-border rounded-xl p-6 shadow-sm">
+        <p className="text-sm font-bold text-aegis-text mb-3">Schema Migration</p>
         <div className="flex gap-4">
           <input type="number" value={migrateTarget} onChange={(e) => setMigrateTarget(e.target.value)}
             className="w-32 bg-aegis-bg border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent" />
@@ -115,16 +139,19 @@ export default function DashboardPage() {
         <p className="text-xs text-aegis-muted mt-2">Current schema version: {String(health.schemaVersion ?? "?")}</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <QuickLink href="/check" label="Check" desc="Test a permission" />
-        <QuickLink href="/explain" label="Explain" desc="See why access was granted or denied" />
-        <QuickLink href="/graph" label="Graph Explorer" desc="Visualize the access graph" />
-        <QuickLink href="/who-can-access" label="Who Can Access" desc="Reverse permission lookup" />
-        <QuickLink href="/simulate" label="Simulation" desc="What-if analysis" />
-        <QuickLink href="/policies" label="Policies" desc="V7 policy lifecycle" />
-        <QuickLink href="/schema" label="Schema Editor" desc="Edit YAML schema live" />
-        <QuickLink href="/audit" label="Audit" desc="View change history" />
-        <QuickLink href="/scheduler" label="Scheduler" desc="V7 analysis schedules" />
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
+        <QuickLink href="/check" label="🔍 Check" desc="Test whether a subject has a permission" />
+        <QuickLink href="/explain" label="🧬 Explain" desc="See why access was granted or denied" />
+        <QuickLink href="/graph" label="📊 Graph Explorer" desc="Visualize relationships and paths" />
+        <QuickLink href="/entities" label="👥 Entities Manager" desc="Form-based relationship manager" />
+        <QuickLink href="/tuples" label="📝 Tuples Editor" desc="Add, list, or ban tuples directly" />
+        <QuickLink href="/partitions" label="🏢 Tenants & Partitions" desc="Configure multi-tenant data boundaries" />
+        <QuickLink href="/analysis" label="🔐 Analysis & Integrity" desc="Verify audit chain and review actor access" />
+        <QuickLink href="/events" label="📡 Events Stream" desc="Watch write activities in real-time" />
+        <QuickLink href="/rate-limiter" label="⏳ Rate Limiter" desc="Manage token bucket traffic and stress test" />
+        <QuickLink href="/backup" label="💾 Backup & Restore" desc="Export JSON and snapshot SQLite backups" />
+        <QuickLink href="/actor" label="👤 Actor Identity" desc="Bind current session user handle" />
+        <QuickLink href="/errors" label="⚠️ Error Playground" desc="Audit fail paths and exception responses" />
       </div>
 
       <TypeCards />
@@ -135,17 +162,17 @@ export default function DashboardPage() {
 function StatCard({ label, value, color }: { label: string; value: string; color?: string }) {
   const colorMap: Record<string, string> = { green: "text-aegis-green", red: "text-aegis-red" };
   return (
-    <div className="bg-aegis-card border border-aegis-border rounded-xl p-4">
-      <p className="text-xs text-aegis-muted uppercase tracking-wider">{label}</p>
-      <p className={`text-2xl font-bold mt-1 ${color ? (colorMap[color] ?? "") : "text-aegis-text"}`}>{value}</p>
+    <div className="bg-aegis-card border border-aegis-border rounded-xl p-4 shadow-sm">
+      <p className="text-[10px] text-aegis-muted uppercase tracking-wider font-semibold">{label}</p>
+      <p className={`text-xl font-bold mt-1.5 ${color ? (colorMap[color] ?? "") : "text-aegis-text"}`}>{value}</p>
     </div>
   );
 }
 
 function QuickLink({ href, label, desc }: { href: string; label: string; desc: string }) {
   return <Link href={href}
-    className="block p-4 bg-aegis-card border border-aegis-border rounded-xl hover:border-aegis-accent/50 transition-colors">
-    <p className="text-sm font-medium text-aegis-text">{label}</p>
-    <p className="text-xs text-aegis-muted mt-1">{desc}</p>
+    className="block p-4 bg-aegis-card border border-aegis-border rounded-xl hover:border-aegis-accent/50 transition-colors shadow-sm">
+    <p className="text-sm font-semibold text-aegis-text">{label}</p>
+    <p className="text-xs text-aegis-muted mt-1 leading-relaxed">{desc}</p>
   </Link>;
 }

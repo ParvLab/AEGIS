@@ -1,13 +1,22 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useDiscovery } from "@/lib/useDiscovery";
 import { ALL_USERS } from "@/lib/seed";
 
 export default function ExportPage() {
+  const discovery = useDiscovery();
+  const subjectsList = discovery.subjects.length > 0 ? discovery.subjects : ALL_USERS;
+
   const [subject, setSubject] = useState("user:alice");
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Sync state with dynamic lists when loaded
+  useEffect(() => {
+    if (discovery.subjects.length > 0) setSubject(discovery.subjects[0]);
+  }, [discovery.loading]);
 
   async function handleExport() {
     setLoading(true); setError(""); setResult(null);
@@ -36,7 +45,7 @@ export default function ExportPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-bold text-aegis-text">Subject Export</h2>
-        <p className="text-aegis-muted text-sm mt-1">Export all active tuples for a subject</p>
+        <p className="text-aegis-muted text-sm mt-1">Export all active tuples for a subject (GDPR portability)</p>
       </div>
 
       <div className="flex flex-col md:flex-row gap-4">
@@ -44,7 +53,7 @@ export default function ExportPage() {
           <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Subject</label>
           <select value={subject} onChange={(e) => setSubject(e.target.value)}
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-            {ALL_USERS.map((u) => <option key={u} value={u}>{u}</option>)}
+            {subjectsList.map((u) => <option key={u} value={u}>{u}</option>)}
           </select>
         </div>
         <div className="flex items-end">

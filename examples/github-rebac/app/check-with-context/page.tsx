@@ -1,28 +1,51 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useDiscovery } from "@/lib/useDiscovery";
 import { ALL_USERS, ALL_RESOURCES, PERMISSIONS } from "@/lib/seed";
 
 export default function CheckWithContextPage() {
+  const discovery = useDiscovery();
+
+  // Dynamic lists with seed fallback
+  const subjectsList = discovery.subjects.length > 0 ? discovery.subjects : ALL_USERS;
+  const permissionsList = discovery.permissions.length > 0 ? discovery.permissions : PERMISSIONS;
+  const objectsList = discovery.objects.length > 0 ? discovery.objects : ALL_RESOURCES;
+
   const [subject, setSubject] = useState("user:alice");
   const [permission, setPermission] = useState("push");
   const [resource, setResource] = useState("repo:payment-api");
   const [dryRun, setDryRun] = useState(false);
+  const [consistencyMode, setConsistencyMode] = useState("default");
+  const [targetRevision, setTargetRevision] = useState("1");
+
   const [subjectMeta, setSubjectMeta] = useState<Record<string, string>>({});
   const [resourceMeta, setResourceMeta] = useState<Record<string, string>>({});
   const [env, setEnv] = useState<Record<string, string>>({});
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [result, setResult] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Sync state with dynamic lists when loaded
+  useEffect(() => {
+    if (discovery.subjects.length > 0) setSubject(discovery.subjects[0]);
+    if (discovery.permissions.length > 0) setPermission(discovery.permissions[0]);
+    if (discovery.objects.length > 0) {
+      const repos = discovery.objects.filter(o => o.startsWith("repo:"));
+      if (repos.length > 0) setResource(repos[0]);
+      else setResource(discovery.objects[0]);
+    }
+  }, [discovery.loading]);
 
   async function handleCheck() {
     setLoading(true); setError(""); setResult(null);
     try {
+      const modeString = consistencyMode === "at_revision" ? `at_revision:${targetRevision}` : consistencyMode;
       const res = await fetch("/api/check-with-context", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          subject, permission, resource, dryRun,
+          subject, permission, resource, dryRun, consistency: modeString,
           context: { subjectMeta, resourceMeta, env },
         }),
       });
@@ -44,7 +67,7 @@ export default function CheckWithContextPage() {
             <input value={v} onChange={(e) => setMap({ ...map, [k]: e.target.value })}
               className="flex-1 bg-aegis-bg border border-aegis-border rounded px-2 py-1 text-xs text-aegis-text font-mono focus:outline-none focus:border-aegis-accent" placeholder="value" />
             <button onClick={() => { const m = { ...map }; delete m[k]; setMap(m); }}
-              className="text-aegis-red text-xs hover:underline">✕</button>
+              className="text-aegis-red text-xs hover:underline font-bold">✕</button>
           </div>
         ))}
         <button onClick={() => setMap({ ...map, ["new"]: "" })}
@@ -57,39 +80,65 @@ export default function CheckWithContextPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-bold text-aegis-text">Check with Context</h2>
-        <p className="text-aegis-muted text-sm mt-1">Permission check with condition context (subject meta, resource meta, environment)</p>
+        <p className="text-aegis-muted text-sm mt-1">Permission check with condition context (subject meta, resource meta, environment) under a specific consistency profile.</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         <div>
           <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Subject</label>
           <select value={subject} onChange={(e) => setSubject(e.target.value)}
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-            {ALL_USERS.map((u) => <option key={u} value={u}>{u}</option>)}
+            {subjectsList.map((u) => <option key={u} value={u}>{u}</option>)}
           </select>
         </div>
         <div>
           <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Permission</label>
           <select value={permission} onChange={(e) => setPermission(e.target.value)}
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-            {PERMISSIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+            {permissionsList.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
         <div>
           <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Resource</label>
           <select value={resource} onChange={(e) => setResource(e.target.value)}
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-            {ALL_RESOURCES.filter((r) => r.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
+            {objectsList.filter(o => o.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
+            {objectsList.filter(o => !o.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Consistency Mode</label>
+          <select
+            value={consistencyMode}
+            onChange={(e) => setConsistencyMode(e.target.value)}
+            className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent"
+          >
+            <option value="default">Default</option>
+            <option value="minimize_latency">Minimize Latency</option>
+            <option value="fully_consistent">Fully Consistent</option>
+            <option value="at_revision">At Revision</option>
           </select>
         </div>
         <div className="flex items-end">
-          <label className="flex items-center gap-2 cursor-pointer">
+          <label className="flex items-center gap-2 cursor-pointer mb-2">
             <input type="checkbox" checked={dryRun} onChange={(e) => setDryRun(e.target.checked)}
               className="w-4 h-4 rounded border-aegis-border bg-aegis-card accent-aegis-accent" />
             <span className="text-sm text-aegis-text">Dry Run</span>
           </label>
         </div>
       </div>
+
+      {consistencyMode === "at_revision" && (
+        <div className="max-w-xs animate-fade-in">
+          <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Target Revision Number</label>
+          <input
+            type="number"
+            value={targetRevision}
+            onChange={(e) => setTargetRevision(e.target.value)}
+            className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent"
+          />
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <KeyValEditor label="Subject Meta" map={subjectMeta} setMap={setSubjectMeta} />

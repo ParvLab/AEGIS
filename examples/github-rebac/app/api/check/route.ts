@@ -3,9 +3,11 @@ import { getEngine } from "@/lib/engine";
 
 export async function POST(req: NextRequest) {
   try {
-    const { subject, permission, resource, dryRun } = await req.json();
+    const { subject, permission, resource, dryRun, consistency } = await req.json();
     const engine = getEngine();
-    const result = dryRun ? engine.checkDryRun(subject, permission, resource) : engine.check(subject, permission, resource);
+    const result = dryRun 
+      ? engine.checkDryRun(subject, permission, resource, consistency) 
+      : engine.check(subject, permission, resource, consistency);
     return NextResponse.json({
       allowed: result.allowed ?? false,
       revision: result.revision ?? 0,
@@ -15,3 +17,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: err.message ?? "Unknown error", allowed: false }, { status: 500 });
   }
 }
+

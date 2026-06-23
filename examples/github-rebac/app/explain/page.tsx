@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useDiscovery } from "@/lib/useDiscovery";
 import { ALL_USERS, ALL_RESOURCES, PERMISSIONS } from "@/lib/seed";
 
 interface TraceStep { subject: string; relation: string; object: string; result?: string; }
@@ -9,21 +10,43 @@ interface ExplainResult { allowed: boolean; resolvedVia: string; durationMs: num
 interface V2ExplainResult { allowed: boolean; resolvedVia: string; durationMs: number; trace: V2TraceStep[]; cacheHit: boolean; }
 
 export default function ExplainPage() {
+  const discovery = useDiscovery();
+
+  // Dynamic lists with seed fallback
+  const subjectsList = discovery.subjects.length > 0 ? discovery.subjects : ALL_USERS;
+  const permissionsList = discovery.permissions.length > 0 ? discovery.permissions : PERMISSIONS;
+  const objectsList = discovery.objects.length > 0 ? discovery.objects : ALL_RESOURCES;
+
   const [subject, setSubject] = useState("user:mallory");
   const [permission, setPermission] = useState("pull");
   const [resource, setResource] = useState("repo:docs");
   const [useV2, setUseV2] = useState(false);
+  const [consistencyMode, setConsistencyMode] = useState("default");
+  const [targetRevision, setTargetRevision] = useState("1");
+
   const [result, setResult] = useState<ExplainResult | V2ExplainResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
+  // Sync state with dynamic lists when loaded
+  useEffect(() => {
+    if (discovery.subjects.length > 0) setSubject(discovery.subjects[0]);
+    if (discovery.permissions.length > 0) setPermission(discovery.permissions[0]);
+    if (discovery.objects.length > 0) {
+      const repos = discovery.objects.filter(o => o.startsWith("repo:"));
+      if (repos.length > 0) setResource(repos[0]);
+      else setResource(discovery.objects[0]);
+    }
+  }, [discovery.loading]);
+
   async function handleExplain() {
     setLoading(true); setError(""); setResult(null);
     try {
+      const modeString = consistencyMode === "at_revision" ? `at_revision:${targetRevision}` : consistencyMode;
       const res = await fetch(useV2 ? "/api/explain-v2" : "/api/explain", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject, permission, resource }),
+        body: JSON.stringify({ subject, permission, resource, consistency: modeString }),
       });
       const data = await res.json();
       if (data.error) setError(data.error); else setResult(data);
@@ -38,29 +61,43 @@ export default function ExplainPage() {
         <p className="text-aegis-muted text-sm mt-1">See the full resolution path &mdash; V1 basic or V2 with depth-per-step</p>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         <div>
           <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Subject</label>
           <select value={subject} onChange={(e) => setSubject(e.target.value)}
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-            {ALL_USERS.map((u) => <option key={u} value={u}>{u}</option>)}
+            {subjectsList.map((u) => <option key={u} value={u}>{u}</option>)}
           </select>
         </div>
         <div>
           <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Permission</label>
           <select value={permission} onChange={(e) => setPermission(e.target.value)}
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-            {PERMISSIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+            {permissionsList.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
         <div>
           <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Resource</label>
           <select value={resource} onChange={(e) => setResource(e.target.value)}
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-            {ALL_RESOURCES.filter((r) => r.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
+            {objectsList.filter(o => o.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
+            {objectsList.filter(o => !o.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
           </select>
         </div>
-        <div className="flex items-end">
+        <div>
+          <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Consistency Mode</label>
+          <select
+            value={consistencyMode}
+            onChange={(e) => setConsistencyMode(e.target.value)}
+            className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent"
+          >
+            <option value="default">Default</option>
+            <option value="minimize_latency">Minimize Latency</option>
+            <option value="fully_consistent">Fully Consistent</option>
+            <option value="at_revision">At Revision</option>
+          </select>
+        </div>
+        <div className="flex items-end gap-2 mb-2">
           <label className="flex items-center gap-2 cursor-pointer">
             <input type="checkbox" checked={useV2} onChange={(e) => setUseV2(e.target.checked)}
               className="w-4 h-4 rounded border-aegis-border bg-aegis-card accent-aegis-accent" />
@@ -68,6 +105,18 @@ export default function ExplainPage() {
           </label>
         </div>
       </div>
+
+      {consistencyMode === "at_revision" && (
+        <div className="max-w-xs animate-fade-in">
+          <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Target Revision Number</label>
+          <input
+            type="number"
+            value={targetRevision}
+            onChange={(e) => setTargetRevision(e.target.value)}
+            className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent"
+          />
+        </div>
+      )}
 
       <button onClick={handleExplain} disabled={loading}
         className="px-6 py-2.5 bg-aegis-accent text-white rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50 text-sm font-medium">
@@ -78,12 +127,17 @@ export default function ExplainPage() {
 
       {result && (
         <div className="space-y-4 animate-fade-in">
-          <div className={`p-4 rounded-lg border ${result.allowed ? "bg-aegis-green/10 border-aegis-green/30" : "bg-aegis-red/10 border-aegis-red/30"}`}>
+          <div className={`p-4 rounded-lg border flex items-center justify-between ${result.allowed ? "bg-aegis-green/10 border-aegis-green/30" : "bg-aegis-red/10 border-aegis-red/30"}`}>
             <div className="flex items-center gap-2">
               <span className={`text-lg ${result.allowed ? "text-aegis-green" : "text-aegis-red"}`}>{result.allowed ? "✅" : "❌"}</span>
               <span className={`font-bold ${result.allowed ? "text-aegis-green" : "text-aegis-red"}`}>{result.allowed ? "ALLOWED" : "DENIED"}</span>
-              <span className="text-xs text-aegis-muted">resolvedVia: {result.resolvedVia} &middot; {result.durationMs.toFixed(2)}ms{(result as V2ExplainResult).cacheHit != null ? ` · cache:${(result as V2ExplainResult).cacheHit}` : ""}</span>
+              <span className="text-xs text-aegis-muted">resolvedVia: {result.resolvedVia} &middot; {result.durationMs.toFixed(2)}ms</span>
             </div>
+            {"cacheHit" in result && (
+              <span className={`px-2 py-0.5 text-[10px] rounded font-bold uppercase ${result.cacheHit ? "bg-aegis-green/20 text-aegis-green" : "bg-aegis-muted/20 text-aegis-muted"}`}>
+                {result.cacheHit ? "⚡ Cache Hit" : "Cache Miss"}
+              </span>
+            )}
           </div>
 
           {"trace" in result && result.trace && result.trace.length > 0 && (

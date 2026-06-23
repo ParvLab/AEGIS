@@ -1,9 +1,14 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
+import { useDiscovery } from "@/lib/useDiscovery";
 import { ALL_RESOURCES } from "@/lib/seed";
 
 export default function AuditPage() {
+  const discovery = useDiscovery();
+  const objectsList = discovery.objects.length > 0 ? discovery.objects : ALL_RESOURCES;
+
   const [object, setObject] = useState("");
   const [fromRevision, setFromRevision] = useState("");
   const [toRevision, setToRevision] = useState("");
@@ -44,17 +49,25 @@ export default function AuditPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold text-aegis-text">Audit Trail</h2>
-        <p className="text-aegis-muted text-sm mt-1">View the full history of tuple changes and permission checks</p>
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-aegis-text">Audit Trail</h2>
+          <p className="text-aegis-muted text-sm mt-1">View the full history of tuple changes and permission checks</p>
+        </div>
+        <Link
+          href="/analysis"
+          className="px-4 py-2 border border-aegis-accent text-aegis-accent hover:bg-aegis-accent/10 rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors"
+        >
+          🔒 Verify Chain Integrity
+        </Link>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
         <div className="flex items-end">
-          <label className="flex items-center gap-2 cursor-pointer">
+          <label className="flex items-center gap-2 cursor-pointer mb-2">
             <input type="checkbox" checked={all} onChange={(e) => setAll(e.target.checked)}
               className="w-4 h-4 rounded border-aegis-border bg-aegis-card accent-aegis-accent" />
-            <span className="text-sm text-aegis-text">All events</span>
+            <span className="text-sm text-aegis-text font-medium">All events</span>
           </label>
         </div>
         <div>
@@ -62,7 +75,7 @@ export default function AuditPage() {
           <select value={object} onChange={(e) => setObject(e.target.value)} disabled={all}
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent disabled:opacity-50">
             <option value="">All objects</option>
-            {ALL_RESOURCES.map((r) => <option key={r} value={r}>{r}</option>)}
+            {objectsList.map((r) => <option key={r} value={r}>{r}</option>)}
           </select>
         </div>
         <div>
@@ -96,7 +109,7 @@ export default function AuditPage() {
       )}
 
       {entries.length > 0 && (
-        <div className="bg-aegis-card border border-aegis-border rounded-xl overflow-hidden">
+        <div className="bg-aegis-card border border-aegis-border rounded-xl overflow-hidden shadow-sm">
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
@@ -106,6 +119,7 @@ export default function AuditPage() {
                   <th className="px-4 py-3 text-aegis-muted text-xs uppercase tracking-wider">Subject</th>
                   <th className="px-4 py-3 text-aegis-muted text-xs uppercase tracking-wider">Relation</th>
                   <th className="px-4 py-3 text-aegis-muted text-xs uppercase tracking-wider">Object</th>
+                  <th className="px-4 py-3 text-aegis-muted text-xs uppercase tracking-wider">Actor Identity</th>
                   <th className="px-4 py-3 text-aegis-muted text-xs uppercase tracking-wider">Timestamp</th>
                 </tr>
               </thead>
@@ -117,6 +131,15 @@ export default function AuditPage() {
                     <td className="px-4 py-3 font-mono text-aegis-text">{entry.subject}</td>
                     <td className="px-4 py-3 font-mono text-aegis-text">{entry.relation}</td>
                     <td className="px-4 py-3 font-mono text-aegis-text">{entry.object}</td>
+                    <td className="px-4 py-3">
+                      {entry.identity ? (
+                        <span className="px-2 py-0.5 bg-aegis-amber/10 border border-aegis-amber/30 text-aegis-amber font-mono rounded text-xs">
+                          {entry.identity}
+                        </span>
+                      ) : (
+                        <span className="text-aegis-muted text-xs font-mono">anonymous</span>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-aegis-muted text-xs">{entry.timestamp}</td>
                   </tr>
                 ))}

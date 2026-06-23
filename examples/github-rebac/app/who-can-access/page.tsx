@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useDiscovery } from "@/lib/useDiscovery";
 import { ALL_RESOURCES, PERMISSIONS } from "@/lib/seed";
 
 interface SubjectEntry {
@@ -9,6 +10,12 @@ interface SubjectEntry {
 }
 
 export default function WhoCanAccessPage() {
+  const discovery = useDiscovery();
+
+  // Dynamic lists with seed fallback
+  const permissionsList = discovery.permissions.length > 0 ? discovery.permissions : PERMISSIONS;
+  const objectsList = discovery.objects.length > 0 ? discovery.objects : ALL_RESOURCES;
+
   const [permission, setPermission] = useState("push");
   const [resource, setResource] = useState("repo:payment-api");
   const [pageOffset, setPageOffset] = useState(0);
@@ -17,6 +24,16 @@ export default function WhoCanAccessPage() {
   const [data, setData] = useState<{ subjects: SubjectEntry[]; subjectNames: string[]; totalCount: number; nextOffset?: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+
+  // Sync state with dynamic lists when loaded
+  useEffect(() => {
+    if (discovery.permissions.length > 0) setPermission(discovery.permissions[0]);
+    if (discovery.objects.length > 0) {
+      const repos = discovery.objects.filter(o => o.startsWith("repo:"));
+      if (repos.length > 0) setResource(repos[0]);
+      else setResource(discovery.objects[0]);
+    }
+  }, [discovery.loading]);
 
   async function handleQuery(offset?: number) {
     setLoading(true); setError(""); setData(null);
@@ -46,14 +63,15 @@ export default function WhoCanAccessPage() {
           <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Permission</label>
           <select value={permission} onChange={(e) => setPermission(e.target.value)}
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-            {PERMISSIONS.map((p) => <option key={p} value={p}>{p}</option>)}
+            {permissionsList.map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
         <div>
           <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Resource</label>
           <select value={resource} onChange={(e) => setResource(e.target.value)}
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-            {ALL_RESOURCES.filter((r) => r.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
+            {objectsList.filter(o => o.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
+            {objectsList.filter(o => !o.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
           </select>
         </div>
         <div>
@@ -62,7 +80,7 @@ export default function WhoCanAccessPage() {
             className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent" />
         </div>
         <div className="flex items-end">
-          <label className="flex items-center gap-2 cursor-pointer">
+          <label className="flex items-center gap-2 cursor-pointer mb-2">
             <input type="checkbox" checked={includePaths} onChange={(e) => setIncludePaths(e.target.checked)}
               className="w-4 h-4 rounded border-aegis-border bg-aegis-card accent-aegis-accent" />
             <span className="text-sm text-aegis-text">Show paths</span>

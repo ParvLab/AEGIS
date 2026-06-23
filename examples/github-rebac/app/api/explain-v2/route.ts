@@ -5,7 +5,8 @@ export async function POST(req: NextRequest) {
   try {
     const { subject, permission, resource, consistency } = await req.json();
     const engine = getEngine();
-    const result = engine.explainV2(subject, permission, resource, consistency || undefined);
+    const raw = engine.explainV2(subject, permission, resource, consistency || undefined);
+    const result = typeof raw === "string" ? JSON.parse(raw) : raw;
     return NextResponse.json({
       allowed: result.allowed ?? false,
       revision: result.revision ?? 0,
@@ -18,3 +19,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: err.message ?? "Unknown error" }, { status: 500 });
   }
 }
+

@@ -346,6 +346,21 @@ pub trait StorageBackend: Send + Sync {
             "save_enforcement_event not supported by this backend".into(),
         ))
     }
+
+    /// Copy current database to a backup path (hot backup, WAL-safe)
+    fn backup_to_path(&self, _dest_path: &str) -> AegisResult<()> {
+        Err(AegisError::UnsupportedStorageOperation("backup_to_path".into()))
+    }
+
+    /// Delete a partition and all its tuples/events.
+    fn delete_partition(&self, _partition_id: &PartitionId) -> AegisResult<()> {
+        Err(AegisError::UnsupportedStorageOperation("delete_partition".into()))
+    }
+
+    /// List all partition IDs in the store.
+    fn list_partitions(&self) -> AegisResult<Vec<PartitionId>> {
+        Err(AegisError::UnsupportedStorageOperation("list_partitions".into()))
+    }
 }
 
 /// A storage transaction supporting atomic multi-tuple writes within a partition.

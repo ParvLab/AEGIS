@@ -1,6 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getEngine } from "@/lib/engine";
 
+export async function GET() {
+  try {
+    const engine = getEngine();
+    const queryResult = engine.query({}, { limit: 10000 });
+    const parsed = typeof queryResult === "string" ? JSON.parse(queryResult) : queryResult;
+    return NextResponse.json({ tuples: parsed.tuples ?? [] });
+  } catch (err: any) {
+    return NextResponse.json({ error: err.message ?? "Unknown error", tuples: [] }, { status: 500 });
+  }
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -68,3 +79,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: err.message ?? "Unknown error" }, { status: 500 });
   }
 }
+

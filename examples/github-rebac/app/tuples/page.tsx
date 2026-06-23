@@ -1,19 +1,31 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useDiscovery } from "@/lib/useDiscovery";
 import { ALL_USERS, ALL_RESOURCES, RELATIONS } from "@/lib/seed";
 
-type Tab = "single" | "batch" | "query" | "delete-object" | "transaction";
+type Tab = "single" | "batch" | "query" | "delete-object" | "transaction" | "gdpr";
 
 export default function TuplesPage() {
+  const discovery = useDiscovery();
+
+  // Dynamic dropdowns fallback to seed lists
+  const subjectsList = discovery.subjects.length > 0 ? discovery.subjects : ALL_USERS;
+  const permissionsList = discovery.permissions.length > 0 ? discovery.permissions : [];
+  const objectsList = discovery.objects.length > 0 ? discovery.objects : ALL_RESOURCES;
+  const relationsList = discovery.relations.length > 0 ? discovery.relations : RELATIONS;
+
   const [tab, setTab] = useState<Tab>("single");
   const [action, setAction] = useState<"write" | "delete" | "ban" | "unban" | "dry-run-write">("write");
+  
+  // Form fields
   const [subject, setSubject] = useState("user:alice");
   const [relation, setRelation] = useState("admin");
   const [resource, setResource] = useState("repo:payment-api");
   const [condition, setCondition] = useState("");
   const [validUntil, setValidUntil] = useState("");
   const [metadata, setMetadata] = useState<Record<string, string>>({});
+  
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState("");
@@ -37,6 +49,27 @@ export default function TuplesPage() {
   const [txId, setTxId] = useState<string | null>(null);
   const [txLog, setTxLog] = useState<string[]>([]);
 
+  // GDPR Tab
+  const [gdprSubject, setGdprSubject] = useState("user:alice");
+  const [gdprPolicy, setGdprPolicy] = useState("delete_all");
+  const [gdprTransferTo, setGdprTransferTo] = useState("");
+  const [affectedCount, setAffectedCount] = useState<number | null>(null);
+  const [checkingCount, setCheckingCount] = useState(false);
+
+  // Sync state with discovery lists
+  useEffect(() => {
+    if (discovery.subjects.length > 0) {
+      setSubject(discovery.subjects[0]);
+      setGdprSubject(discovery.subjects[0]);
+    }
+    if (discovery.relations.length > 0) setRelation(discovery.relations[0]);
+    if (discovery.objects.length > 0) {
+      const repos = discovery.objects.filter(o => o.startsWith("repo:"));
+      setResource(repos.length > 0 ? repos[0] : discovery.objects[0]);
+      setDelObject(discovery.objects[0]);
+    }
+  }, [discovery.loading]);
+
   const fetchBans = useCallback(async () => {
     try {
       const res = await fetch("/api/list", {
@@ -44,26 +77,40 @@ export default function TuplesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ mode: "relation", target: "repo:banned", relation: "banned" }),
       });
-      if (res.ok) { const data = await res.json(); if (data.tuples) setBans(data.tuples); }
+      if (res.ok) {
+        const data = await res.json();
+        if (data.tuples) setBans(data.tuples);
+      }
     } catch { /* ignore */ }
   }, []);
 
-  useEffect(() => { fetchBans(); }, [fetchBans]);
+  useEffect(() => {
+    fetchBans();
+  }, [fetchBans]);
 
   async function handleAction() {
     setLoading(true); setError(""); setResult(null);
     try {
-      const body: Record<string, unknown> = { action, subject, relation: action === "ban" || action === "unban" ? "banned" : relation, resource };
+      const body: Record<string, unknown> = {
+        action,
+        subject,
+        relation: action === "ban" || action === "unban" ? "banned" : relation,
+        resource,
+      };
       if (condition) body.condition = condition;
       if (validUntil) body.validUntil = validUntil;
       if (Object.keys(metadata).length > 0) body.metadata = metadata;
+
       const res = await fetch("/api/tuples", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
       const data = await res.json();
-      if (data.error) setError(data.error); else setResult(data);
+      if (data.error) setError(data.error); else {
+        setResult(data);
+        discovery.refresh();
+      }
     } catch { setError("Request failed"); }
     setLoading(false);
     fetchBans();
@@ -79,7 +126,10 @@ export default function TuplesPage() {
         body: JSON.stringify({ action: "batch-write", tuples }),
       });
       const data = await res.json();
-      if (data.error) setError(data.error); else setResult(data);
+      if (data.error) setError(data.error); else {
+        setResult(data);
+        discovery.refresh();
+      }
     } catch { setError("Invalid JSON or request failed"); }
     setLoading(false);
   }
@@ -111,55 +161,110 @@ export default function TuplesPage() {
         body: JSON.stringify({ action: "delete-object", object: delObject }),
       });
       const data = await res.json();
-      if (data.error) setError(data.error); else setResult(data);
+      if (data.error) setError(data.error); else {
+        setResult(data);
+        discovery.refresh();
+      }
     } catch { setError("Request failed"); }
     setLoading(false);
     fetchBans();
   }
 
-  async function handleTx(action: string, extra: Record<string, unknown> = {}) {
+  async function handleTx(actionVal: string, extra: Record<string, unknown> = {}) {
     try {
       const res = await fetch("/api/transaction", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, transactionId: txId, ...extra }),
+        body: JSON.stringify({ action: actionVal, transactionId: txId, ...extra }),
       });
       const data = await res.json();
       if (data.transactionId) setTxId(data.transactionId);
-      if (data.error) { setError(data.error); } else { setTxLog((p) => [...p, `${action}: ${JSON.stringify(data)}`]); }
-      if (action === "commit" || action === "rollback") { setTxId(null); fetchBans(); }
+      if (data.error) { setError(data.error); } else { setTxLog((p) => [...p, `${actionVal}: ${JSON.stringify(data)}`]); }
+      if (actionVal === "commit" || actionVal === "rollback") {
+        setTxId(null);
+        fetchBans();
+        discovery.refresh();
+      }
     } catch { setError("TX action failed"); }
   }
 
-  const actionColor = (a: string) => {
-    if (a === "ban" || a === "unban") return "bg-aegis-red";
-    return "bg-aegis-accent";
-  };
+  // GDPR Actions
+  async function handleCheckAffectedCount() {
+    setCheckingCount(true);
+    setAffectedCount(null);
+    try {
+      const res = await fetch("/api/tuples");
+      if (res.ok) {
+        const data = await res.json();
+        const allTuples = data.tuples ?? [];
+        const matches = allTuples.filter((t: any) => t.subject === gdprSubject);
+        setAffectedCount(matches.length);
+      }
+    } catch {
+      setError("Failed to query affected tuples count");
+    } finally {
+      setCheckingCount(false);
+    }
+  }
 
-  const activeAction = tab === "single" ? (["write", "delete", "ban", "unban", "dry-run-write"].includes(action) ? action : "write") as typeof action : "write";
+  async function handleDeleteSubjectWithPolicy() {
+    if (!confirm(`Are you sure you want to perform GDPR delete for subject "${gdprSubject}"?`)) return;
+    setLoading(true);
+    setError("");
+    setResult(null);
+    try {
+      const res = await fetch("/api/tuples", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "delete-subject-with-policy",
+          subject: gdprSubject,
+          policy: gdprPolicy,
+          transferToSubject: gdprTransferTo.trim() || undefined,
+        }),
+      });
+      const data = await res.json();
+      if (data.error) {
+        setError(data.error);
+      } else {
+        setResult(data);
+        setAffectedCount(null);
+        discovery.refresh();
+      }
+    } catch {
+      setError("Failed to execute GDPR delete policy");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const actionColor = (a: string) => {
+    if (a === "ban" || a === "unban") return "bg-aegis-red hover:opacity-90";
+    return "bg-aegis-accent hover:opacity-90";
+  };
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-2xl font-bold text-aegis-text">Tuples</h2>
-        <p className="text-aegis-muted text-sm mt-1">Manage authorization tuples</p>
+        <h2 className="text-2xl font-bold text-aegis-text">Tuples & GDPR Policies</h2>
+        <p className="text-aegis-muted text-sm mt-1">Manage relationship tuples and enforce GDPR user right-to-be-forgotten cascade policies.</p>
       </div>
 
       <div className="flex flex-wrap gap-2">
-        {(["single", "batch", "query", "delete-object", "transaction"] as const).map((t) => (
+        {(["single", "batch", "query", "delete-object", "transaction", "gdpr"] as const).map((t) => (
           <button key={t} onClick={() => setTab(t)}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               tab === t ? "bg-aegis-accent/20 text-aegis-accent border border-aegis-accent/40"
                 : "bg-aegis-card border border-aegis-border text-aegis-muted hover:text-aegis-text"
             }`}>
-            {t === "single" ? "Single" : t === "batch" ? "Batch" : t === "query" ? "Query" : t === "delete-object" ? "Delete Object" : "Transaction"}
+            {t === "single" ? "Single" : t === "batch" ? "Batch" : t === "query" ? "Query" : t === "delete-object" ? "Delete Object" : t === "transaction" ? "Transaction" : "🇪🇺 GDPR Policies"}
           </button>
         ))}
       </div>
 
       {tab === "single" && (
         <>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {(["write", "delete", "ban", "unban", "dry-run-write"] as const).map((a) => (
               <button key={a} onClick={() => setAction(a)}
                 className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
@@ -181,7 +286,7 @@ export default function TuplesPage() {
               <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Subject</label>
               <select value={subject} onChange={(e) => setSubject(e.target.value)}
                 className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-                {ALL_USERS.map((u) => <option key={u} value={u}>{u}</option>)}
+                {subjectsList.map((u) => <option key={u} value={u}>{u}</option>)}
               </select>
             </div>
             <div>
@@ -191,7 +296,7 @@ export default function TuplesPage() {
               ) : (
                 <select value={relation} onChange={(e) => setRelation(e.target.value)}
                   className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-                  {RELATIONS.map((r) => <option key={r} value={r}>{r}</option>)}
+                  {relationsList.map((r) => <option key={r} value={r}>{r}</option>)}
                 </select>
               )}
             </div>
@@ -199,7 +304,8 @@ export default function TuplesPage() {
               <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Resource</label>
               <select value={resource} onChange={(e) => setResource(e.target.value)}
                 className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-                {ALL_RESOURCES.filter((r) => r.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
+                {objectsList.filter((r) => r.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
+                {objectsList.filter((r) => !r.startsWith("repo:")).map((r) => <option key={r} value={r}>{r}</option>)}
               </select>
             </div>
             <div>
@@ -311,8 +417,8 @@ export default function TuplesPage() {
           <p className="text-sm font-medium text-aegis-text mb-4">Delete All Tuples for an Object</p>
           <div className="flex gap-4">
             <select value={delObject} onChange={(e) => setDelObject(e.target.value)}
-              className="flex-1 bg-aegis-bg border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent">
-              {ALL_RESOURCES.map((r) => <option key={r} value={r}>{r}</option>)}
+              className="flex-1 bg-aegis-bg border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent font-mono">
+              {objectsList.map((r) => <option key={r} value={r}>{r}</option>)}
             </select>
             <button onClick={handleDeleteObject} disabled={loading}
               className="px-6 py-2 bg-aegis-red text-white rounded-lg hover:opacity-90 disabled:opacity-50 text-sm font-medium">
@@ -353,6 +459,83 @@ export default function TuplesPage() {
         </div>
       )}
 
+      {tab === "gdpr" && (
+        <div className="bg-aegis-card border border-aegis-border rounded-xl p-6 space-y-6">
+          <div>
+            <h4 className="text-lg font-bold text-aegis-text">🇪🇺 GDPR Subject Right-to-be-Forgotten Policy</h4>
+            <p className="text-xs text-aegis-muted mt-1 leading-relaxed">
+              Enforce cascade deletion behaviors for users requested to be forgotten. Set rules for anonymization, owner transfer, or complete pruning.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 items-end">
+            <div>
+              <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Target Subject</label>
+              <select
+                value={gdprSubject}
+                onChange={(e) => setGdprSubject(e.target.value)}
+                className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent"
+              >
+                {subjectsList.map(u => <option key={u} value={u}>{u}</option>)}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Cascade Policy</label>
+              <select
+                value={gdprPolicy}
+                onChange={(e) => setGdprPolicy(e.target.value)}
+                className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent"
+              >
+                <option value="delete_all">Delete All Tuples (Prune)</option>
+                <option value="anonymize">Anonymize Subject Hash</option>
+                <option value="transfer_ownership">Transfer Ownership</option>
+              </select>
+            </div>
+
+            {gdprPolicy === "transfer_ownership" ? (
+              <div>
+                <label className="block text-xs text-aegis-muted mb-1 uppercase tracking-wider">Transfer To Subject</label>
+                <select
+                  value={gdprTransferTo}
+                  onChange={(e) => setGdprTransferTo(e.target.value)}
+                  className="w-full bg-aegis-card border border-aegis-border rounded-lg px-3 py-2 text-sm text-aegis-text focus:outline-none focus:border-aegis-accent"
+                >
+                  <option value="">Select recipient...</option>
+                  {subjectsList.filter(u => u !== gdprSubject).map(u => <option key={u} value={u}>{u}</option>)}
+                </select>
+              </div>
+            ) : (
+              <div className="flex gap-3">
+                <button
+                  onClick={handleCheckAffectedCount}
+                  disabled={checkingCount}
+                  className="px-4 py-2 border border-aegis-border hover:bg-aegis-border/20 text-aegis-text rounded-lg text-xs font-semibold uppercase tracking-wider transition-colors"
+                >
+                  {checkingCount ? "Counting..." : "Count Affected Tuples"}
+                </button>
+              </div>
+            )}
+          </div>
+
+          {affectedCount !== null && (
+            <div className="p-4 bg-aegis-accent/5 border border-aegis-accent/20 rounded-lg text-xs text-aegis-text animate-fade-in">
+              Found <span className="font-bold text-aegis-accent">{affectedCount}</span> relationship tuples referencing subject <span className="font-mono">{gdprSubject}</span> that will be affected by this policy.
+            </div>
+          )}
+
+          <div className="pt-4 border-t border-aegis-border">
+            <button
+              onClick={handleDeleteSubjectWithPolicy}
+              disabled={loading || (gdprPolicy === "transfer_ownership" && !gdprTransferTo)}
+              className="px-6 py-2.5 bg-aegis-red text-white rounded-lg hover:opacity-90 transition-opacity disabled:opacity-50 text-sm font-semibold"
+            >
+              {loading ? "Enforcing Policy..." : "🗑️ Enforce GDPR Policy"}
+            </button>
+          </div>
+        </div>
+      )}
+
       {error && <div className="p-4 bg-aegis-red/10 border border-aegis-red/30 rounded-lg text-sm text-aegis-red">{error}</div>}
       {result && (
         <div className="p-4 bg-aegis-green/10 border border-aegis-green/30 rounded-lg text-sm text-aegis-green animate-fade-in">
@@ -376,6 +559,7 @@ export default function TuplesPage() {
                 <button onClick={async () => {
                   await fetch("/api/tuples", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "unban", subject: b.subject, relation: "banned", resource: b.object }) });
                   fetchBans();
+                  discovery.refresh();
                 }} className="text-xs px-3 py-1 bg-aegis-green/20 text-aegis-green rounded hover:bg-aegis-green/30 transition-colors">Unban</button>
               </div>
             ))}

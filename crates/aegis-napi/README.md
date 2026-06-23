@@ -11,9 +11,9 @@ npm install @aegis-v/engine
 ## Usage
 
 ```javascript
-const { Engine } = require('@aegis-v/engine');
+const { initialize } = require('@aegis-v/engine');
 
-const engine = new Engine('aegis.db', `
+const engine = initialize('aegis.db', `
 namespace: app
 types:
   repo:
@@ -31,4 +31,6 @@ console.log(result.allowed); // true
 
 ## API
 
-30 methods covering check, write, delete, explain, list, batch, watch, transaction, GDPR, audit, schema management, rate limiting, and logging. Full TypeScript declarations in `index.d.ts`.
+68+ methods covering check, explain (V1/V2), who-can-access, write, delete, batch, list, query, watch, subscribe, transaction (with savepoints), GDPR (exportSubject, deleteSubjectWithPolicy), audit (queryAudit, verifyAuditChain), schema management, cache, migration, multi-tenancy partitions, backup/restore, analysis (analysisReport, accessReview, accessDiff), policy lifecycle (draft→validate→approve→publish→archive), scheduler, and enforcement history. Full TypeScript declarations in `index.d.ts`.
+
+*Note: Currently pre-compiled for Windows x64. For other platforms, compile from source.*

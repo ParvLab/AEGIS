@@ -3,15 +3,15 @@ import { getEngine } from "@/lib/engine";
 
 export async function POST(req: NextRequest) {
   try {
-    const { subject, permission, resource, context, dryRun } = await req.json();
+    const { subject, permission, resource, context, dryRun, consistency } = await req.json();
     const engine = getEngine();
     const ctx = context ?? {};
 
     let result: any;
     if (dryRun) {
-      result = engine.checkDryRunWithContext(subject, permission, resource, ctx);
+      result = engine.checkDryRunWithContext(subject, permission, resource, ctx, consistency);
     } else {
-      result = engine.checkWithContext(subject, permission, resource, ctx);
+      result = engine.checkWithContext(subject, permission, resource, ctx, consistency);
     }
 
     return NextResponse.json({
@@ -24,3 +24,4 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: err.message ?? "Unknown error" }, { status: 500 });
   }
 }
+
