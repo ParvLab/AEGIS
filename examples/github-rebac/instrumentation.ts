@@ -1,4 +1,6 @@
 export async function register() {
-  const { getEngine } = await import("@/lib/engine");
-  getEngine();
+  if (process.env.NEXT_RUNTIME === "nodejs") {
+    const { getEngine } = await import("@/lib/engine");
+    getEngine();
+  }
 }
