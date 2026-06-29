@@ -19,7 +19,7 @@ napi-build = "2"
 aegis-core = { path = "../aegis-core" }
 chrono = "0.4"
 napi = { version = "2", features = ["napi8", "serde-json"] }
-napi-derive = "2"
+napi-derive = "3"
 serde_json.workspace = true
 uuid.workspace = true
 
