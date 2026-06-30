@@ -5,9 +5,10 @@ export async function POST(req: NextRequest) {
   try {
     const { subject, permission, resource, dryRun, consistency } = await req.json();
     const engine = getEngine();
+    const consistencyParam = consistency === "default" || !consistency ? undefined : consistency;
     const result = dryRun 
-      ? engine.checkDryRun(subject, permission, resource, consistency) 
-      : engine.check(subject, permission, resource, consistency);
+      ? engine.checkDryRun(subject, permission, resource, consistencyParam) 
+      : engine.check(subject, permission, resource, consistencyParam);
     return NextResponse.json({
       allowed: result.allowed ?? false,
       revision: result.revision ?? 0,

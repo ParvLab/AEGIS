@@ -25,7 +25,21 @@ export async function POST(req: NextRequest) {
 
     if (action === "set") {
       if (!configJson) return NextResponse.json({ error: "Missing config JSON" }, { status: 400 });
-      engine.setRateLimiter(configJson);
+      try {
+        const cfg = JSON.parse(configJson);
+        engine.setRateLimiter(
+          cfg.checksPerSecond ?? cfg.checks_per_second ?? undefined,
+          cfg.checkBurst ?? cfg.check_burst ?? undefined,
+          cfg.writesPerSecond ?? cfg.writes_per_second ?? undefined,
+          cfg.writeBurst ?? cfg.write_burst ?? undefined,
+          cfg.maxTraversalDepth ?? cfg.max_traversal_depth ?? undefined,
+          cfg.maxTraversalVisits ?? cfg.max_traversal_visits ?? undefined,
+          cfg.maxKeys ?? cfg.max_keys ?? undefined
+        );
+      } catch (e: any) {
+        console.error("Failed to set rate limiter:", e);
+        return NextResponse.json({ error: `Invalid configuration: ${e.message}` }, { status: 400 });
+      }
       return NextResponse.json({ success: true });
     }
 

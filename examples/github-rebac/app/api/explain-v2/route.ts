@@ -5,7 +5,8 @@ export async function POST(req: NextRequest) {
   try {
     const { subject, permission, resource, consistency } = await req.json();
     const engine = getEngine();
-    const raw = engine.explainV2(subject, permission, resource, consistency || undefined);
+    const consistencyParam = consistency === "default" || !consistency ? undefined : consistency;
+    const raw = engine.explainV2(subject, permission, resource, consistencyParam);
     const result = typeof raw === "string" ? JSON.parse(raw) : raw;
     return NextResponse.json({
       allowed: result.allowed ?? false,
