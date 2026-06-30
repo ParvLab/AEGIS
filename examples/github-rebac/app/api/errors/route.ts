@@ -45,6 +45,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Unknown trigger: ${trigger}` }, { status: 400 });
   } catch (err: any) {
     const formatted = handleEngineError(err);
-    return NextResponse.json(formatted, { status: 500 });
+    return NextResponse.json({ ...formatted, expected: true });
   }
 }
