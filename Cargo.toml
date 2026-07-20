@@ -32,10 +32,10 @@ tracing-subscriber = { version = "0.3", default-features = false, features = ["f
 opentelemetry = { version = "0.32", features = ["metrics"] }
 opentelemetry-otlp = { version = "0.32", default-features = false, features = ["grpc-tonic", "trace", "metrics"] }
 opentelemetry_sdk = { version = "0.32", default-features = false, features = ["rt-tokio", "trace", "metrics", "testing"] }
-tracing-opentelemetry = "0.32"
+tracing-opentelemetry = "0.33"
 libc = "0.2"
 async-trait = "0.1"
-pyo3 = { version = "0.23", features = ["experimental-async", "chrono", "abi3-py39"] }
+pyo3 = { version = "0.29", features = ["experimental-async", "chrono", "abi3-py39"] }
 
 [profile.release]
 panic = "abort"
