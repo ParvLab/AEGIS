@@ -1936,6 +1936,59 @@ impl StorageBackend for SqliteStorage {
         .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
         Ok(())
     }
+
+    fn backup_to_path(&self, dest_path: &str) -> AegisResult<()> {
+        let conn = self.conn()?;
+        let mut dest_conn = Connection::open(dest_path)
+            .map_err(|e| AegisError::StorageConnection(e.to_string()))?;
+        let backup = rusqlite::backup::Backup::new(&conn, &mut dest_conn)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        backup
+            .run_to_completion(100, std::time::Duration::from_millis(250), None)
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        Ok(())
+    }
+
+    fn delete_partition(&self, partition_id: &PartitionId) -> AegisResult<()> {
+        self.with_write_tx(|conn| {
+            conn.execute(
+                "DELETE FROM _aegis_tuples WHERE partition_id = ?1",
+                params![partition_id.as_str()],
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            conn.execute(
+                "DELETE FROM _aegis_events WHERE partition_id = ?1",
+                params![partition_id.as_str()],
+            )
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            Ok(())
+        })
+    }
+
+    fn list_partitions(&self) -> AegisResult<Vec<PartitionId>> {
+        let conn = self.conn()?;
+        let mut stmt = conn
+            .prepare("SELECT DISTINCT partition_id FROM _aegis_tuples UNION SELECT DISTINCT partition_id FROM _aegis_events")
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                let id_str: String = row.get(0)?;
+                Ok(id_str)
+            })
+            .map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+
+        let mut partitions = Vec::new();
+        for r in rows {
+            let id_str = r.map_err(|e| AegisError::StorageQuery(e.to_string()))?;
+            if let Ok(pid) = PartitionId::new(&id_str) {
+                partitions.push(pid);
+            }
+        }
+        if partitions.is_empty() {
+            partitions.push(PartitionId::default());
+        }
+        Ok(partitions)
+    }
 }
 
 // ── Event Log Recovery ─────────────────────────────────────────

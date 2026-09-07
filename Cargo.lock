@@ -10,7 +10,7 @@ checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
 name = "aegis-cli"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "aegis-core",
  "anyhow",
@@ -27,7 +27,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-core"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "async-trait",
  "chrono",
@@ -71,7 +71,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-ffi"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "aegis-core",
  "chrono",
@@ -83,20 +83,21 @@ dependencies = [
 
 [[package]]
 name = "aegis-napi"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "aegis-core",
  "chrono",
  "napi",
  "napi-build",
  "napi-derive",
+ "serde",
  "serde_json",
  "uuid",
 ]
 
 [[package]]
 name = "aegis-pyo3"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "aegis-core",
  "chrono",
@@ -107,7 +108,7 @@ dependencies = [
 
 [[package]]
 name = "aegis-test-utils"
-version = "0.1.0"
+version = "0.4.0"
 dependencies = [
  "aegis-core",
 ]

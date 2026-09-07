@@ -483,6 +483,42 @@ impl GraphEngine {
             .unwrap_or_default()
     }
 
+    /// Create a named partition (idempotent — ok if already exists)
+    pub fn create_partition(&self, id: &str) -> AegisResult<()> {
+        let pid = PartitionId::new(id)
+            .map_err(AegisError::Validation)?;
+        self.partition_manager.get_or_create(&pid)?;
+        Ok(())
+    }
+
+    /// Delete a partition and all its tuples (cannot delete default partition)
+    pub fn delete_partition(&self, id: &str) -> AegisResult<()> {
+        if id == "default" {
+            return Err(AegisError::OperationNotPermitted("cannot delete the default partition".into()));
+        }
+        let pid = PartitionId::new(id)
+            .map_err(AegisError::Validation)?;
+        self.storage().delete_partition(&pid)
+    }
+
+    /// List all partition IDs
+    pub fn list_partitions(&self) -> AegisResult<Vec<String>> {
+        self.storage().list_partitions()
+            .map(|ids| ids.iter().map(|p| p.to_string()).collect())
+    }
+
+    /// Get the currently active partition ID
+    pub fn active_partition(&self) -> String {
+        self.active_partition_id().to_string()
+    }
+
+    /// Switch to a different partition (affects all subsequent operations on this engine instance)
+    pub fn switch_partition(&self, id: &str) -> AegisResult<()> {
+        let pid = PartitionId::new(id)
+            .map_err(AegisError::Validation)?;
+        self.with_partition(pid)
+    }
+
     fn with_cache<F, T>(&self, f: F) -> Option<T>
     where
         F: FnOnce(&mut DecisionCache) -> T,

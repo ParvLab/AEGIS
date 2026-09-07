@@ -1,6 +1,6 @@
 {
   "name": "@aegis-v/engine",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Aegis authorization engine — native Node.js bindings",
   "main": "index.js",
   "types": "index.d.ts",
@@ -21,7 +21,7 @@
   "files": [
     "index.js",
     "index.d.ts",
-    "aegis-core.*.node",
+    "aegis-core*.node",
     "README.md"
   ]
 }

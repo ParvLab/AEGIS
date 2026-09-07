@@ -1193,7 +1193,7 @@ Completion evidence (all met):
 | `wasm` feature flag for minimal WASM builds | ✅ |
 | Core compiles for `wasm32-unknown-unknown` | ✅ |
 | Raw WASM bundle: 792 KB (target < 2.5 MB) | ✅ |
-| WASM demo example (`examples/wasm-demo/`) | ✅ |
+| WASM demo example (`examples/wasm-demo/`) | ❌ (removed, consolidated to `examples/github-rebac/`) |
 | Unsupported features documented | ❌ |
 | Runtime contract document | ❌ |
 

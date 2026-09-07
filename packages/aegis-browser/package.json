@@ -1,6 +1,6 @@
 {
   "name": "@aegis-v/browser",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Aegis authorization engine for browser — check, write, delete permissions with full offline support",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -20,7 +20,7 @@
     "build": "npm run build:rust && npm run build:ts",
     "optimize": "wasm-opt -Oz -o pkg/aegis_browser_bg.wasm pkg/aegis_browser_bg.wasm || echo \"wasm-opt not available, skipping\"",
     "test": "wasm-pack test --chrome --headless",
-    "prepublishOnly": "npm run build && npm run optimize"
+    "prepublishOnly": "npm run build && npm run optimize && node -e \"const fs = require('fs'); if (fs.existsSync('pkg/.gitignore')) fs.unlinkSync('pkg/.gitignore')\""
   },
   "browser": {
     "./pkg/aegis_browser.js": "./pkg/aegis_browser.js",

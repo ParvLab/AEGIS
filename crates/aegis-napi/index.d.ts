@@ -136,6 +136,26 @@ export interface SchemaCheckReport {
   breaking: string[];
 }
 
+export interface IntegrityResult {
+  ok: boolean;
+  brokenChainAt?: number;
+  details?: string;
+}
+
+export interface AnalysisReport {
+  orphanedTupleCount: number;
+  orphanedTuples: string[];
+  highAccessSubjects: string[];
+  integrityOk: boolean;
+  summary: string;
+}
+
+export interface PartitionInfo {
+  id: string;
+  isActive: boolean;
+  tupleCount: number;
+}
+
 export interface AuditEntry {
   revision: number;
   action: string;
@@ -206,6 +226,19 @@ export class JsAegis {
   transaction(): JsTransaction;
   invalidateCache(): void;
   isClosed(): boolean;
+  verifyAuditChain(): IntegrityResult;
+  analysisReport(): AnalysisReport;
+  accessReviewForSubject(subject: string): string;
+  accessReviewForResource(resource: string): string;
+  invalidateCacheBefore(revision: number): void;
+  createPartition(id: string): void;
+  deletePartition(id: string): void;
+  listPartitions(): PartitionInfo[];
+  activePartition(): string;
+  switchPartition(id: string): void;
+  backupToPath(destPath: string): void;
+  exportJson(): string;
+  importJson(json: string): WriteResult;
 
   // V6 Analysis APIs
   explainV2(subject: string, permission: string, resource: string, consistency?: string): ExplainV2Result;

@@ -98,6 +98,7 @@ pub struct WriteResultNAP {
 }
 
 #[napi(object)]
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TupleNAP {
     pub subject: String,
     pub relation: String,
@@ -198,6 +199,29 @@ pub struct SchemaCheckReportNAP {
     pub compatible: bool,
     pub warnings: Vec<String>,
     pub breaking: Vec<String>,
+}
+
+#[napi(object)]
+pub struct IntegrityResultNAP {
+    pub ok: bool,
+    pub broken_chain_at: Option<i64>,
+    pub details: Option<String>,
+}
+
+#[napi(object)]
+pub struct AnalysisReportNAP {
+    pub orphaned_tuple_count: i32,
+    pub orphaned_tuples: Vec<String>,
+    pub high_access_subjects: Vec<String>,
+    pub integrity_ok: bool,
+    pub summary: String,
+}
+
+#[napi(object)]
+pub struct PartitionInfoNAP {
+    pub id: String,
+    pub is_active: bool,
+    pub tuple_count: i64,
 }
 
 #[napi(object)]
@@ -315,6 +339,7 @@ pub struct JsAegis {
 
 #[napi]
 impl JsAegis {
+    #[napi]
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::Relaxed)
     }
@@ -1245,6 +1270,329 @@ impl JsAegis {
             self.engine
                 .rollback_policy(version)
                 .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn verify_audit_chain(&self) -> napi::Result<IntegrityResultNAP> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let res = self.engine.storage().verify_audit_chain(&self.engine.active_partition_id())
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            match res {
+                Some(broken_at_msg) => {
+                    let rev = broken_at_msg.split("event_id=")
+                        .nth(1)
+                        .and_then(|s| s.split(',').next())
+                        .and_then(|s| s.parse::<i64>().ok());
+                    Ok(IntegrityResultNAP {
+                        ok: false,
+                        broken_chain_at: rev,
+                        details: Some(broken_at_msg),
+                    })
+                }
+                None => {
+                    Ok(IntegrityResultNAP {
+                        ok: true,
+                        broken_chain_at: None,
+                        details: None,
+                    })
+                }
+            }
+        })
+    }
+
+    #[napi]
+    pub fn analysis_report(&self) -> napi::Result<AnalysisReportNAP> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let pid = self.engine.active_partition_id();
+            let tuples_result = self.engine.storage().query_tuples(
+                &pid,
+                &TupleFilter::default(),
+                &PaginationParams { cursor: None, limit: 10000 },
+                &ConsistencyMode::MinimizeLatency,
+            ).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+            let schema = self.engine.schema();
+            let mut orphaned_tuples = Vec::new();
+            let mut subject_access_counts = std::collections::HashMap::new();
+
+            for t in &tuples_result.tuples {
+                let sub_type = t.subject.as_str().split(':').next().unwrap_or("");
+                let obj_type = t.object.as_str().split(':').next().unwrap_or("");
+
+                let sub_ok = schema.types.contains_key(sub_type);
+                let obj_ok = schema.types.contains_key(obj_type);
+
+                if !sub_ok || !obj_ok {
+                    orphaned_tuples.push(format!("{}|{}|{}", t.subject.as_str(), t.relation.as_str(), t.object.as_str()));
+                }
+
+                *subject_access_counts.entry(t.subject.as_str().to_string()).or_insert(0) += 1;
+            }
+
+            let mut high_access_vec: Vec<_> = subject_access_counts.into_iter().collect();
+            high_access_vec.sort_by(|a, b| b.1.cmp(&a.1));
+            let high_access_subjects: Vec<String> = high_access_vec.into_iter().take(5)
+                .map(|(subj, count)| format!("{{\"subject\":\"{}\",\"count\":{}}}", subj, count))
+                .collect();
+
+            let integrity_ok = self.engine.storage().verify_audit_chain(&pid)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?
+                .is_none();
+
+            let summary = format!(
+                "Analysis completed. Found {} tuples, {} orphaned. Integrity status: {}",
+                tuples_result.tuples.len(),
+                orphaned_tuples.len(),
+                if integrity_ok { "healthy" } else { "corrupted" }
+            );
+
+            Ok(AnalysisReportNAP {
+                orphaned_tuple_count: orphaned_tuples.len() as i32,
+                orphaned_tuples,
+                high_access_subjects,
+                integrity_ok,
+                summary,
+            })
+        })
+    }
+
+    #[napi]
+    pub fn access_review_for_subject(&self, subject: String) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let subject_id = SubjectId::new(&subject)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let pid = self.engine.active_partition_id();
+            let consistency = ConsistencyMode::MinimizeLatency;
+
+            let query_result = self.engine.storage().query_tuples(
+                &pid,
+                &TupleFilter::default(),
+                &PaginationParams { cursor: None, limit: 10000 },
+                &consistency,
+            ).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+            let mut unique_resources = std::collections::HashSet::new();
+            for t in &query_result.tuples {
+                unique_resources.insert(t.object.clone());
+            }
+
+            let schema = self.engine.schema();
+            let mut results = Vec::new();
+
+            #[derive(serde::Serialize)]
+            struct ReviewEntry {
+                resource: String,
+                permission: String,
+                allowed: bool,
+                via: String,
+            }
+
+            for res in unique_resources {
+                let res_type = res.as_str().split(':').next().unwrap_or("").to_string();
+                if let Some(type_def) = schema.types.get(&res_type) {
+                    for perm in type_def.permissions.keys() {
+                        if let Ok(explain_res) = self.engine.explain_v2(&subject_id, perm, &res, None) {
+                            if explain_res.allowed {
+                                results.push(ReviewEntry {
+                                    resource: res.as_str().to_string(),
+                                    permission: perm.clone(),
+                                    allowed: true,
+                                    via: explain_res.resolved_via,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            serde_json::to_string(&results)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn access_review_for_resource(&self, resource: String) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let resource_id = ResourceId::new(&resource)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+            let pid = self.engine.active_partition_id();
+            let consistency = ConsistencyMode::MinimizeLatency;
+
+            let query_result = self.engine.storage().query_tuples(
+                &pid,
+                &TupleFilter::default(),
+                &PaginationParams { cursor: None, limit: 10000 },
+                &consistency,
+            ).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+            let mut unique_subjects = std::collections::HashSet::new();
+            for t in &query_result.tuples {
+                unique_subjects.insert(t.subject.clone());
+            }
+
+            let schema = self.engine.schema();
+            let mut results = Vec::new();
+
+            #[derive(serde::Serialize)]
+            struct ReviewEntry {
+                subject: String,
+                permission: String,
+                allowed: bool,
+                via: String,
+            }
+
+            let res_type = resource.as_str().split(':').next().unwrap_or("").to_string();
+            if let Some(type_def) = schema.types.get(&res_type) {
+                for subj in unique_subjects {
+                    for perm in type_def.permissions.keys() {
+                        if let Ok(explain_res) = self.engine.explain_v2(&subj, perm, &resource_id, None) {
+                            if explain_res.allowed {
+                                results.push(ReviewEntry {
+                                    subject: subj.as_str().to_string(),
+                                    permission: perm.clone(),
+                                    allowed: true,
+                                    via: explain_res.resolved_via,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            serde_json::to_string(&results)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn invalidate_cache_before(&self, revision: f64) -> napi::Result<()> {
+        self.check_open()?;
+        let rev = Revision::new(revision as u64);
+        self.engine.invalidate_cache_before(rev);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn create_partition(&self, id: String) -> napi::Result<()> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            self.engine
+                .create_partition(&id)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn delete_partition(&self, id: String) -> napi::Result<()> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            self.engine
+                .delete_partition(&id)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn list_partitions(&self) -> napi::Result<Vec<PartitionInfoNAP>> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let active = self.engine.active_partition();
+            let pids = self.engine.list_partitions()
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+            let mut info = Vec::new();
+            for pid in pids {
+                let pid_parsed = PartitionId::new(&pid)
+                    .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+                let count = self.engine.storage().query_tuples(
+                    &pid_parsed,
+                    &TupleFilter::default(),
+                    &PaginationParams { cursor: None, limit: 10000 },
+                    &ConsistencyMode::MinimizeLatency,
+                ).map(|r| r.tuples.len() as i64).unwrap_or(0);
+
+                info.push(PartitionInfoNAP {
+                    id: pid.clone(),
+                    is_active: pid == active,
+                    tuple_count: count,
+                });
+            }
+            Ok(info)
+        })
+    }
+
+    #[napi]
+    pub fn active_partition(&self) -> napi::Result<String> {
+        self.check_open()?;
+        Ok(self.engine.active_partition())
+    }
+
+    #[napi]
+    pub fn switch_partition(&self, id: String) -> napi::Result<()> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            self.engine
+                .switch_partition(&id)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn backup_to_path(&self, dest_path: String) -> napi::Result<()> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            self.engine
+                .storage()
+                .backup_to_path(&dest_path)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn export_json(&self) -> napi::Result<String> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let pid = self.engine.active_partition_id();
+            let result = self.engine.storage().query_tuples(
+                &pid,
+                &TupleFilter::default(),
+                &PaginationParams { limit: 10000, cursor: None },
+                &ConsistencyMode::MinimizeLatency,
+            ).map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+            let tuples: Vec<TupleNAP> = result.tuples.iter().map(tuple_to_nap).collect();
+            serde_json::to_string(&tuples)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))
+        })
+    }
+
+    #[napi]
+    pub fn import_json(&self, json: String) -> napi::Result<WriteResultNAP> {
+        self.check_open()?;
+        catch_engine_panic(|| {
+            let tuples_nap: Vec<TupleNAP> = serde_json::from_str(&json)
+                .map_err(|e| napi::Error::from_reason(format!("invalid JSON: {}", e)))?;
+
+            let mut tuples = Vec::new();
+            for t in tuples_nap {
+                let tuple = validate_tuple(&t.subject, &t.relation, &t.object)?;
+                tuples.push(tuple);
+            }
+
+            let pid = self.engine.active_partition_id();
+            let rev = self.engine.storage().write_tuples_batch(&pid, &tuples)
+                .map_err(|e| napi::Error::from_reason(e.to_string()))?;
+
+            Ok(WriteResultNAP {
+                revision: rev.as_u64() as i64,
+                node_id: String::new(),
+                timestamp: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            })
         })
     }
 }

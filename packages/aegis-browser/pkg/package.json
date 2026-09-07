@@ -1,0 +1,32 @@
+{
+  "name": "aegis-browser",
+  "type": "module",
+  "collaborators": [
+    "Aegis Authors <opensource@aegis-auth.dev>"
+  ],
+  "description": "Aegis authorization engine WASM bindings for browser",
+  "version": "0.2.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ParvLab/AEGIS"
+  },
+  "files": [
+    "aegis_browser_bg.wasm",
+    "aegis_browser.js",
+    "aegis_browser.d.ts"
+  ],
+  "main": "aegis_browser.js",
+  "homepage": "https://github.com/ParvLab/AEGIS",
+  "types": "aegis_browser.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ],
+  "keywords": [
+    "authorization",
+    "rebac",
+    "zanzibar",
+    "access-control",
+    "security"
+  ]
+}
